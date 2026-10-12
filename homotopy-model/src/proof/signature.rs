@@ -51,6 +51,7 @@ pub enum SignatureItemEdit {
     Recolor(Color),
     Reshape(VertexShape),
     MakeOriented(bool),
+    MakePlaceholder(bool),
     MakeInvertible(Invertibility),
     ShowSourceTarget(bool),
 }
@@ -150,6 +151,9 @@ impl Signature {
             color: Color::from_str(COLORS[generator.id % COLORS.len()]).unwrap(),
             shape: Default::default(),
             diagram,
+            placeholder: false,
+            instance: None,
+            instances_open: false,
         };
 
         self.tree
@@ -160,7 +164,11 @@ impl Signature {
         self.tree.push_onto(self.tree.root(), item);
     }
 
-    fn find_node(&self, generator: Generator) -> Option<Node> {
+    pub(crate) fn insert_item_under(&mut self, node: Node, item: SignatureItem) {
+        self.tree.push_onto(node, item);
+    }
+
+    pub(crate) fn find_node(&self, generator: Generator) -> Option<Node> {
         self.tree
             .iter()
             .find_map(|(node, item)| match item.inner() {
@@ -181,7 +189,8 @@ impl Signature {
     fn edit(&mut self, node: Node, edit: SignatureItemEdit) {
         use SignatureItem::{Folder, Item};
         use SignatureItemEdit::{
-            MakeInvertible, MakeOriented, Recolor, Rename, Reshape, ShowSourceTarget,
+            MakeInvertible, MakeOriented, MakePlaceholder, Recolor, Rename, Reshape,
+            ShowSourceTarget,
         };
         self.tree
             .with_mut(node, move |n| match (n.inner_mut(), edit) {
@@ -189,6 +198,7 @@ impl Signature {
                 (Item(info), Recolor(color)) => info.color = color,
                 (Item(info), Reshape(shape)) => info.shape = shape,
                 (Item(info), MakeOriented(true)) => info.oriented = true,
+                (Item(info), MakePlaceholder(placeholder)) => info.placeholder = placeholder,
                 (Item(info), MakeInvertible(invertibility)) => info.invertibility = invertibility,
                 (Item(info), ShowSourceTarget(show)) => info.single_preview = !show,
                 (Folder(info), Rename(name)) => info.name = name,

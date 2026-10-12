@@ -11,6 +11,7 @@ use homotopy_core::{
     Diagram, Diagram0, DiagramN,
 };
 use im::Vector;
+pub use instances::InstantiationError;
 use serde::{Deserialize, Serialize};
 pub use signature::*;
 use thiserror::Error;
@@ -22,6 +23,7 @@ mod signature;
 
 pub mod generators;
 pub mod homotopy;
+mod instances;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub struct View {
@@ -148,6 +150,9 @@ pub enum Action {
 
     Merge(Generator, Generator),
 
+    /// Instantiate a generator by replacing placeholders it mentions with diagrams.
+    Instantiate(Generator, Vec<(Generator, Diagram)>),
+
     ImportProof(SerializedData),
 
     EditSignature(SignatureEdit),
@@ -254,7 +259,7 @@ impl Action {
                 .as_ref()
                 .is_some_and(|ws| ws.diagram.dimension() > 0),
             Self::Suspend(_, _) | Self::SuspendSignature => proof.signature.has_generators(),
-            Self::Merge(_, _) => true,
+            Self::Merge(_, _) | Self::Instantiate(_, _) => true,
             Self::ImportProof(_) => true,
             Self::EditSignature(_) | Self::EditMetadata(_) => true, /* technically the edits could be trivial but do not worry about that for now */
             Self::FlipBoundary | Self::RecoverBoundary => proof.boundary.is_some(),
@@ -273,10 +278,11 @@ impl Action {
                 SignatureEdit::Edit(
                     _,
                     SignatureItemEdit::MakeOriented(true)
+                        | SignatureItemEdit::MakePlaceholder(true)
                         | SignatureItemEdit::MakeInvertible(Invertibility::Dualisable(_))
                 ) | SignatureEdit::AddSymmetry(_)
                     | SignatureEdit::RemoveSymmetry(_)
-            )
+            ) | Self::Instantiate(_, _)
         )
     }
 }
@@ -301,6 +307,8 @@ pub enum ProofError {
     Import,
     #[error(transparent)]
     SignatureError(#[from] SignatureError),
+    #[error(transparent)]
+    InstantiationError(#[from] InstantiationError),
 }
 
 impl ProofState {
@@ -350,6 +358,11 @@ impl ProofState {
             Action::SuspendSignature => self.suspend_signature(),
             Action::Suspend(s, t) => self.suspend(*s, *t),
             Action::Merge(from, to) => self.merge(*from, *to)?,
+            Action::Instantiate(schema, substitution) => {
+                let count = self.signature.iter().count();
+                self.signature.instantiate(*schema, substitution)?;
+                self.signature.iter().count() != count
+            }
             Action::EditSignature(edit) => self.edit_signature(edit)?,
             Action::FlipBoundary => self.flip_boundary(),
             Action::RecoverBoundary => self.recover_boundary(),

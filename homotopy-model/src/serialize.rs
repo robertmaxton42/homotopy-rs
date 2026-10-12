@@ -10,7 +10,8 @@ use im::Vector;
 use obake::AnyVersion;
 
 use super::proof::{
-    generators::GeneratorInfo, FolderInfo, Metadata, Signature, SignatureItem, View, Workspace,
+    generators::{GeneratorInfo, Instance},
+    FolderInfo, Metadata, Signature, SignatureItem, View, Workspace,
 };
 
 #[obake::versioned]
@@ -71,6 +72,17 @@ struct GeneratorData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     dualisable: Option<usize>,
     diagram: Key<Diagram>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    placeholder: bool,
+    /// Older versions ignore this, and treat instances as ordinary generators.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instance: Option<InstanceData>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct InstanceData {
+    schema: Generator,
+    substitution: Vec<(Generator, Key<Diagram>)>,
 }
 
 #[must_use]
@@ -104,6 +116,15 @@ pub fn serialize(
                 Invertibility::Dualisable(k) => Some(k),
                 _ => None,
             },
+            placeholder: info.placeholder,
+            instance: info.instance.map(|instance| InstanceData {
+                schema: instance.schema,
+                substitution: instance
+                    .substitution
+                    .iter()
+                    .map(|(g, d)| (*g, data.store.pack_diagram(d)))
+                    .collect(),
+            }),
         }),
     });
 
@@ -159,6 +180,19 @@ pub fn deserialize(data: &[u8]) -> Option<((Signature, Option<Workspace>), Metad
                         .map_or_else(|| gd.invertible.into(), Invertibility::Dualisable),
                     // TODO: `single_preview` should be properly serialized
                     single_preview: true,
+                    placeholder: gd.placeholder,
+                    instance: match gd.instance {
+                        None => None,
+                        Some(instance) => Some(Instance {
+                            schema: instance.schema,
+                            substitution: instance
+                                .substitution
+                                .into_iter()
+                                .map(|(g, d)| Some((g, store.unpack_diagram(d)?)))
+                                .collect::<Option<_>>()?,
+                        }),
+                    },
+                    instances_open: false,
                 }),
             })
         })
@@ -268,5 +302,53 @@ mod tests {
 
         let data = serialize(signature, None, Default::default());
         rmp_serde::decode::from_slice::<OldData>(&data).unwrap();
+    }
+
+    #[test]
+    fn placeholders_and_instances_roundtrip() {
+        use homotopy_core::Diagram;
+
+        use crate::proof::SignatureItemEdit;
+
+        let mut signature = Signature::default();
+        let x = signature.create_generator_zero("x");
+        let p = signature
+            .create_generator(x.into(), x.into(), "P", Invertibility::Directed)
+            .unwrap();
+        let q = signature
+            .create_generator(x.into(), x.into(), "Q", Invertibility::Directed)
+            .unwrap();
+        let e = signature
+            .create_generator(
+                p.clone().into(),
+                p.clone().into(),
+                "e",
+                Invertibility::Directed,
+            )
+            .unwrap();
+        let (p, e) = (p.max_generator().generator, e.max_generator().generator);
+        signature
+            .update(&SignatureEdit::Edit(
+                signature.find_node(p).unwrap(),
+                SignatureItemEdit::MakePlaceholder(true),
+            ))
+            .unwrap();
+        let instance = signature.instantiate(e, &[(p, Diagram::from(q))]).unwrap();
+
+        let data = serialize(signature.clone(), None, Default::default());
+        let ((loaded, _), _) = deserialize(&data).unwrap();
+
+        assert!(loaded.generator_info(p).unwrap().placeholder);
+        assert_eq!(
+            loaded.generator_info(instance).unwrap().instance,
+            signature.generator_info(instance).unwrap().instance
+        );
+        // The instance is still listed under its schema.
+        let tree = loaded.as_tree();
+        let parent = tree
+            .get(loaded.find_node(instance).unwrap())
+            .unwrap()
+            .parent();
+        assert_eq!(parent, loaded.find_node(e));
     }
 }
