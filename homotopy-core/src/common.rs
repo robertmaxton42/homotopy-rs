@@ -387,6 +387,23 @@ pub enum Direction {
     Backward,
 }
 
+impl Direction {
+    /// The directions of an `n`-diagram reflecting those in the mask, where bit `j - 1` stands
+    /// for the `j`-th direction from the inside (so the outermost direction comes first).
+    #[must_use]
+    pub fn from_mask(mask: u64, n: usize) -> Vec<Self> {
+        (0..n)
+            .map(|i| {
+                if mask & (1 << (n - 1 - i)) == 0 {
+                    Self::Forward
+                } else {
+                    Self::Backward
+                }
+            })
+            .collect()
+    }
+}
+
 pub trait WithDirection: DoubleEndedIterator {
     fn with_direction(self, direction: Direction) -> impl DoubleEndedIterator<Item = Self::Item>
     where

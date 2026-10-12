@@ -1,5 +1,5 @@
 use homotopy_core::{
-    signature::{GeneratorInfo, Invertibility, Signature},
+    signature::{GeneratorInfo, Invertibility, Signature, Symmetry},
     typecheck::{typecheck, Mode, TypeError},
     Diagram, Diagram0, DiagramN, Direction, Generator, Orientation,
 };
@@ -19,7 +19,7 @@ impl GeneratorInfo for Info {
 
 /// A signature in which every generator has a chosen invertibility.
 #[derive(Default)]
-struct Sig(Vec<(Generator, Info)>);
+struct Sig(Vec<(Generator, Info)>, Vec<Symmetry>);
 
 impl Signature for Sig {
     type Info = Info;
@@ -30,6 +30,10 @@ impl Signature for Sig {
 
     fn generator_info(&self, g: Generator) -> Option<&Info> {
         self.0.iter().find(|(h, _)| *h == g).map(|(_, info)| info)
+    }
+
+    fn symmetries(&self) -> &[Symmetry] {
+        &self.1
     }
 }
 
@@ -139,4 +143,136 @@ fn reflections_are_numbered_from_the_inside() {
     }
     // Reflecting in the outermost direction alone is the inverse.
     assert_eq!(f.reflect(&[B, F], 0), diagram.inverse().into());
+}
+
+/// A k-dualisable 1-cell admits iterated bubbles (units and counits, their units and counits,
+/// and so on) up to ambient dimension 1 + k + 1, i.e. it is (k + 1)-times dualisable.
+#[test]
+fn dualisable_k_allows_k_plus_one_levels_of_bubbles() {
+    for (invertibility, levels) in [
+        (Invertibility::Directed, 0),
+        (Invertibility::Dualisable(0), 1),
+        (Invertibility::Dualisable(1), 2),
+        (Invertibility::Dualisable(2), 3),
+        (Invertibility::Invertible, 4),
+    ] {
+        let mut sig = Sig::default();
+        let x = sig.add_zero();
+        let mut bubble = DiagramN::try_from(sig.add(&x, &x, invertibility)).unwrap();
+        for level in 1..=4 {
+            bubble = bubble.bubble().unwrap();
+            assert_eq!(
+                check(&sig, &bubble.clone().into()).is_ok(),
+                level <= levels,
+                "{invertibility} at level {level}"
+            );
+        }
+    }
+}
+
+fn with_symmetry(mut sig: Sig, directions: &[usize]) -> Sig {
+    sig.1.push(Symmetry {
+        name: "op".to_owned(),
+        directions: directions.to_vec(),
+    });
+    sig
+}
+
+/// With the symmetry `{1}`, directed cells may be reflected in x₁ (covariantly: `α ↦ α^op :
+/// F^op ⇛ G^op`), but not inverted, and not rotated through cells that are merely symmetric.
+#[test]
+fn covariant_op_symmetry() {
+    let (sig, f, eta) = setup(Invertibility::Directed, Invertibility::Directed);
+    let sig = with_symmetry(sig, &[1]);
+    assert!(check(&sig, &f).is_ok());
+    assert!(
+        check(&sig, &f.reflect(&[F, B], 0)).is_ok(),
+        "F^op : C^op ⇒ D^op"
+    );
+    assert!(check(&sig, &f.reflect(&[B, F], 0)).is_err(), "F⁻¹ : D ⇒ C");
+    assert!(
+        check(&sig, &f.reflect(&[B, B], 0)).is_err(),
+        "mate D^op ⇒ C^op"
+    );
+    assert!(
+        check(&sig, &eta.reflect(&[F, F, B], 0)).is_ok(),
+        "η^op : F^op ⇛ G^op"
+    );
+    assert!(
+        check(&sig, &eta.reflect(&[B, F, B], 0)).is_err(),
+        "G^op ⇛ F^op"
+    );
+    assert!(
+        check(&sig, &eta.reflect(&[B, F, F], 0)).is_err(),
+        "η⁻¹ : G ⇛ F"
+    );
+}
+
+/// With the symmetry `{1, 3}` (`op` on **Cat**, which reverses 2-cells), α : F ⇒ G becomes
+/// α^op : G^op ⇒ F^op.
+#[test]
+fn contravariant_op_symmetry() {
+    let (sig, f, eta) = setup(Invertibility::Directed, Invertibility::Directed);
+    let sig = with_symmetry(sig, &[1, 3]);
+    assert!(
+        check(&sig, &f.reflect(&[F, B], 0)).is_ok(),
+        "F^op : C^op ⇒ D^op"
+    );
+    assert!(
+        check(&sig, &eta.reflect(&[B, F, B], 0)).is_ok(),
+        "η^op : G^op ⇛ F^op"
+    );
+    assert!(
+        check(&sig, &eta.reflect(&[F, F, B], 0)).is_err(),
+        "F^op ⇛ G^op"
+    );
+    assert!(
+        check(&sig, &eta.reflect(&[B, F, F], 0)).is_err(),
+        "η⁻¹ : G ⇛ F"
+    );
+}
+
+/// Rotations (mates) of directed cells remain available through dualisable cells.
+#[test]
+fn symmetry_keeps_mates_through_dualisable_cells() {
+    let (sig, f, _) = setup(Invertibility::Dualisable(0), Invertibility::Directed);
+    let sig = with_symmetry(sig, &[1]);
+    assert!(check(&sig, &f.reflect(&[B, B], 0)).is_ok(), "mate D* ⇒ C*");
+    assert!(
+        check(&sig, &f.reflect(&[F, B], 0)).is_ok(),
+        "F^op : C* ⇒ D*"
+    );
+    // The mate of F^op is the reverse of F, which is then derivable.
+    assert!(check(&sig, &f.reflect(&[B, F], 0)).is_ok(), "D ⇒ C");
+}
+
+/// Declaring a symmetry must not reject ordinary composite diagrams, where generators occur in
+/// larger neighbourhoods, nor their reflections.
+#[test]
+fn symmetry_accepts_composites() {
+    use homotopy_core::Boundary;
+
+    let mut sig = Sig::default();
+    let x = sig.add_zero();
+    let c = DiagramN::try_from(sig.add(&x, &x, Invertibility::Directed)).unwrap();
+    let cc = c.attach(&c, Boundary::Target, &[]).unwrap();
+    let m = DiagramN::try_from(sig.add(&cc.into(), &c.into(), Invertibility::Directed)).unwrap();
+    let left = m.attach(&m, Boundary::Source, &[0]).unwrap();
+    let right = m.attach(&m, Boundary::Source, &[1]).unwrap();
+    let a = sig.add(
+        &left.clone().into(),
+        &right.clone().into(),
+        Invertibility::Directed,
+    );
+    let sig = with_symmetry(sig, &[1]);
+
+    for diagram in [Diagram::from(left), right.into(), a.clone()] {
+        assert!(check(&sig, &diagram).is_ok());
+        let n = diagram.dimension();
+        let mut op = vec![F; n];
+        op[n - 1] = B;
+        assert!(check(&sig, &diagram.reflect(&op, 0)).is_ok());
+    }
+    // a⁻¹ is still rejected.
+    assert!(check(&sig, &a.reflect(&[B, F, F], 0)).is_err());
 }

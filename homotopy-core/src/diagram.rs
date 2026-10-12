@@ -726,19 +726,9 @@ impl DiagramN {
         let n = self.dimension();
         let mut seen = FastHashSet::default();
         seen.insert(self.clone());
-        (1..1_usize << n)
+        (1..1_u64 << n)
             .filter_map(|mask| {
-                let directions: Vec<Direction> = (0..n)
-                    .map(|i| {
-                        // directions[i] is the (n - i)-th direction from the inside.
-                        if mask & (1 << (n - 1 - i)) == 0 {
-                            Direction::Forward
-                        } else {
-                            Direction::Backward
-                        }
-                    })
-                    .collect();
-                let reflected = self.reflect(&directions, 0);
+                let reflected = self.reflect(&Direction::from_mask(mask, n), 0);
                 seen.insert(reflected.clone()).then(|| {
                     let reflected_directions = (1..=n).filter(|j| mask & (1 << (j - 1)) != 0);
                     (reflected_directions.collect(), reflected)
