@@ -899,10 +899,10 @@ impl RewriteN {
     pub fn reflect(&self, source: &DiagramN, directions: &[Direction], codimension: usize) -> Self {
         assert_eq!(directions.len(), self.dimension() + codimension);
 
-        if directions[codimension..]
-            .iter()
-            .all(|&d| d == Direction::Forward)
-        {
+        // Reflecting in an outer direction also flips the orientation of points of
+        // high-dimensional generators deeper down, so we can only skip the work when
+        // no direction at all is reflected.
+        if directions.iter().all(|&d| d == Direction::Forward) {
             return self.clone();
         }
 
