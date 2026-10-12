@@ -154,8 +154,11 @@ fn reflected_occurrences_get_reflected_replacements() {
 }
 
 #[test]
-fn contracted_heights_are_refused() {
-    use homotopy_core::Direction;
+fn contracted_heights_are_kept_or_separated() {
+    use homotopy_core::{
+        typecheck::{typecheck, Mode},
+        Direction,
+    };
 
     // f ◫ g: two cells contracted into a single height.
     let mut sig = SignatureBuilder::default();
@@ -164,6 +167,7 @@ fn contracted_heights_are_refused() {
     let b = sig.add(x, x).unwrap();
     let f = sig.add(a.clone(), a.clone()).unwrap();
     let g = sig.add(b.clone(), b.clone()).unwrap();
+    let f2 = sig.add(a.clone(), a.clone()).unwrap();
     let ab = a.attach(&b, Boundary::Target, &[]).unwrap();
     let fg = ab
         .identity()
@@ -184,9 +188,17 @@ fn contracted_heights_are_refused() {
         )
         .unwrap()
         .target();
+    assert_eq!(DiagramN::try_from(parallel.clone()).unwrap().size(), 1);
 
-    assert!(matches!(
-        substitute(&parallel, &sig, &|_| None),
-        Err(SubstitutionError::NotAtomic { height: 0, .. })
-    ));
+    // Untouched, the contracted height stays as it is.
+    assert_eq!(substitute(&parallel, &sig, &|_| None).unwrap(), parallel);
+
+    // Replacing f, it is separated first.
+    let (f, f2_gen) = (generator(&f), generator(&f2));
+    let result = substitute(&parallel, &sig, &|h| (h == f).then(|| f2.clone().into())).unwrap();
+    let result_n = DiagramN::try_from(result.clone()).unwrap();
+    assert_eq!(result_n.size(), 2);
+    let generators = result.generators();
+    assert!(generators.contains_key(&f2_gen) && !generators.contains_key(&f));
+    assert!(typecheck(&result, &sig, Mode::default(), true).is_ok());
 }

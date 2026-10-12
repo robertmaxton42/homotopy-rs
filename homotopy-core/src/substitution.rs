@@ -9,6 +9,7 @@ use thiserror::Error;
 use crate::{
     common::{Boundary, Direction, Generator, Height},
     diagram::{AttachmentError, Diagram, DiagramN},
+    rewrite::Cospan,
     signature::{GeneratorInfo, Signature},
 };
 
@@ -59,59 +60,114 @@ fn substitute_n(
     replacement: &impl Fn(Generator) -> Option<Diagram>,
 ) -> Result<DiagramN, SubstitutionError> {
     let n = diagram.dimension();
-    let source = substitute(&diagram.source(), signature, replacement)?;
-    let mut result = DiagramN::new(source, vec![]);
+    let mentions_replaced = |d: &Diagram| d.generators().keys().any(|&g| replacement(g).is_some());
+    let mut diagram = diagram.clone();
+    let mut result = DiagramN::new(
+        substitute(&diagram.source(), signature, replacement)?,
+        vec![],
+    );
 
-    for (height, (cospan, regular)) in diagram
-        .cospans()
-        .iter()
-        .zip(diagram.regular_slices())
-        .enumerate()
-    {
-        let not_atomic = || SubstitutionError::NotAtomic {
-            height,
-            dimension: n,
-        };
-        let point = cospan
-            .max_generator()
-            .filter(|point| point.generator.dimension == n)
-            .ok_or_else(not_atomic)?;
-        let Diagram::DiagramN(generator) = signature
-            .generator_info(point.generator)
-            .ok_or(SubstitutionError::UnknownGenerator)?
-            .diagram()
-            .clone()
-        else {
-            return Err(not_atomic());
-        };
+    let mut height = 0;
+    while height < diagram.size() {
+        let cospan = diagram.cospans()[height].clone();
+        let regular = diagram.slice(Height::Regular(height)).unwrap();
 
-        // Find how the generator is attached: which reflection of it, and where.
-        let (mask, reflected, embedding) = std::iter::once((0, generator.clone()))
-            .chain(generator.reflections().into_iter().map(|(directions, d)| {
-                let mask = directions.iter().fold(0, |mask, j| mask | 1 << (j - 1));
-                (mask, d)
-            }))
-            .filter(|(_, d)| d.max_generator().orientation == point.orientation)
-            .find_map(|(mask, d)| {
-                let embedding = regular
-                    .embeddings(&d.source())
-                    .find(|e| d.cospans()[0].pad(e) == *cospan)?;
-                Some((mask, d, embedding))
-            })
-            .ok_or_else(not_atomic)?;
-
-        let needle = match replacement(point.generator) {
-            None => reflected,
-            Some(Diagram::DiagramN(r)) if r.dimension() == n => {
-                r.reflect(&Direction::from_mask(mask, n), 0)
-            }
-            Some(_) => return Err(SubstitutionError::Dimension),
-        };
-        let embedding = shift_embedding(&embedding, &regular, replacement);
-        result = result.attach(&needle, Boundary::Target, &embedding)?;
+        if let Some((generator, mask, reflected, embedding)) =
+            attachment(&cospan, &regular, n, signature)?
+        {
+            // Replay the attachment with the generator replaced.
+            let needle = match replacement(generator) {
+                None => reflected,
+                Some(Diagram::DiagramN(r)) if r.dimension() == n => {
+                    r.reflect(&Direction::from_mask(mask, n), 0)
+                }
+                Some(_) => return Err(SubstitutionError::Dimension),
+            };
+            let embedding = shift_embedding(&embedding, &regular, replacement);
+            result = result.attach(&needle, Boundary::Target, &embedding)?;
+            height += 1;
+        } else if !mentions_replaced(&regular)
+            && !mentions_replaced(&diagram.slice(Height::Singular(height)).unwrap())
+            && result.target() == regular
+        {
+            // Nothing is replaced around this height, so it can stay as it is.
+            let mut cospans = result.cospans().to_vec();
+            cospans.push(cospan);
+            result = DiagramN::new(result.source(), cospans);
+            height += 1;
+        } else {
+            // Separate the cells in this height into consecutive heights and try again.
+            diagram =
+                separate(&diagram, height, signature).ok_or(SubstitutionError::NotAtomic {
+                    height,
+                    dimension: n,
+                })?;
+        }
     }
 
     Ok(result)
+}
+
+/// If the step at a height attaches a single generator, which reflection of its diagram is
+/// attached where.
+#[allow(clippy::type_complexity)]
+fn attachment(
+    cospan: &Cospan,
+    regular: &Diagram,
+    n: usize,
+    signature: &impl Signature,
+) -> Result<Option<(Generator, u64, DiagramN, Vec<usize>)>, SubstitutionError> {
+    let Some(point) = cospan
+        .max_generator()
+        .filter(|point| point.generator.dimension == n)
+    else {
+        return Ok(None);
+    };
+    let Diagram::DiagramN(generator) = signature
+        .generator_info(point.generator)
+        .ok_or(SubstitutionError::UnknownGenerator)?
+        .diagram()
+        .clone()
+    else {
+        return Ok(None);
+    };
+
+    Ok(std::iter::once((0, generator.clone()))
+        .chain(generator.reflections().into_iter().map(|(directions, d)| {
+            let mask = directions.iter().fold(0, |mask, j| mask | 1 << (j - 1));
+            (mask, d)
+        }))
+        .filter(|(_, d)| d.max_generator().orientation == point.orientation)
+        .find_map(|(mask, d)| {
+            let embedding = regular
+                .embeddings(&d.source())
+                .find(|e| d.cospans()[0].pad(e) == *cospan)?;
+            Some((point.generator, mask, d, embedding))
+        }))
+}
+
+/// Splits the step at a height that does several things at once into two steps, by an
+/// expansion, if possible.
+fn separate(diagram: &DiagramN, height: usize, signature: &impl Signature) -> Option<DiagramN> {
+    let size = diagram.slice(Height::Singular(height))?.size()?;
+    (0..size)
+        .flat_map(|j| [Direction::Forward, Direction::Backward].map(|d| (j, d)))
+        .find_map(|(j, direction)| {
+            let expanded = diagram
+                .clone()
+                .identity()
+                .expand(
+                    Boundary::Target.into(),
+                    &mut [],
+                    [Height::Singular(height), Height::Singular(j)],
+                    direction,
+                    signature,
+                )
+                .ok()?;
+            DiagramN::try_from(expanded.target())
+                .ok()
+                .filter(|d| d.size() == diagram.size() + 1)
+        })
 }
 
 /// The embedding into the substituted slice corresponding to an embedding into `slice`: at
