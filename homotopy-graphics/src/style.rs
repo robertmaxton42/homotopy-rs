@@ -8,6 +8,13 @@ pub trait GeneratorStyle {
     fn color(&self) -> Color;
     fn shape(&self) -> VertexShape;
     fn label(&self) -> Option<String>;
+
+    /// Whether the generator is a placeholder. Placeholders are drawn in a way that ordinary
+    /// generators cannot imitate (hatched and translucent) so that they are never mistaken for
+    /// genuine generators.
+    fn is_placeholder(&self) -> bool {
+        false
+    }
 }
 
 pub trait SignatureStyleData: Signature {

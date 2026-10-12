@@ -62,6 +62,8 @@ pub enum SignatureEdit {
     MoveBefore(Node, Node),
     MoveInto(Node, Node),
     ToggleFolder(Node),
+    /// Show or hide the instances of a generator (its children in the tree).
+    ToggleInstances(Node),
     NewFolder(Node),
     Remove(Node),
     /// Declare a reflection symmetry of the theory. This only makes typechecking more permissive.
@@ -320,6 +322,13 @@ impl Signature {
                 {
                     self.tree.reparent_under(*from, *to);
                 }
+            }
+            SignatureEdit::ToggleInstances(node) => {
+                self.tree.with_mut(*node, |n| {
+                    if let SignatureItem::Item(info) = n.inner_mut() {
+                        info.instances_open = !info.instances_open;
+                    }
+                });
             }
             SignatureEdit::ToggleFolder(node) => {
                 self.tree.with_mut(*node, |n| {

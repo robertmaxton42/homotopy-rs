@@ -3,6 +3,7 @@
 precision highp float;
 
 uniform vec3 albedo;
+uniform bool placeholder;
 
 in float hidden;
 in vec3 frag_pos;
@@ -14,6 +15,12 @@ layout (location = 2) out vec4 g_albedo;
 
 void main() {
     if (hidden != 0.) {
+        discard;
+    }
+
+    // Placeholders are drawn striped (screen-door transparency), which ordinary generators can't
+    // imitate. Discarding fragments rather than blending keeps the deferred pipeline unchanged.
+    if (placeholder && mod(gl_FragCoord.x + gl_FragCoord.y, 10.) < 5.) {
         discard;
     }
 

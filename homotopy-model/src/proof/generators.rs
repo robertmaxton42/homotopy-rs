@@ -44,6 +44,10 @@ impl GeneratorStyle for GeneratorInfo {
     fn color(&self) -> Color {
         self.color.clone()
     }
+
+    fn is_placeholder(&self) -> bool {
+        self.placeholder
+    }
 }
 
 impl homotopy_core::signature::GeneratorInfo for GeneratorInfo {

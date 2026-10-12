@@ -29,6 +29,8 @@ pub struct Scene {
 pub struct Component<V> {
     pub vertices: V,
     pub albedo: Vec3,
+    /// Whether this belongs to a placeholder, which is drawn striped.
+    pub placeholder: bool,
     pub vertex_shape: Option<Rc<VertexArray>>,
 }
 
@@ -37,6 +39,8 @@ pub struct AnimationCurve {
     pub end: f32,
     pub key_frames: Vec<Vec4>,
     pub albedo: Vec3,
+    /// Whether this belongs to a placeholder, which is drawn striped.
+    pub placeholder: bool,
     pub vertex_shape: Option<Rc<VertexArray>>,
 }
 
@@ -189,6 +193,11 @@ impl Scene {
                 .into_linear_f32_components()
                 .into()
         };
+        let is_placeholder = |diagram: Diagram0| -> bool {
+            signature_styles
+                .generator_style(diagram.generator)
+                .is_some_and(GeneratorStyle::is_placeholder)
+        };
         let shape_of = |diagram: Diagram0| -> Option<Rc<VertexArray>> {
             match signature_styles
                 .generator_style(diagram.generator)
@@ -215,6 +224,7 @@ impl Scene {
                         ]
                     )?,
                     albedo: color_of(generator, tetra_buffers.k),
+                    placeholder: is_placeholder(generator),
                     vertex_shape: shape_of(generator),
                 });
             }
@@ -239,6 +249,7 @@ impl Scene {
                         ]
                     )?,
                     albedo: color_of(generator, 1),
+                    placeholder: is_placeholder(generator),
                     vertex_shape: shape_of(generator),
                 });
             }
@@ -267,6 +278,7 @@ impl Scene {
                         .map(|v| simplicial.verts[v].position)
                         .collect(),
                     albedo: color_of(generator, k),
+                    placeholder: is_placeholder(generator),
                     vertex_shape: shape_of(generator),
                 });
             }
@@ -280,6 +292,7 @@ impl Scene {
                 self.animation_singularities.push(Component {
                     vertices: position,
                     albedo: color_of(generator, 0),
+                    placeholder: is_placeholder(generator),
                     vertex_shape: shape_of(generator),
                 });
             }
@@ -294,6 +307,7 @@ impl Scene {
                         [&tri_buffers.vertex_buffer, &tri_buffers.normal_buffer]
                     )?,
                     albedo: color_of(generator, tri_buffers.k),
+                    placeholder: is_placeholder(generator),
                     vertex_shape: shape_of(generator),
                 });
 

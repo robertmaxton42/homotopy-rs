@@ -1,7 +1,10 @@
 use std::str::FromStr;
 
 use homotopy_common::tree::Node;
-use homotopy_core::{signature::Invertibility, Diagram};
+use homotopy_core::{
+    signature::{Invertibility, Signature as _},
+    Diagram, Generator,
+};
 use homotopy_graphics::style::{Color, VertexShape};
 use wasm_bindgen::JsCast;
 use web_sys::{Element, HtmlInputElement};
@@ -115,6 +118,9 @@ pub struct ItemViewProps {
     pub item: SignatureItem,
     pub signature: Signature,
     pub drawer_view_size: DrawerViewSize,
+    /// The diagram in the workspace, which can fill slots when instantiating a generator.
+    #[prop_or_default]
+    pub workspace: Option<Diagram>,
 
     #[prop_or_default]
     pub on_drag_over: Callback<DragEvent>,
@@ -145,6 +151,9 @@ pub enum ItemViewMessage {
     SwitchTo(ItemViewMode),
     Edit(SignatureItemEdit),
     CachePreview(bool, Diagram),
+    /// Fill the slot of a placeholder with the diagram in the workspace.
+    FillSlot(Generator),
+    ClearSlot(Generator),
     Setting(AppSettingsMsg),
     Noop,
 }
@@ -196,6 +205,9 @@ pub struct ItemView {
     name: String,
     preview_cache: Option<Preview>,
     callback_idx: CallbackIdx,
+    /// The diagrams chosen so far to replace the placeholders a generator mentions, in order to
+    /// instantiate it.
+    slots: Vec<(Generator, Diagram)>,
 }
 
 impl Component for ItemView {
@@ -219,6 +231,7 @@ impl Component for ItemView {
             name,
             preview_cache: Default::default(),
             callback_idx,
+            slots: Default::default(),
         }
     }
 
@@ -241,6 +254,18 @@ impl Component for ItemView {
             }
             ItemViewMessage::CachePreview(show_single_preview, diagram) => {
                 self.cache_preview(ctx, show_single_preview, &diagram);
+                return true;
+            }
+            ItemViewMessage::FillSlot(placeholder) => {
+                let Some(diagram) = ctx.props().workspace.clone() else {
+                    return false;
+                };
+                self.slots.retain(|(p, _)| *p != placeholder);
+                self.slots.push((placeholder, diagram));
+                return true;
+            }
+            ItemViewMessage::ClearSlot(placeholder) => {
+                self.slots.retain(|(p, _)| *p != placeholder);
                 return true;
             }
             ItemViewMessage::Setting(AppSettingsMsg::show_previews(_)) => {
@@ -403,12 +428,17 @@ impl ItemView {
         if let SignatureItem::Item(ref info) = ctx.props().item {
             let style = format!("background-color: {}", info.color.hex());
             let class = format!(
-                "signature__generator-color-sliver {}",
+                "signature__generator-color-sliver {} {}",
                 if info.color.is_light() {
                     "signature__generator-color-sliver-light"
                 } else {
                     ""
-                }
+                },
+                if info.placeholder {
+                    "signature__generator-placeholder"
+                } else {
+                    ""
+                },
             );
 
             html! {
@@ -575,7 +605,14 @@ impl ItemView {
 
     fn view_info(&self, ctx: &Context<Self>) -> Html {
         match &ctx.props().item {
-            SignatureItem::Item(_info) => self.view_name(ctx),
+            SignatureItem::Item(info) => {
+                html! {
+                    <>
+                        {self.view_name(ctx)}
+                        {Self::view_instances_toggle(ctx, info)}
+                    </>
+                }
+            }
             SignatureItem::Folder(info) => {
                 let icon = if info.open { "folder_open" } else { "folder" };
                 let node = ctx.props().node;
@@ -593,18 +630,57 @@ impl ItemView {
         }
     }
 
+    /// A disclosure control showing how many instances a generator has and toggling whether they
+    /// are listed beneath it. Only shown for generators that have instances.
+    fn view_instances_toggle(ctx: &Context<Self>, info: &GeneratorInfo) -> Html {
+        let node = ctx.props().node;
+        let count = ctx
+            .props()
+            .signature
+            .as_tree()
+            .with(node, |n| n.children().count())
+            .unwrap_or_default();
+        if count == 0 {
+            return html! {};
+        }
+
+        let toggle = ctx.props().dispatch.reform(move |e: MouseEvent| {
+            // Do not select the generator.
+            e.stop_propagation();
+            proof::Action::EditSignature(SignatureEdit::ToggleInstances(node)).into()
+        });
+        let title = format!(
+            "{} the {count} instance{} of this generator",
+            if info.instances_open { "Hide" } else { "Show" },
+            if count == 1 { "" } else { "s" },
+        );
+
+        html! {
+            <span class="signature__instances-toggle" title={title} onclick={toggle}>
+                {if info.instances_open { "\u{25be}" } else { "\u{25b8}" }}
+                {" "}
+                {count}
+            </span>
+        }
+    }
+
     fn view_left_buttons(&self, ctx: &Context<Self>) -> Html {
         use ItemViewMode::{Editing, Hovering, Viewing};
         if let SignatureItem::Item(ref info) = ctx.props().item {
             let icon_light = !info.color.is_light();
             let style = format!("background-color: {};", info.color.hex());
             let class = format!(
-                "signature__generator-color {}",
+                "signature__generator-color {} {}",
                 match self.mode {
                     Viewing => "",
                     Hovering => "signature__generator-color-hover",
                     Editing => "signature__generator-color-edit",
-                }
+                },
+                if info.placeholder {
+                    "signature__generator-placeholder"
+                } else {
+                    ""
+                },
             );
             let dimension_class = format!(
                 "signature__item-child signature__generator-dimension {}",
@@ -766,6 +842,20 @@ impl ItemView {
                 }
             };
 
+            let placeholder = if info.placeholder {
+                let placeholder_text = match ctx.props().drawer_view_size {
+                    DrawerViewSize::Expanded => "Placeholder",
+                    _ => "P",
+                };
+                html! {
+                    <span class="signature__generator-indicator signature__generator-indicator-placeholder">
+                        {placeholder_text}
+                    </span>
+                }
+            } else {
+                html! {}
+            };
+
             let oriented = if info.oriented {
                 let oriented_text = match ctx.props().drawer_view_size {
                     DrawerViewSize::Expanded => "Oriented",
@@ -780,6 +870,7 @@ impl ItemView {
 
             html! {
                 <div class="signature__generator-indicators-wrapper">
+                    {placeholder}
                     {invertible}
                     {oriented}
                 </div>
@@ -816,6 +907,7 @@ impl ItemView {
 
         let toggle_single_preview = ctx.link().callback(toggle_or_noop!(ShowSourceTarget));
         let toggle_framed = ctx.link().callback(toggle_or_noop!(MakeOriented));
+        let toggle_placeholder = ctx.link().callback(toggle_or_noop!(MakePlaceholder));
 
         let color = if info.color.is_light() {
             "var(--drawer-foreground)".to_owned()
@@ -835,9 +927,22 @@ impl ItemView {
             </div>
         };
 
+        let placeholder_toggle = html! {
+            <GeneratorPreferenceCheckbox
+                left="Ordinary"
+                right="Placeholder"
+                color={color.clone()}
+                onclick={toggle_placeholder}
+                checked={info.placeholder}
+            />
+        };
+
         match generator.dimension {
             0 => html! {
                 <>
+                    <div class="signature__generator-preferences-wrapper">
+                        {placeholder_toggle}
+                    </div>
                     {suspension_button}
                     {merge_button}
                 </>
@@ -860,10 +965,88 @@ impl ItemView {
                         checked={info.oriented}
                         disabled={info.oriented}
                     />
+                    {placeholder_toggle}
                     {Self::view_dualisability_options(ctx, info)}
                     {merge_button}
+                    {self.view_instantiation(ctx, info, &color)}
                 </div>
             },
+        }
+    }
+
+    /// The section of the settings of a generator mentioning placeholders (an axiom schema) for
+    /// instantiating it: each placeholder has a slot, which is filled with the diagram in the
+    /// workspace.
+    fn view_instantiation(&self, ctx: &Context<Self>, info: &GeneratorInfo, color: &str) -> Html {
+        let signature = &ctx.props().signature;
+        let parameters = signature.parameters(info.generator);
+        if parameters.is_empty() {
+            return html! {};
+        }
+
+        let has_workspace = ctx.props().workspace.is_some();
+        let rows = parameters.into_iter().map(|placeholder| {
+            let name = signature
+                .generator_info(placeholder)
+                .map(|info| info.name.clone())
+                .unwrap_or_default();
+            let slot = self.slots.iter().find(|(p, _)| *p == placeholder);
+
+            let content = if let Some((_, diagram)) = slot {
+                let replacement = diagram.max_generator().generator;
+                let single = signature
+                    .generator_info(replacement)
+                    .filter(|info| info.diagram == *diagram);
+                let clear = ctx
+                    .link()
+                    .callback(move |_| ItemViewMessage::ClearSlot(placeholder));
+                html! {
+                    <>
+                        if let Some(replacement) = single {
+                            <TexSpan class="signature__slot-value" raw_tex={replacement.name.clone()} />
+                        } else {
+                            <span class="signature__slot-value signature__slot-value-composite">
+                                {format!("{}-dimensional diagram", diagram.dimension())}
+                            </span>
+                        }
+                        <button title="Clear" onclick={clear}>{"\u{d7}"}</button>
+                    </>
+                }
+            } else {
+                let fill = ctx
+                    .link()
+                    .callback(move |_| ItemViewMessage::FillSlot(placeholder));
+                html! {
+                    <button disabled={!has_workspace} onclick={fill}>{"Use workspace"}</button>
+                }
+            };
+
+            html! {
+                <div class="signature__slot">
+                    <TexSpan class="signature__slot-name" raw_tex={name} />
+                    <span class="signature__slot-arrow">{"\u{21a6}"}</span>
+                    {content}
+                </div>
+            }
+        });
+
+        let schema = info.generator;
+        let substitution = self.slots.clone();
+        let create = ctx
+            .props()
+            .dispatch
+            .reform(move |_| proof::Action::Instantiate(schema, substitution.clone()).into());
+
+        html! {
+            <fieldset style={format!("border: 1px solid {color};")}>
+                <legend>{"Instantiate"}</legend>
+                {for rows}
+                <div>
+                    <button disabled={self.slots.is_empty()} onclick={create}>
+                        {"Create instance"}
+                    </button>
+                </div>
+            </fieldset>
         }
     }
 
