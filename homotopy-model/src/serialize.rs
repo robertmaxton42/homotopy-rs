@@ -2,6 +2,7 @@ use homotopy_common::tree::Tree;
 use homotopy_core::{
     common::{Generator, SliceIndex},
     serialize::{Key, Store},
+    signature::Invertibility,
     Diagram,
 };
 use homotopy_graphics::style::Color;
@@ -60,6 +61,10 @@ struct GeneratorData {
     color: Color,
     oriented: bool,
     invertible: bool,
+    /// `Some(k)` for k-dualisable generators (which also have `invertible` set, so that older
+    /// versions load them as invertible). Absent in files saved before duals were introduced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dualisable: Option<usize>,
     diagram: Key<Diagram>,
 }
 
@@ -89,6 +94,10 @@ pub fn serialize(
             color: info.color,
             oriented: info.oriented,
             invertible: info.invertibility.is_invertible(),
+            dualisable: match info.invertibility {
+                Invertibility::Dualisable(k) => Some(k),
+                _ => None,
+            },
         }),
     });
 
@@ -139,8 +148,9 @@ pub fn deserialize(data: &[u8]) -> Option<((Signature, Option<Workspace>), Metad
                     shape: Default::default(),
                     diagram: store.unpack_diagram(gd.diagram)?,
                     oriented: gd.oriented,
-                    // TODO: `invertibility` should be properly serialized
-                    invertibility: gd.invertible.into(),
+                    invertibility: gd
+                        .dualisable
+                        .map_or_else(|| gd.invertible.into(), Invertibility::Dualisable),
                     // TODO: `single_preview` should be properly serialized
                     single_preview: true,
                 }),
@@ -158,4 +168,35 @@ pub fn deserialize(data: &[u8]) -> Option<((Signature, Option<Workspace>), Metad
         None => None,
     };
     Some(((signature, workspace), data.metadata))
+}
+
+#[cfg(test)]
+mod tests {
+    use homotopy_core::signature::Invertibility;
+
+    use super::{deserialize, serialize};
+    use crate::proof::Signature;
+
+    #[test]
+    fn invertibility_roundtrip() {
+        let mut signature = Signature::default();
+        let x = signature.create_generator_zero("x");
+        let invertibilities = [
+            Invertibility::Directed,
+            Invertibility::Invertible,
+            Invertibility::Dualisable(0),
+            Invertibility::Dualisable(2),
+        ];
+        for (i, &invertibility) in invertibilities.iter().enumerate() {
+            signature
+                .create_generator(x.into(), x.into(), &format!("f{i}"), invertibility)
+                .unwrap();
+        }
+
+        let data = serialize(signature.clone(), None, Default::default());
+        let ((loaded, _), _) = deserialize(&data).unwrap();
+
+        let invertibility = |s: &Signature| s.iter().map(|g| g.invertibility).collect::<Vec<_>>();
+        assert_eq!(invertibility(&loaded), invertibility(&signature));
+    }
 }
