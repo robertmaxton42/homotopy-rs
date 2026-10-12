@@ -121,3 +121,22 @@ fn rotations_of_directed_cells_need_dual_objects() {
         Err(TypeError::Directed)
     ));
 }
+
+#[test]
+fn reflections_are_numbered_from_the_inside() {
+    let (_, f, _) = setup(Invertibility::Directed, Invertibility::Directed);
+    let diagram = DiagramN::try_from(f.clone()).unwrap();
+    let reflections = diagram.reflections();
+    assert_eq!(reflections.len(), 3);
+    for (directions, reflected) in reflections {
+        let expected = match directions[..] {
+            [1] => f.reflect(&[F, B], 0),
+            [2] => f.reflect(&[B, F], 0),
+            [1, 2] => f.reflect(&[B, B], 0),
+            _ => unreachable!(),
+        };
+        assert_eq!(Diagram::from(reflected), expected);
+    }
+    // Reflecting in the outermost direction alone is the inverse.
+    assert_eq!(f.reflect(&[B, F], 0), diagram.inverse().into());
+}

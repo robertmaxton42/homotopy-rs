@@ -711,6 +711,42 @@ impl DiagramN {
         )
     }
 
+    /// All reflections of the diagram in a non-empty set of directions, deduplicated and
+    /// excluding the diagram itself.
+    ///
+    /// Each reflection is returned along with the reflected directions, numbered from the
+    /// innermost direction `1` to the outermost direction `n`, so that reflecting in `{n}` is
+    /// the [inverse](Self::inverse) and reflecting in `{1}` takes `C ⇒ D` to `C* ⇒ D*`.
+    ///
+    /// The reflections need not be well-typed: whether they are depends on the signature.
+    #[must_use]
+    // `Diagram` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
+    #[allow(clippy::mutable_key_type)]
+    pub fn reflections(&self) -> Vec<(Vec<usize>, Self)> {
+        let n = self.dimension();
+        let mut seen = FastHashSet::default();
+        seen.insert(self.clone());
+        (1..1_usize << n)
+            .filter_map(|mask| {
+                let directions: Vec<Direction> = (0..n)
+                    .map(|i| {
+                        // directions[i] is the (n - i)-th direction from the inside.
+                        if mask & (1 << (n - 1 - i)) == 0 {
+                            Direction::Forward
+                        } else {
+                            Direction::Backward
+                        }
+                    })
+                    .collect();
+                let reflected = self.reflect(&directions, 0);
+                seen.insert(reflected.clone()).then(|| {
+                    let reflected_directions = (1..=n).filter(|j| mask & (1 << (j - 1)) != 0);
+                    (reflected_directions.collect(), reflected)
+                })
+            })
+            .collect()
+    }
+
     #[must_use]
     pub fn reflect(&self, directions: &[Direction], codimension: usize) -> Self {
         assert_eq!(directions.len(), self.dimension() + codimension);

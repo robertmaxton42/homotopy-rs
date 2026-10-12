@@ -5,10 +5,11 @@ use history::{History, UndoState};
 use homotopy_core::{
     common::{BoundaryPath, Generator},
     signature::Signature,
+    typecheck::{typecheck, Mode},
     Boundary, Diagram, DiagramN, Height, SliceIndex,
 };
 use homotopy_graphics::{manim, stl, svg, tikz};
-use homotopy_model::proof::AttachOption;
+use homotopy_model::proof::{generators::GeneratorInfo, AttachOption};
 pub use homotopy_model::{history, migration, proof, serialize};
 use serde::Serialize;
 use thiserror::Error;
@@ -453,6 +454,15 @@ impl State {
                         if info.invertibility.is_invertible() {
                             extend!(d.inverse(), Some("inverse".to_owned()));
                         }
+                        self.extend_with_reflections(
+                            &mut matches,
+                            info,
+                            d,
+                            &haystack,
+                            &point,
+                            boundary,
+                            boundary_path,
+                        );
                     }
                 }
                 std::cmp::Ordering::Greater => (),
@@ -478,6 +488,64 @@ impl State {
         }
 
         Ok(())
+    }
+
+    /// Offers the well-typed reflections of a generator other than its inverse: duals, mates,
+    /// adjoints and so on. These are only valid when some of the generators involved are
+    /// invertible or dualisable, and are typechecked only once they are known to match.
+    #[allow(clippy::too_many_arguments)]
+    fn extend_with_reflections(
+        &self,
+        matches: &mut Vec<AttachOption>,
+        info: &GeneratorInfo,
+        diagram: &DiagramN,
+        haystack: &Diagram,
+        point: &[Height],
+        boundary: Boundary,
+        boundary_path: Option<BoundaryPath>,
+    ) {
+        let signature = &self.proof().signature;
+        let any_invertible = Diagram::from(diagram.clone()).generators().keys().any(|g| {
+            signature
+                .generator_info(*g)
+                .is_some_and(|info| info.invertibility.is_invertible())
+        });
+        if !any_invertible {
+            return;
+        }
+
+        let n = diagram.dimension();
+        for (directions, reflected) in diagram.reflections() {
+            if info.invertibility.is_invertible() && directions == [n] {
+                // Already offered as the inverse.
+                continue;
+            }
+            let needle = reflected.slice(boundary.flip()).unwrap();
+            let embeddings: Vec<_> = haystack
+                .embeddings(&needle)
+                .filter(|embedding| needle.contains_point(point, embedding))
+                .collect();
+            if embeddings.is_empty()
+                || typecheck(&reflected.clone().into(), signature, Mode::default(), true).is_err()
+            {
+                continue;
+            }
+            let tag = format!(
+                "dual in {}",
+                directions
+                    .iter()
+                    .map(|j| format!("x{}", subscript(*j)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            matches.extend(embeddings.into_iter().map(|embedding| AttachOption {
+                generator: info.generator,
+                diagram: reflected.clone(),
+                tag: Some(tag.clone()),
+                boundary_path,
+                embedding: embedding.into_iter().collect(),
+            }));
+        }
     }
 
     /// Handler for [Action::HighlightAttachment].
@@ -613,4 +681,11 @@ pub fn update_window_url_path(new_path: &str) {
             Some(&format!("{origin}{new_path}")),
         )
         .unwrap();
+}
+
+fn subscript(n: usize) -> String {
+    n.to_string()
+        .chars()
+        .map(|c| char::from_u32(0x2080 + c.to_digit(10).unwrap()).unwrap())
+        .collect()
 }
