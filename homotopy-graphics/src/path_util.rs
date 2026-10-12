@@ -219,7 +219,7 @@ pub fn simplify_path(path: &Path) -> Path {
                 under_cons = peek_head;
                 peek_head = it.next();
             }
-        };
+        }
     }
     builder.build()
 }

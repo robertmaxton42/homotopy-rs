@@ -44,13 +44,13 @@ macro_rules! declare_sidebar_drawers {
         }
 
         impl NavDrawer {
-            #[allow(clippy::let_underscore_untyped)]
+            #[allow(clippy::let_underscore_untyped, clippy::let_underscore_must_use)]
             pub(super) fn view(
                 self,
                 model_dispatch: &Callback<model::Action>,
                 sidebar_dispatch: &Callback<SidebarMsg>,
                 proof: &Proof,
-                remote_project_metadata: &Option<RemoteProjectMetadata>,
+                remote_project_metadata: Option<&RemoteProjectMetadata>,
                 initial_width: i32,
                 drawer_view_size: DrawerViewSize,
             ) -> Html {
@@ -116,11 +116,11 @@ declare_sidebar_drawers! {
         "Account",
         "account",
         "account_circle",
-        |dispatch, proof: &Proof, _, remote_project_metadata: &Option<RemoteProjectMetadata>| html! {
+        |dispatch, proof: &Proof, _, remote_project_metadata: Option<&RemoteProjectMetadata>| html! {
             <AccountView
                 dispatch={dispatch}
                 proof={proof.clone()}
-                remote_project_metadata={remote_project_metadata.clone()}
+                remote_project_metadata={remote_project_metadata.cloned()}
             />
         },
         min_width: 250,

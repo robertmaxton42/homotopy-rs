@@ -64,11 +64,11 @@ impl Component for SliceControl {
             .unwrap_or_default();
 
         let style = format!(
-            r#"
+            r"
                 transform: translate(0px, calc({y}px - 50%));
                 height: {height}px;
                 min-height: {min_height}px;
-            "#,
+            ",
             y = self.translate,
             min_height = 24 * (ctx.props().number_slices * 2 + 3),
         );

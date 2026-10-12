@@ -1,5 +1,7 @@
 //! Diagrams of higher dimensions can be projected into 2 dimensions to be presented in a user
-//! interface. This module contains diagram analyses which that calculate various aspects about the
+//! interface.
+//!
+//! This module contains diagram analyses which that calculate various aspects about the
 //! 2-dimensional projection of a diagram.
 //!
 //! In order to avoid potentially costly recomputations and accidental quadratic complexity when a

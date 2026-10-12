@@ -87,7 +87,7 @@ fn view_merge_option(props: &Props, from: Generator, to: Generator) -> Html {
                 class="attach__option-name"
                 error_color="#c004"
                 raw_tex={
-                    format!("{}", info.name)
+                    info.name.clone()
                 }
             />
         </li>

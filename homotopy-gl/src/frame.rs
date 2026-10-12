@@ -55,7 +55,7 @@ struct FrameOpts<'a> {
     framebuffer: Option<&'a Framebuffer>,
 }
 
-impl<'a> Default for FrameOpts<'a> {
+impl Default for FrameOpts<'_> {
     #[inline]
     fn default() -> Self {
         Self {
@@ -133,21 +133,21 @@ impl<'a> Frame<'a> {
 
     #[inline]
     #[must_use]
-    pub fn with_clear_color(mut self, color: Vec4) -> Self {
+    pub const fn with_clear_color(mut self, color: Vec4) -> Self {
         self.opts.clear_color = color;
         self
     }
 
     #[inline]
     #[must_use]
-    pub fn with_clear_opts(mut self, clear: Clear) -> Self {
+    pub const fn with_clear_opts(mut self, clear: Clear) -> Self {
         self.opts.clear = clear;
         self
     }
 
     #[inline]
     #[must_use]
-    pub fn with_frame_buffer(mut self, framebuffer: &'a Framebuffer) -> Self {
+    pub const fn with_frame_buffer(mut self, framebuffer: &'a Framebuffer) -> Self {
         self.opts.framebuffer = Some(framebuffer);
         self
     }
@@ -242,7 +242,7 @@ impl<'a> Frame<'a> {
     }
 }
 
-impl<'a> Deref for Frame<'a> {
+impl Deref for Frame<'_> {
     type Target = GlCtx;
 
     #[inline]
@@ -251,7 +251,7 @@ impl<'a> Deref for Frame<'a> {
     }
 }
 
-impl<'a> Drop for Frame<'a> {
+impl Drop for Frame<'_> {
     fn drop(&mut self) {
         self.render_with_framebuffer();
     }

@@ -52,6 +52,8 @@ impl Diagram {
 
     /// Returns all the generators mentioned by this diagram.
     #[must_use]
+    // `Diagram` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
+    #[allow(clippy::mutable_key_type)]
     pub fn generators(&self) -> FastHashMap<Generator, FastHashSet<Orientation>> {
         use Diagram::{Diagram0, DiagramN};
         fn add_generators(
@@ -380,6 +382,8 @@ impl<'de> Deserialize<'de> for DiagramN {
 }
 
 impl DiagramN {
+    // `Diagram` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
+    #[allow(clippy::mutable_key_type)]
     pub fn from_generator(
         generator: Generator,
         source: impl Into<Diagram>,
@@ -928,7 +932,7 @@ impl Iterator for Slices {
             }
         };
 
-        std::mem::replace(&mut self.current, Some(next))
+        self.current.replace(next)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

@@ -218,7 +218,7 @@ fn render_generic<const N: usize>(
             color=name_from_diagram_dim(d, diagram.dimension(), GeneratorRepresentation::Surface),
             id=d.generator.id,
             dim=d.generator.dimension,
-            path=&render_path(&path)
+            path=render_path(&path)
         )
         .unwrap();
     }
@@ -254,7 +254,7 @@ fn render_generic<const N: usize>(
                             Orientation::Negative => "neg",
                             Orientation::Zero => "zer",
                          },
-                         path=&render_path(path)
+                         path=render_path(path)
                 ).unwrap();
             }
             writeln!(manim, "{INDENT}{INDENT}# End scope").unwrap();
@@ -265,7 +265,7 @@ fn render_generic<const N: usize>(
                 color=name_from_diagram_dim(*d, diagram.dimension(), GeneratorRepresentation::Wire),
                 id=d.generator.id,
                 dim=d.generator.dimension,
-                path=&render_path(path)
+                path=render_path(path)
             ).unwrap();
         }
     }
@@ -359,9 +359,9 @@ fn render_vertex(generator_style: &impl GeneratorStyle, color: &str) -> String {
     const SQUARE_SIDELENGTH: f32 = 0.125 / 2.;
 
     match generator_style.shape() {
-        Circle => format!("Circle(radius={CIRCLE_RADIUS},color=C[\"{color}\"],fill_opacity=1)",),
+        Circle => format!("Circle(radius={CIRCLE_RADIUS},color=C[\"{color}\"],fill_opacity=1)"),
         Square => {
-            format!("Square(side_length={SQUARE_SIDELENGTH},color=C[\"{color}\"],fill_opacity=1)",)
+            format!("Square(side_length={SQUARE_SIDELENGTH},color=C[\"{color}\"],fill_opacity=1)")
         }
     }
 }

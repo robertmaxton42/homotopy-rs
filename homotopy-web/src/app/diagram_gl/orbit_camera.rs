@@ -76,7 +76,7 @@ impl OrbitCamera {
         self.target += -delta.x * x + delta.y * y;
     }
 
-    pub fn set_ortho(&mut self, ortho: bool) {
+    pub const fn set_ortho(&mut self, ortho: bool) {
         self.ortho = ortho;
     }
 

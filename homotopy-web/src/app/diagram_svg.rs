@@ -554,11 +554,7 @@ impl<const N: usize> DiagramSvg<N> {
         }
     }
 
-    fn calculate_hover_tooltip(
-        &mut self,
-        ctx: &Context<Self>,
-        point: Point2D<f32>,
-    ) -> Option<String> {
+    fn calculate_hover_tooltip(&self, ctx: &Context<Self>, point: Point2D<f32>) -> Option<String> {
         let simplex = self.simplex_at(ctx, point)?;
         let p = simplex[0];
         let d = match simplex {

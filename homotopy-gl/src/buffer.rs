@@ -7,16 +7,18 @@ use web_sys::{WebGl2RenderingContext, WebGlBuffer};
 use super::{GlCtx, GlCtxHandle, GlError, Result};
 
 #[allow(unused)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum BufferKind {
+    #[default]
     Array = WebGl2RenderingContext::ARRAY_BUFFER as isize,
     ElementArray = WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER as isize,
 }
 
 #[allow(unused)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum BufferUsage {
     // Static
+    #[default]
     StaticDraw = WebGl2RenderingContext::STATIC_DRAW as isize,
     StaticRead = WebGl2RenderingContext::STATIC_READ as isize,
     StaticCopy = WebGl2RenderingContext::STATIC_COPY as isize,
@@ -28,18 +30,6 @@ pub enum BufferUsage {
     DynamicDraw = WebGl2RenderingContext::DYNAMIC_DRAW as isize,
     DynamicRead = WebGl2RenderingContext::DYNAMIC_READ as isize,
     DynamicCopy = WebGl2RenderingContext::DYNAMIC_COPY as isize,
-}
-
-impl Default for BufferKind {
-    fn default() -> Self {
-        Self::Array
-    }
-}
-
-impl Default for BufferUsage {
-    fn default() -> Self {
-        Self::StaticDraw
-    }
 }
 
 pub(super) struct UntypedBuffer {

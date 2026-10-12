@@ -19,8 +19,9 @@ pub trait SignatureStyleData: Signature {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Color(pub(crate) Srgb<u8>);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum VertexShape {
+    #[default]
     Circle, // circle / sphere
     Square, // square / cube
 }
@@ -128,12 +129,6 @@ impl fmt::Display for Color {
 impl Default for Color {
     fn default() -> Self {
         Self(palette::Srgb::new(0, 0, 0))
-    }
-}
-
-impl Default for VertexShape {
-    fn default() -> Self {
-        Self::Circle
     }
 }
 

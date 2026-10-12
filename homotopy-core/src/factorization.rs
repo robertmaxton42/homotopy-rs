@@ -18,7 +18,7 @@ pub fn factorize(f: &Rewrite, g: &Rewrite) -> Factorization {
             assert!(f
                 .target()
                 .zip(g.target())
-                .map_or(true, |(f_t, g_t)| f_t == g_t));
+                .is_none_or(|(f_t, g_t)| f_t == g_t));
 
             match g.source() {
                 None => Factorization::One(f.clone().into()),

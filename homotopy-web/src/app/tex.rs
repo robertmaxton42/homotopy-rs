@@ -92,7 +92,7 @@ impl Component for TexSpan {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let inner = if ctx.props().is_editable_as_textarea && self.mode == TexSpanMode::Editing {
-            let class = format!("tex__textarea {}", ctx.props().class,);
+            let class = format!("tex__textarea {}", ctx.props().class);
 
             let super_on_input = ctx.props().on_input.clone();
             let on_input = ctx.link().callback(move |e: InputEvent| {

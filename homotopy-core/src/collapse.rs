@@ -132,7 +132,7 @@ pub(crate) fn unify<V, E, Ix>(
     // unify along the source of edges
     for (target, e) in graph
         .edges_directed(remove, Outgoing)
-        .filter(|&e| (e.target() != keep))
+        .filter(|&e| e.target() != keep)
         .map(|e| (e.target(), e.id()))
         .collect::<Vec<_>>()
     {
@@ -155,7 +155,7 @@ pub(crate) fn unify<V, E, Ix>(
     // unify along the target of edges
     for (source, e) in graph
         .edges_directed(remove, Incoming)
-        .filter(|&e| (e.source() != keep))
+        .filter(|&e| e.source() != keep)
         .map(|e| (e.source(), e.id()))
         .collect::<Vec<_>>()
     {
@@ -291,7 +291,7 @@ where
         // find collapsible edges wrt nodes
         for e in edges.into_iter().filter(|e| {
             // e is an identity rewrite
-            <&Rewrite0>::try_from(&e.weight().rewrite).unwrap().boundaries().map_or(true, |(s, t)| s.generator == t.generator) &&
+            <&Rewrite0>::try_from(&e.weight().rewrite).unwrap().boundaries().is_none_or(|(s, t)| s.generator == t.generator) &&
             // check triangles within nodes which might refute collapsibility of e
             graph
                 .neighbors_directed(e.source(), Incoming)

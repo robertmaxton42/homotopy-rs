@@ -114,6 +114,8 @@ pub enum Rewrite {
 }
 
 impl Rewrite {
+    // `Diagram` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
+    #[allow(clippy::mutable_key_type)]
     pub fn cone_over_generator(
         generator: Generator,
         base: Diagram,
@@ -272,7 +274,7 @@ impl Rewrite {
     #[must_use]
     pub fn is_homotopy(&self) -> bool {
         self.max_generator(Boundary::Target)
-            .map_or(true, |d| d.generator.dimension <= self.dimension())
+            .is_none_or(|d| d.generator.dimension <= self.dimension())
     }
 
     /// This will implicitly mangle/strip labels

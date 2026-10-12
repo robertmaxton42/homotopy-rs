@@ -82,7 +82,7 @@ impl DiagramGlMessage {
     }
 }
 
-#[derive(Properties, Clone, PartialEq)]
+#[derive(Properties, Clone, PartialEq, Eq)]
 pub struct DiagramGlProps {
     pub diagram: Diagram,
     pub signature: Signature,
@@ -310,7 +310,7 @@ impl Component for DiagramGl {
                         });
                     }
                     n => {
-                        let promises = self.export_frame_buffer.drain(..).collect::<Vec<_>>();
+                        let promises = std::mem::take(&mut self.export_frame_buffer);
                         spawn_local(async move {
                             let blobs = try_join_all(promises).await.expect("failed to get blobs");
                             let frames = try_join_all(
@@ -337,7 +337,7 @@ impl Component for DiagramGl {
                         });
                         tracing::info!("Finished frame capture");
                     }
-                };
+                }
             }
             DiagramGlMessage::Noop => {}
         }
@@ -455,11 +455,8 @@ impl DiagramGl {
         for canvas_y in 0..height {
             let y = height - 1 - canvas_y;
             for x in 0..width {
-                let r = pixels[(y * width + x) as usize * 4];
-                let g = pixels[(y * width + x) as usize * 4 + 1];
-                let b = pixels[(y * width + x) as usize * 4 + 2];
-                let a = pixels[(y * width + x) as usize * 4 + 3];
-                if !(r == u8::MAX && g == u8::MAX && b == u8::MAX && a == u8::MAX) {
+                let offset = (y * width + x) as usize * 4;
+                if pixels[offset..offset + 4] != [u8::MAX; 4] {
                     min_x = min_x.min(x);
                     min_y = min_y.min(canvas_y);
                     max_x = max_x.max(x);

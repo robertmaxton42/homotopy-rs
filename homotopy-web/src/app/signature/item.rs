@@ -126,17 +126,12 @@ pub struct ItemViewProps {
     pub on_drag_start: Callback<DragEvent>,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 pub enum ItemViewMode {
+    #[default]
     Viewing,
     Hovering,
     Editing,
-}
-
-impl Default for ItemViewMode {
-    fn default() -> Self {
-        Self::Viewing
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,7 +231,7 @@ impl Component for ItemView {
                 if let SignatureItemEdit::Rename(name) = edit {
                     self.name = name;
                     return true;
-                };
+                }
 
                 return apply_edit(
                     &ctx.props().dispatch.reform(Action::Proof),
@@ -388,7 +383,7 @@ impl ItemView {
                         })}
                         onkeyup={ctx.link().callback(move |e: KeyboardEvent| {
                             e.stop_propagation();
-                            if e.key().to_ascii_lowercase() == "enter" {
+                            if e.key().eq_ignore_ascii_case("enter") {
                                 ItemViewMessage::SwitchTo(ItemViewMode::Viewing)
                             } else {
                                 ItemViewMessage::Noop
@@ -566,7 +561,7 @@ impl ItemView {
                         oninput={custom_recolor}
                         onkeyup={ctx.link().callback(move |e: KeyboardEvent| {
                             e.stop_propagation();
-                            if e.key().to_ascii_lowercase() == "enter" {
+                            if e.key().eq_ignore_ascii_case("enter") {
                                 ItemViewMessage::SwitchTo(ItemViewMode::Viewing)
                             } else {
                                 ItemViewMessage::Noop

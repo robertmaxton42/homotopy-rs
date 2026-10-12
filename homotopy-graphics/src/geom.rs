@@ -172,7 +172,7 @@ impl CubicalGeometry {
                 Vec4::from(embedding.map(|i| i.map(|i| position[i]).unwrap_or_default()));
 
             let boundary = calculate_boundary(path);
-            let boundary = embedding.map(|i| i.map(|i| boundary[i]).unwrap_or_default());
+            let boundary = embedding.map(|i| i.is_some_and(|i| boundary[i]));
 
             let vert = geom.mk_vert(VertData {
                 position,
@@ -205,7 +205,9 @@ impl CubicalGeometry {
                 continue;
             }
 
-            verts.iter().for_each(|v| geom.verts[*v].k = dim);
+            for v in &verts {
+                geom.verts[*v].k = dim;
+            }
 
             match dim {
                 0 => {

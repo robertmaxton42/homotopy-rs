@@ -10,7 +10,7 @@ use crate::model::{generate_download, ModelError};
 // panic handling logic which is responsible
 // for producing crash dumps.
 // Out of sight, out of mind, don't break it.
-pub fn panic_handler(info: &std::panic::PanicInfo<'_>) {
+pub fn panic_handler(info: &std::panic::PanicHookInfo<'_>) {
     display_panic_message();
 
     // This provides better error messages in debug mode.

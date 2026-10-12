@@ -24,18 +24,15 @@ pub struct Scene {
     pub animation_singularities: Vec<Component<Vec4>>,
     pub sphere: Option<Rc<VertexArray>>,
     pub cube: Option<Rc<VertexArray>>,
-    pub duration: f32,
 }
 
 pub struct Component<V> {
-    pub generator: Diagram0,
     pub vertices: V,
     pub albedo: Vec3,
     pub vertex_shape: Option<Rc<VertexArray>>,
 }
 
 pub struct AnimationCurve {
-    pub generator: Diagram0,
     pub begin: f32,
     pub end: f32,
     pub key_frames: Vec<Vec4>,
@@ -90,7 +87,6 @@ impl Scene {
             animation_singularities: vec![],
             sphere: None,
             cube: None,
-            duration: 0.,
         };
 
         scene.reload_meshes(
@@ -208,7 +204,6 @@ impl Scene {
             for tetra_buffers in buffer_tetras(&simplicial, ctx)? {
                 let generator = tetra_buffers.generator;
                 self.components.push(Component {
-                    generator,
                     vertices: vertex_array!(
                         ctx,
                         &tetra_buffers.element_buffer,
@@ -235,7 +230,6 @@ impl Scene {
             for cylinder_buffers in buffer_cylinder_wireframe(&simplicial, ctx)? {
                 let generator = cylinder_buffers.generator;
                 self.cylinder_components.push(Component {
-                    generator,
                     vertices: vertex_array!(
                         ctx,
                         &cylinder_buffers.element_buffer,
@@ -263,7 +257,6 @@ impl Scene {
                 curve.verts.sort_by(|i, j| simplicial.time_order(*i, *j));
 
                 self.animation_curves.push(AnimationCurve {
-                    generator,
                     begin: simplicial.verts[curve.verts[0]].position.w,
                     end: simplicial.verts[curve.verts[curve.verts.len() - 1]]
                         .position
@@ -285,7 +278,6 @@ impl Scene {
                     ..
                 } = simplicial.verts[point];
                 self.animation_singularities.push(Component {
-                    generator,
                     vertices: position,
                     albedo: color_of(generator, 0),
                     vertex_shape: shape_of(generator),
@@ -296,7 +288,6 @@ impl Scene {
             for tri_buffers in buffer_tris(&simplicial, ctx)? {
                 let generator = tri_buffers.generator;
                 self.components.push(Component {
-                    generator,
                     vertices: vertex_array!(
                         ctx,
                         &tri_buffers.element_buffer,

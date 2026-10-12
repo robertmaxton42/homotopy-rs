@@ -221,7 +221,7 @@ fn render_inner(
             tikz,
             "\\fill[{color}] {path};",
             color = name_from_diagram_dim(*g, diagram_dimension, GeneratorRepresentation::Surface),
-            path = &render_path(path, options)
+            path = render_path(path, options)
         )
         .unwrap();
     }
@@ -229,14 +229,14 @@ fn render_inner(
     // Since we always clip with respect to the same background paths,
     // might as well make a macro for it and have TeX do the CTRL+V for us.
     if needs_masking {
-        writeln!(tikz, "\\newcommand{{\\layer}}[1]{{",).unwrap();
+        writeln!(tikz, "\\newcommand{{\\layer}}[1]{{").unwrap();
         for (g, path) in surfaces {
             writeln!(
                 tikz,
                 "  \\clipped{{{color}}}{{#1}}{{{path}}}",
                 color =
                     name_from_diagram_dim(*g, diagram_dimension, GeneratorRepresentation::Surface),
-                path = &render_path(path, options)
+                path = render_path(path, options)
             )
             .unwrap();
         }
@@ -272,7 +272,7 @@ fn render_inner(
                     "\\wire{{{color}}}{{{path}}};",
                     color =
                         name_from_diagram_dim(*g, diagram_dimension, GeneratorRepresentation::Wire),
-                    path = &render_path(path, options)
+                    path = render_path(path, options)
                 )
                 .unwrap();
             } else {
@@ -281,7 +281,7 @@ fn render_inner(
                     "\\draw[color={color}, line width=5pt]{path};",
                     color =
                         name_from_diagram_dim(*g, diagram_dimension, GeneratorRepresentation::Wire),
-                    path = &render_path(path, options)
+                    path = render_path(path, options)
                 )
                 .unwrap();
             }

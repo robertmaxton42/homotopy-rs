@@ -552,7 +552,7 @@ impl ProofState {
     /// Handler for [Action::DecreaseView].
     ///
     /// Invalid if the workspace is empty or the view dimension is too low.
-    fn decrease_view(&mut self, count: u8) -> bool {
+    const fn decrease_view(&mut self, count: u8) -> bool {
         let Some(ws) = &mut self.workspace else {
             return false;
         };
@@ -1054,7 +1054,7 @@ impl ProofState {
     /// Handler for [Action::FlipBoundary].
     ///
     /// Invalid if the selected boundary is empty.
-    fn flip_boundary(&mut self) -> bool {
+    const fn flip_boundary(&mut self) -> bool {
         let Some(selected) = &mut self.boundary else {
             return false;
         };

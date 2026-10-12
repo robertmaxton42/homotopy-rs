@@ -486,7 +486,7 @@ fn colimit_base<Ix: IndexType>(graph: &ContractGraph<Ix>) -> Result<Cocone<Ix>, 
             }
             if stable.contains_node(i) {
                 max_dims.push(i);
-            };
+            }
 
             orientations
                 .entry(&coordinate[..codimension])
@@ -1052,7 +1052,7 @@ impl Rewrite {
         match self {
             Self::Rewrite0(r) => r
                 .target()
-                .map_or(true, |t| t.orientation == Orientation::Zero),
+                .is_none_or(|t| t.orientation == Orientation::Zero),
             Self::RewriteN(r) => r.cones().iter().all(Cone::is_redundant),
         }
     }

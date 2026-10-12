@@ -111,7 +111,7 @@ impl From<Height> for usize {
 
 impl From<usize> for Height {
     fn from(h: usize) -> Self {
-        if h % 2 == 0 {
+        if h.is_multiple_of(2) {
             Self::Regular(h / 2)
         } else {
             Self::Singular((h - 1) / 2)

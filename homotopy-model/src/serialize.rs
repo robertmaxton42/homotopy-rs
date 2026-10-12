@@ -149,13 +149,13 @@ pub fn deserialize(data: &[u8]) -> Option<((Signature, Option<Workspace>), Metad
         .transpose()?
         .into();
 
-    let mut workspace = None;
-    if let Some(workspace_data) = data.workspace {
-        workspace = Some(Workspace {
+    let workspace = match data.workspace {
+        Some(workspace_data) => Some(Workspace {
             diagram: store.unpack_diagram(workspace_data.diagram)?,
             path: workspace_data.path,
             view: workspace_data.view,
-        });
-    }
+        }),
+        None => None,
+    };
     Some(((signature, workspace), data.metadata))
 }

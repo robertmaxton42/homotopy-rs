@@ -188,7 +188,7 @@ impl State {
                             }
                         }
                     }
-                };
+                }
                 self.clear_selections();
             }
 
@@ -486,7 +486,7 @@ impl State {
     }
 
     /// Handler for [Action::HighlightSlice].
-    fn highlight_slice(&mut self, option: Option<SliceIndex>) {
+    const fn highlight_slice(&mut self, option: Option<SliceIndex>) {
         self.slice_highlight = option;
     }
 
@@ -579,8 +579,8 @@ pub fn zip_files(files: impl Iterator<Item = (String, impl AsRef<[u8]>)>) -> Vec
 
 pub fn generate_download(name: &str, ext: &str, data: &[u8]) -> Result<(), wasm_bindgen::JsValue> {
     let val: js_sys::Uint8Array = data.into();
-    let mut options = web_sys::BlobPropertyBag::new();
-    options.type_("application/msgpack");
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type("application/msgpack");
     let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(
         &js_sys::Array::of1(&val.into()).into(),
         &options,
@@ -594,7 +594,7 @@ pub fn generate_download(name: &str, ext: &str, data: &[u8]) -> Result<(), wasm_
         .dyn_ref::<web_sys::HtmlElement>()
         .ok_or("failed to create anchor")?;
     a.set_attribute("href", &url)?;
-    a.set_attribute("download", &format!("{}.{}", &name, &ext))?;
+    a.set_attribute("download", &format!("{name}.{ext}"))?;
     body.append_child(a)?;
     a.click();
     a.remove();

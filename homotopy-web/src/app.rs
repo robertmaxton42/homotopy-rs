@@ -23,7 +23,7 @@ mod attach;
 mod boundary;
 #[cfg(any(debug_assertions, feature = "show_debug_panel"))]
 mod debug;
-pub(crate) mod diagram_gl;
+pub mod diagram_gl;
 mod diagram_svg;
 mod image_export;
 mod info;
@@ -215,7 +215,7 @@ impl App {
         }
     }
 
-    #[allow(clippy::let_underscore_untyped)]
+    #[allow(clippy::let_underscore_untyped, clippy::let_underscore_must_use)]
     fn render(ctx: &Context<Self>, state: &model::State, loading: bool) -> Html {
         let proof = state.proof();
         let dispatch = ctx.link().callback(Message::BlockingDispatch);

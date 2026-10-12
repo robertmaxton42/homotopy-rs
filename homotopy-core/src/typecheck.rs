@@ -399,6 +399,8 @@ fn restrict_rewrite(rewrite: &Rewrite, embedding: &Embedding) -> Rewrite {
     }
 }
 
+// `DiagramN` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
+#[allow(clippy::mutable_key_type)]
 fn check_dimension(diagram: Diagram) -> bool {
     fn worker(
         diagram: Diagram,

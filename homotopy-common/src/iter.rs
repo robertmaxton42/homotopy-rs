@@ -1,17 +1,12 @@
 use std::iter::FusedIterator;
 
 /// An iterator that returns either no items, one item, or the items of another iterator.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub enum ZeroOneMany<T: Iterator> {
+    #[default]
     Empty,
     One(T::Item),
     Many(T),
-}
-
-impl<T: Iterator> Default for ZeroOneMany<T> {
-    fn default() -> Self {
-        Self::Empty
-    }
 }
 
 impl<T: Iterator> Iterator for ZeroOneMany<T> {
