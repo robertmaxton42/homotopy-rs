@@ -123,6 +123,45 @@ impl DiagramN {
     }
 }
 
+impl DiagramN {
+    /// Merges each step that only contracts (its backward rewrite is an identity) with a
+    /// following step that only expands (its forward rewrite is an identity) into a single step.
+    ///
+    /// For example, exchanging `f ▷ _ ≫ _ ◁ g` with `_ ◁ g ≫ f ▷ _` has to pass through an
+    /// intermediate layer `f ◫ g`; this turns the resulting two steps into a single exchange.
+    /// The result is what contracting each such pair of steps one dimension up would give, but
+    /// is computed directly. Merged steps that would not typecheck are left alone.
+    ///
+    /// Returns the new diagram and the number of merged pairs.
+    #[must_use]
+    pub fn merge_exchanges(&self, signature: &impl Signature) -> (Self, usize) {
+        let regular_slices = self.regular_slices().collect::<Vec<_>>();
+        // The merged cospans, each with the regular height in `self` that it starts from.
+        let mut cospans: Vec<(Cospan, usize)> = Vec::with_capacity(self.size());
+
+        for (i, cospan) in self.cospans().iter().enumerate() {
+            if let Some((last, start)) = cospans.last_mut() {
+                if last.backward.is_identity() && cospan.forward.is_identity() {
+                    let candidate = Cospan {
+                        forward: last.forward.clone(),
+                        backward: cospan.backward.clone(),
+                    };
+                    let source = regular_slices[*start].clone();
+                    if typecheck_cospan(source, candidate.clone(), signature).is_ok() {
+                        *last = candidate;
+                        continue;
+                    }
+                }
+            }
+            cospans.push((cospan.clone(), i));
+        }
+
+        let merged = self.size() - cospans.len();
+        let cospans = cospans.into_iter().map(|(cospan, _)| cospan).collect();
+        (Self::new(self.source(), cospans), merged)
+    }
+}
+
 fn contract_base(
     diagram: &DiagramN,
     height: SingularHeight,
