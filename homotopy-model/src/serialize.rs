@@ -2,7 +2,7 @@ use homotopy_common::tree::Tree;
 use homotopy_core::{
     common::{Generator, SliceIndex},
     serialize::{Key, Store},
-    signature::Invertibility,
+    signature::{Invertibility, Signature as _, Symmetry},
     Diagram,
 };
 use homotopy_graphics::style::Color;
@@ -34,6 +34,11 @@ struct Data {
     signature: Tree<SignatureData>,
     workspace: Option<WorkspaceData>,
     metadata: Metadata,
+    /// Reflection symmetries of the theory. Absent in files saved before symmetries were
+    /// introduced, and omitted when there are none so that older versions, which ignore unknown
+    /// fields, can still load files that do not use them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    symmetries: Vec<Symmetry>,
 }
 
 impl std::fmt::Debug for Data {
@@ -79,6 +84,7 @@ pub fn serialize(
         signature: Default::default(),
         workspace: Default::default(),
         metadata,
+        symmetries: signature.symmetries().to_vec(),
     };
 
     let mut signature = signature.into_tree();
@@ -156,8 +162,8 @@ pub fn deserialize(data: &[u8]) -> Option<((Signature, Option<Workspace>), Metad
                 }),
             })
         })
-        .transpose()?
-        .into();
+        .transpose()?;
+    let signature = Signature::from(signature).with_symmetries(data.symmetries);
 
     let workspace = match data.workspace {
         Some(workspace_data) => Some(Workspace {
@@ -172,10 +178,11 @@ pub fn deserialize(data: &[u8]) -> Option<((Signature, Option<Workspace>), Metad
 
 #[cfg(test)]
 mod tests {
-    use homotopy_core::signature::Invertibility;
+    use homotopy_core::signature::{Invertibility, Signature as _, Symmetry};
+    use serde::de::IgnoredAny;
 
     use super::{deserialize, serialize};
-    use crate::proof::Signature;
+    use crate::proof::{Signature, SignatureEdit};
 
     #[test]
     fn invertibility_roundtrip() {
@@ -198,5 +205,68 @@ mod tests {
 
         let invertibility = |s: &Signature| s.iter().map(|g| g.invertibility).collect::<Vec<_>>();
         assert_eq!(invertibility(&loaded), invertibility(&signature));
+    }
+
+    fn symmetry(name: &str, directions: &[usize]) -> Symmetry {
+        Symmetry {
+            name: name.to_owned(),
+            directions: directions.to_vec(),
+        }
+    }
+
+    #[test]
+    fn symmetries_roundtrip() {
+        let mut signature = Signature::default();
+        signature.create_generator_zero("x");
+        let symmetries = [symmetry("op", &[1, 3]), symmetry("co", &[2])];
+        for s in &symmetries {
+            signature
+                .update(&SignatureEdit::AddSymmetry(s.clone()))
+                .unwrap();
+        }
+
+        let data = serialize(signature.clone(), None, Default::default());
+        let ((loaded, _), _) = deserialize(&data).unwrap();
+
+        assert_eq!(loaded.symmetries(), symmetries);
+    }
+
+    #[test]
+    fn missing_symmetries_deserialize() {
+        let mut signature = Signature::default();
+        signature.create_generator_zero("x");
+
+        // Without symmetries the field is omitted entirely, as in files from older versions.
+        let data = serialize(signature, None, Default::default());
+        assert!(!String::from_utf8_lossy(&data).contains("symmetries"));
+        let ((loaded, _), _) = deserialize(&data).unwrap();
+        assert!(loaded.symmetries().is_empty());
+        assert!(loaded.has_generators());
+    }
+
+    #[test]
+    fn symmetries_are_ignored_by_older_versions() {
+        /// The shape of `Data` before symmetries were introduced.
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "version")]
+        #[allow(dead_code)]
+        enum OldData {
+            #[serde(rename = "Data_v0_1_3")]
+            V0_1_3 {
+                store: IgnoredAny,
+                signature: IgnoredAny,
+                workspace: IgnoredAny,
+                metadata: IgnoredAny,
+            },
+        }
+
+        let mut signature = Signature::default();
+        signature.create_generator_zero("x");
+        signature
+            .update(&SignatureEdit::AddSymmetry(symmetry("op", &[1])))
+            .unwrap();
+
+        let data = serialize(signature, None, Default::default());
+        rmp_serde::decode::from_slice::<OldData>(&data).unwrap();
     }
 }

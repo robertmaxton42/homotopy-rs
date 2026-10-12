@@ -492,7 +492,8 @@ impl State {
 
     /// Offers the well-typed reflections of a generator other than its inverse: duals, mates,
     /// adjoints and so on. These are only valid when some of the generators involved are
-    /// invertible or dualisable, and are typechecked only once they are known to match.
+    /// invertible or dualisable, or when the signature has symmetries, and are typechecked only
+    /// once they are known to match. Reflections by a symmetry are tagged with its name.
     #[allow(clippy::too_many_arguments)]
     fn extend_with_reflections(
         &self,
@@ -510,7 +511,7 @@ impl State {
                 .generator_info(*g)
                 .is_some_and(|info| info.invertibility.is_invertible())
         });
-        if !any_invertible {
+        if !any_invertible && signature.symmetries().is_empty() {
             return;
         }
 
@@ -530,14 +531,24 @@ impl State {
             {
                 continue;
             }
-            let tag = format!(
-                "dual in {}",
-                directions
-                    .iter()
-                    .map(|j| format!("x{}", subscript(*j)))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+            let mask = directions.iter().fold(0_u64, |mask, j| mask | 1 << (j - 1));
+            let tag = signature
+                .symmetries()
+                .iter()
+                .find(|symmetry| symmetry.mask() & ((1 << n) - 1) == mask)
+                .map_or_else(
+                    || {
+                        format!(
+                            "dual in {}",
+                            directions
+                                .iter()
+                                .map(|j| format!("x{}", subscript(*j)))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    },
+                    |symmetry| symmetry.name.clone(),
+                );
             matches.extend(embeddings.into_iter().map(|embedding| AttachOption {
                 generator: info.generator,
                 diagram: reflected.clone(),
@@ -683,7 +694,8 @@ pub fn update_window_url_path(new_path: &str) {
         .unwrap();
 }
 
-fn subscript(n: usize) -> String {
+#[must_use]
+pub fn subscript(n: usize) -> String {
     n.to_string()
         .chars()
         .map(|c| char::from_u32(0x2080 + c.to_digit(10).unwrap()).unwrap())
