@@ -80,6 +80,12 @@ declare_sidebar_tools! {
         model::Action::Proof(model::proof::Action::Squash),
     }
 
+    BUTTON_MERGE_EXCHANGES {
+        "En passant",
+        "compress",
+        model::Action::Proof(model::proof::Action::MergeExchanges),
+    }
+
     BUTTON_THEOREM {
         "Theorem",
         "title",

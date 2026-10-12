@@ -18,6 +18,7 @@ use wasm_bindgen::JsCast;
 use crate::app::{
     account,
     diagram_gl::{FrameCaptureControl, FRAME_CAPTURE},
+    settings::AppSettings,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -164,9 +165,18 @@ impl State {
                         crate::panic::pop_action();
                         return Ok(res?);
                     }
-                    self.history.add(action, proof);
+                    self.history.add(action.clone(), proof);
                 }
                 self.clear_selections();
+
+                // Merging is its own history step (rather than being folded into the homotopy's)
+                // so that the recorded actions replay to the same proof when exported. It cannot
+                // loop, as `MergeExchanges` is not a `Homotopy`.
+                if matches!(action, proof::Action::Homotopy(_))
+                    && AppSettings::get_merge_exchanges()
+                {
+                    self.update(Action::Proof(proof::Action::MergeExchanges))?;
+                }
             }
 
             Action::History(history::Action::Move(dir)) => {

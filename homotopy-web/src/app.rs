@@ -29,7 +29,7 @@ mod image_export;
 mod info;
 mod keybindings;
 mod project;
-mod settings;
+pub mod settings;
 mod sidebar;
 mod signature;
 mod signature_stylesheet;

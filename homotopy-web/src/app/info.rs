@@ -86,6 +86,10 @@ pub fn get_help_message() -> Html {
                     <td class="help-description">{"Squash"}</td>
                 </tr>
                 <tr>
+                    <td class="help-action"><kbd class="kbc-button">{"E"}</kbd></td>
+                    <td class="help-description">{"En passant"}</td>
+                </tr>
+                <tr>
                     <td class="help-action"><kbd class="kbc-button">{"H"}</kbd></td>
                     <td class="help-description">{"Theorem"}</td>
                 </tr>
