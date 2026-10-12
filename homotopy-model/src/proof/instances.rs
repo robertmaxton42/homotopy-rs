@@ -7,7 +7,10 @@
 //! back into a placeholder.
 
 use homotopy_core::{
-    diagram::NewDiagramError, signature::Signature as _, Diagram, DiagramN, Generator,
+    diagram::NewDiagramError,
+    signature::Signature as _,
+    substitution::{substitute, SubstitutionError},
+    Diagram, DiagramN, Generator,
 };
 use thiserror::Error;
 
@@ -22,8 +25,8 @@ pub enum InstantiationError {
     UnknownGenerator,
     #[error("{0} is not a placeholder mentioned by {1}")]
     NotAParameter(String, String),
-    #[error("{0} can only be replaced by a single generator for now")]
-    NotAGenerator(String),
+    #[error(transparent)]
+    SubstitutionError(#[from] SubstitutionError),
     #[error("the replacement for {0} does not have the same type")]
     IllTyped(String),
     #[error(transparent)]
@@ -52,8 +55,9 @@ impl Signature {
     /// Instantiates a generator by replacing placeholders it mentions with diagrams, returning
     /// the instance (an existing one if the same instance was made before).
     ///
-    /// For now each placeholder must be replaced by (the diagram of) a single generator, whose
-    /// source and target must be those of the placeholder after substitution.
+    /// Each placeholder can be replaced by any diagram whose source and target are those of the
+    /// placeholder after substitution. Substitution needs each height of the diagrams involved to
+    /// be a single generator (see [`substitute`]).
     pub fn instantiate(
         &mut self,
         schema: Generator,
@@ -80,22 +84,15 @@ impl Signature {
             return Ok(schema);
         }
 
-        // Which generator replaces each placeholder.
-        let mut relabelling = vec![];
-        for (p, diagram) in &substitution {
+        for (p, _) in &substitution {
             if !parameters.contains(p) {
                 return Err(InstantiationError::NotAParameter(
                     self.name_of(*p),
                     info.name,
                 ));
             }
-            let q = self
-                .iter()
-                .find(|info| info.diagram == *diagram)
-                .map(|info| info.generator)
-                .ok_or_else(|| InstantiationError::NotAGenerator(self.name_of(*p)))?;
-            relabelling.push((*p, q));
         }
+        let mut replacements = substitution.clone();
 
         // Instantiate the generators in the boundary that mention instantiated placeholders.
         let mut dependents: Vec<Generator> = info
@@ -120,24 +117,31 @@ impl Signature {
                 .cloned()
                 .collect();
             let instance = self.instantiate(b, &restricted)?;
-            relabelling.push((b, instance));
+            let diagram = self.generator_info(instance).unwrap().diagram.clone();
+            replacements.push((b, diagram));
         }
+        let substitute = |diagram: &Diagram| {
+            substitute(diagram, self, &|g| {
+                replacements
+                    .iter()
+                    .find(|(h, _)| *h == g)
+                    .map(|(_, d)| d.clone())
+            })
+        };
 
         // Each replacement must have the type of the placeholder after substitution.
-        for &(p, q) in &relabelling[..substitution.len()] {
-            let well_typed = match (
-                &self.generator_info(p).unwrap().diagram,
-                &self.generator_info(q).unwrap().diagram,
-            ) {
+        for (p, replacement) in &substitution {
+            let well_typed = match (&self.generator_info(*p).unwrap().diagram, replacement) {
                 (Diagram::Diagram0(_), Diagram::Diagram0(_)) => true,
-                (Diagram::DiagramN(p), Diagram::DiagramN(q)) => {
-                    self.relabel(&p.source(), &relabelling) == q.source()
-                        && self.relabel(&p.target(), &relabelling) == q.target()
+                (Diagram::DiagramN(p), Diagram::DiagramN(r)) => {
+                    p.dimension() == r.dimension()
+                        && substitute(&p.source())? == r.source()
+                        && substitute(&p.target())? == r.target()
                 }
                 _ => false,
             };
             if !well_typed {
-                return Err(InstantiationError::IllTyped(self.name_of(p)));
+                return Err(InstantiationError::IllTyped(self.name_of(*p)));
             }
         }
 
@@ -161,13 +165,13 @@ impl Signature {
         let generator = Generator::new(self.next_generator_id(), schema.dimension);
         let diagram = DiagramN::from_generator(
             generator,
-            self.relabel(&diagram.source(), &relabelling),
-            self.relabel(&diagram.target(), &relabelling),
+            substitute(&diagram.source())?,
+            substitute(&diagram.target())?,
         )?;
 
-        let arguments = relabelling[..substitution.len()]
+        let arguments = substitution
             .iter()
-            .map(|&(p, q)| format!("{}/{}", self.name_of(q), self.name_of(p)))
+            .map(|(p, d)| format!("{}/{}", self.describe(d), self.name_of(*p)))
             .collect::<Vec<_>>()
             .join(", ");
         let node = self.find_node(schema).unwrap();
@@ -191,19 +195,11 @@ impl Signature {
             .map_or_else(|| format!("{g:?}"), |info| info.name.clone())
     }
 
-    /// Simultaneously replaces generators in a diagram.
-    fn relabel(&self, diagram: &Diagram, relabelling: &[(Generator, Generator)]) -> Diagram {
-        // Go through fresh generators so that replacements don't interfere with each other.
-        let fresh = |i: usize, g: Generator| Generator::new(usize::MAX - i, g.dimension);
-        let mut diagram = diagram.clone();
-        for (i, &(from, _)) in relabelling.iter().enumerate() {
-            diagram = diagram.replace(from, fresh(i, from), false);
-        }
-        for (i, &(from, to)) in relabelling.iter().enumerate() {
-            let oriented = self.generator_info(to).is_some_and(|info| info.oriented);
-            diagram = diagram.replace(fresh(i, from), to, oriented);
-        }
-        diagram
+    /// The name of the generator with the given diagram, if any.
+    fn describe(&self, diagram: &Diagram) -> String {
+        self.iter()
+            .find(|info| info.diagram == *diagram)
+            .map_or_else(|| "…".to_owned(), |info| info.name.clone())
     }
 }
 
@@ -316,5 +312,30 @@ mod tests {
             sig.instantiate(a, &[(e, q)]),
             Err(InstantiationError::NotAParameter(..))
         ));
+    }
+
+    #[test]
+    fn placeholders_can_be_replaced_by_composites() {
+        let Setup {
+            mut sig, p, q, a, ..
+        } = setup();
+        let Diagram::DiagramN(q) = q else {
+            unreachable!()
+        };
+        let qq = q.attach(&q, Boundary::Target, &[]).unwrap();
+
+        let instance = sig.instantiate(a, &[(p, qq.clone().into())]).unwrap();
+        let info = sig.generator_info(instance).unwrap().clone();
+        assert!(typecheck(&info.diagram, &sig, Mode::default(), true).is_ok());
+        // The instance of e : P ⇒ P is e[QQ/P] : Q Q ⇒ Q Q.
+        let e_instance = sig
+            .iter()
+            .find(|info| info.instance.as_ref().is_some_and(|i| i.schema != a))
+            .unwrap();
+        let Diagram::DiagramN(e_diagram) = &e_instance.diagram else {
+            unreachable!()
+        };
+        assert_eq!(e_diagram.source(), qq.clone().into());
+        assert_eq!(e_diagram.target(), qq.into());
     }
 }
