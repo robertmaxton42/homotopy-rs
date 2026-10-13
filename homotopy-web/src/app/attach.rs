@@ -1,3 +1,4 @@
+use homotopy_common::tex::seal;
 use homotopy_core::{common::Generator, signature::Signature as _};
 use yew::prelude::*;
 
@@ -60,7 +61,7 @@ fn view_attach_option(props: &Props, option: &AttachOption) -> Html {
                 class="attach__option-name"
                 error_color="#c004"
                 raw_tex={
-                    format!("{}{}", info.name, option.tag.as_ref().map_or_else(Default::default, |t| format!(" ({t})")))
+                    format!("{}{}", seal(&info.name), option.tag.as_ref().map_or_else(Default::default, |t| format!(" ({})", seal(t))))
                 }
             />
         </li>

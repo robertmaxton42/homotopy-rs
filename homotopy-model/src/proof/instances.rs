@@ -6,6 +6,7 @@
 //! schema in the signature, and are otherwise ordinary generators: nothing ever turns a diagram
 //! back into a placeholder.
 
+use homotopy_common::tex::seal;
 use homotopy_core::{
     diagram::NewDiagramError,
     signature::Signature as _,
@@ -186,7 +187,7 @@ impl Signature {
             node,
             SignatureItem::Item(GeneratorInfo {
                 generator,
-                name: format!("{}[{arguments}]", info.name),
+                name: format!("{}[{arguments}]", seal(&info.name)),
                 diagram: diagram.into(),
                 placeholder: false,
                 instance: Some(instance),
@@ -269,12 +270,13 @@ impl Signature {
             .map(|info| info.generator)
     }
 
-    /// A short description of a substitution, like `Q/P, R/S`.
+    /// A short description of a substitution, like `Q/P, R/S`. The names in it are
+    /// [sealed](seal), so the description can be put in a label.
     #[must_use]
     pub fn describe_substitution(&self, substitution: &[(Generator, Diagram)]) -> String {
         substitution
             .iter()
-            .map(|(p, d)| format!("{}/{}", self.describe(d), self.name_of(*p)))
+            .map(|(p, d)| format!("{}/{}", self.describe(d), seal(&self.name_of(*p))))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -288,7 +290,7 @@ impl Signature {
     fn describe(&self, diagram: &Diagram) -> String {
         self.iter()
             .find(|info| info.diagram == *diagram)
-            .map_or_else(|| "…".to_owned(), |info| info.name.clone())
+            .map_or_else(|| "…".to_owned(), |info| seal(&info.name))
     }
 }
 
@@ -379,6 +381,36 @@ mod tests {
         let count = sig.iter().count();
         assert_eq!(sig.instantiate(a, &[(p, q)]).unwrap(), instance);
         assert_eq!(sig.iter().count(), count);
+    }
+
+    #[test]
+    fn names_of_instances_cannot_leak_into_each_other() {
+        use homotopy_common::tex::{pieces, Piece};
+
+        let Setup {
+            mut sig, p, q, a, ..
+        } = setup();
+        // Names that leave off their last dollar sign.
+        for (generator, name) in [(a, "A $x"), (p, "P $y")] {
+            let node = sig.find_node(generator).unwrap();
+            sig.update(&crate::proof::SignatureEdit::Edit(
+                node,
+                crate::proof::SignatureItemEdit::Rename(name.to_owned()),
+            ))
+            .unwrap();
+        }
+        let instance = sig.instantiate(a, &[(p, q)]).unwrap();
+        let name = sig.generator_info(instance).unwrap().name.clone();
+        assert!(name.starts_with("A \\$x["), "{name}");
+        // None of it is a formula.
+        assert!(pieces(&name)
+            .iter()
+            .all(|piece| !matches!(piece, Piece::Math(_))));
+        let description =
+            sig.describe_substitution(&[(p, sig.generator_info(p).unwrap().diagram.clone())]);
+        assert!(pieces(&description)
+            .iter()
+            .all(|piece| !matches!(piece, Piece::Math(_))));
     }
 
     #[test]
