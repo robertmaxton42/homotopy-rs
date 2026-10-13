@@ -135,30 +135,83 @@ impl DiagramN {
     /// Returns the new diagram and the number of merged pairs.
     #[must_use]
     pub fn merge_exchanges(&self, signature: &impl Signature) -> (Self, usize) {
-        let regular_slices = self.regular_slices().collect::<Vec<_>>();
-        // The merged cospans, each with the regular height in `self` that it starts from.
-        let mut cospans: Vec<(Cospan, usize)> = Vec::with_capacity(self.size());
+        let mut merging = self.merge_exchanges_steps();
+        while merging.step(signature) {}
+        merging.finish()
+    }
 
-        for (i, cospan) in self.cospans().iter().enumerate() {
-            if let Some((last, start)) = cospans.last_mut() {
-                if last.backward.is_identity() && cospan.forward.is_identity() {
-                    let candidate = Cospan {
-                        forward: last.forward.clone(),
-                        backward: cospan.backward.clone(),
-                    };
-                    let source = regular_slices[*start].clone();
-                    if typecheck_cospan(source, candidate.clone(), signature).is_ok() {
-                        *last = candidate;
-                        continue;
-                    }
+    /// [`merge_exchanges`](Self::merge_exchanges), one step at a time, so that a caller can do
+    /// something else (such as keep a page responsive) between the typechecks that dominate its
+    /// cost.
+    #[must_use]
+    pub fn merge_exchanges_steps(&self) -> MergeExchanges {
+        MergeExchanges {
+            diagram: self.clone(),
+            regular_slices: self.regular_slices().collect(),
+            cospans: Vec::with_capacity(self.size()),
+            next: 0,
+        }
+    }
+}
+
+/// A [`DiagramN::merge_exchanges`] in progress. Each [`step`](Self::step) considers one more step
+/// of the diagram, so the result of running them all is the same as that of the single call.
+#[derive(Clone, Debug)]
+pub struct MergeExchanges {
+    diagram: DiagramN,
+    regular_slices: Vec<Diagram>,
+    /// The merged cospans, each with the regular height in the diagram that it starts from.
+    cospans: Vec<(Cospan, usize)>,
+    /// The next step of the diagram to consider.
+    next: usize,
+}
+
+impl MergeExchanges {
+    /// Considers the next step of the diagram, returning `false` if there was none left to
+    /// consider (and nothing was done).
+    pub fn step(&mut self, signature: &impl Signature) -> bool {
+        let Some(cospan) = self.diagram.cospans().get(self.next) else {
+            return false;
+        };
+        let i = self.next;
+        self.next += 1;
+
+        if let Some((last, start)) = self.cospans.last_mut() {
+            if last.backward.is_identity() && cospan.forward.is_identity() {
+                let candidate = Cospan {
+                    forward: last.forward.clone(),
+                    backward: cospan.backward.clone(),
+                };
+                let source = self.regular_slices[*start].clone();
+                if typecheck_cospan(source, candidate.clone(), signature).is_ok() {
+                    *last = candidate;
+                    return true;
                 }
             }
-            cospans.push((cospan.clone(), i));
         }
+        self.cospans.push((cospan.clone(), i));
+        true
+    }
 
-        let merged = self.size() - cospans.len();
-        let cospans = cospans.into_iter().map(|(cospan, _)| cospan).collect();
-        (Self::new(self.source(), cospans), merged)
+    /// How many of the diagram's steps have been considered, and how many there are in all.
+    #[must_use]
+    pub fn progress(&self) -> (usize, usize) {
+        (self.next, self.diagram.size())
+    }
+
+    /// The merged diagram and the number of merged pairs, given the steps considered so far:
+    /// any not yet considered are left as they are.
+    #[must_use]
+    pub fn finish(mut self) -> (DiagramN, usize) {
+        self.cospans.extend(
+            self.diagram.cospans()[self.next..]
+                .iter()
+                .enumerate()
+                .map(|(j, cospan)| (cospan.clone(), self.next + j)),
+        );
+        let merged = self.diagram.size() - self.cospans.len();
+        let cospans = self.cospans.into_iter().map(|(cospan, _)| cospan).collect();
+        (DiagramN::new(self.diagram.source(), cospans), merged)
     }
 }
 
