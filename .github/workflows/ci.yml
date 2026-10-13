@@ -136,6 +136,8 @@ jobs:
     name: Benchmark
     runs-on: ubuntu-latest
     needs: [build, test]
+    # Compares against the benchmark history on upstream's gh-pages branch.
+    if: github.repository == 'homotopy-io/homotopy-rs'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
