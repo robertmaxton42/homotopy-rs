@@ -159,6 +159,7 @@ impl Component for DiagramGl {
         }
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             DiagramGlMessage::Render(t) => {
