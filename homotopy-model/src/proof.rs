@@ -1,5 +1,6 @@
 use std::convert::{Into, TryFrom};
 
+pub use drafts::{Draft, DraftEdit, Drafts};
 use homotopy::Homotopy;
 use homotopy_core::{
     common::{Boundary, BoundaryPath, Direction, Generator, Height, SliceIndex},
@@ -22,6 +23,7 @@ use crate::{migration, proof::generators::GeneratorInfo, serialize};
 
 mod signature;
 
+mod drafts;
 pub mod generators;
 pub mod homotopy;
 mod inference;

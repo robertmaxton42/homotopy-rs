@@ -22,8 +22,8 @@ use crate::{
     },
     model::{
         proof::{
-            self, generators::GeneratorInfo, Signature, SignatureEdit, SignatureItem,
-            SignatureItemEdit, COLORS, VERTEX_SHAPES,
+            self, generators::GeneratorInfo, Draft, DraftEdit, Signature, SignatureEdit,
+            SignatureItem, SignatureItemEdit, COLORS, VERTEX_SHAPES,
         },
         Action,
     },
@@ -121,6 +121,11 @@ pub struct ItemViewProps {
     /// The diagram in the workspace, which can fill slots when instantiating a generator.
     #[prop_or_default]
     pub workspace: Option<Diagram>,
+    /// The instantiation of this generator in progress.
+    #[prop_or_default]
+    pub draft: Draft,
+    #[prop_or_default]
+    pub on_draft: Callback<DraftEdit>,
 
     #[prop_or_default]
     pub on_drag_over: Callback<DragEvent>,
@@ -205,9 +210,6 @@ pub struct ItemView {
     name: String,
     preview_cache: Option<Preview>,
     callback_idx: CallbackIdx,
-    /// The diagrams chosen so far to replace the placeholders a generator mentions, in order to
-    /// instantiate it.
-    slots: Vec<(Generator, Diagram)>,
 }
 
 impl Component for ItemView {
@@ -231,7 +233,6 @@ impl Component for ItemView {
             name,
             preview_cache: Default::default(),
             callback_idx,
-            slots: Default::default(),
         }
     }
 
@@ -257,16 +258,22 @@ impl Component for ItemView {
                 return true;
             }
             ItemViewMessage::FillSlot(placeholder) => {
-                let Some(diagram) = ctx.props().workspace.clone() else {
-                    return false;
-                };
-                self.slots.retain(|(p, _)| *p != placeholder);
-                self.slots.push((placeholder, diagram));
-                return true;
+                if let (Some(diagram), SignatureItem::Item(info)) =
+                    (ctx.props().workspace.clone(), &ctx.props().item)
+                {
+                    ctx.props().on_draft.emit(DraftEdit::Fill(
+                        info.generator,
+                        placeholder,
+                        diagram,
+                    ));
+                }
             }
             ItemViewMessage::ClearSlot(placeholder) => {
-                self.slots.retain(|(p, _)| *p != placeholder);
-                return true;
+                if let SignatureItem::Item(info) = &ctx.props().item {
+                    ctx.props()
+                        .on_draft
+                        .emit(DraftEdit::Clear(info.generator, placeholder));
+                }
             }
             ItemViewMessage::Setting(AppSettingsMsg::show_previews(_)) => {
                 return true;
@@ -969,7 +976,7 @@ impl ItemView {
                     {Self::view_dualisability_options(ctx, info)}
                     {merge_button}
                     {Self::view_dependencies(ctx, info, &color)}
-                    {self.view_instantiation(ctx, info, &color)}
+                    {Self::view_instantiation(ctx, info, &color)}
                 </div>
             },
         }
@@ -1033,7 +1040,7 @@ impl ItemView {
     /// The section of the settings of a generator mentioning placeholders (an axiom schema) for
     /// instantiating it: each placeholder has a slot, which is filled with the diagram in the
     /// workspace.
-    fn view_instantiation(&self, ctx: &Context<Self>, info: &GeneratorInfo, color: &str) -> Html {
+    fn view_instantiation(ctx: &Context<Self>, info: &GeneratorInfo, color: &str) -> Html {
         let signature = &ctx.props().signature;
         let parameters = signature.parameters(info.generator);
         if parameters.is_empty() {
@@ -1046,9 +1053,7 @@ impl ItemView {
                 .generator_info(placeholder)
                 .map(|info| info.name.clone())
                 .unwrap_or_default();
-            let slot = self.slots.iter().find(|(p, _)| *p == placeholder);
-
-            let content = if let Some((_, diagram)) = slot {
+            let content = if let Some(diagram) = ctx.props().draft.get(placeholder) {
                 let replacement = diagram.max_generator().generator;
                 let single = signature
                     .generator_info(replacement)
@@ -1087,7 +1092,7 @@ impl ItemView {
         });
 
         let schema = info.generator;
-        let substitution = self.slots.clone();
+        let substitution = ctx.props().draft.substitution().to_vec();
         let create = ctx
             .props()
             .dispatch
@@ -1098,7 +1103,7 @@ impl ItemView {
                 <legend>{"Instantiate"}</legend>
                 {for rows}
                 <div>
-                    <button disabled={self.slots.is_empty()} onclick={create}>
+                    <button disabled={ctx.props().draft.is_empty()} onclick={create}>
                         {"Create instance"}
                     </button>
                 </div>

@@ -6,7 +6,7 @@ use yew::prelude::*;
 use yew_macro::function_component;
 
 use crate::{
-    app::sidebar::DrawerViewSize,
+    app::sidebar::{DraftProps, DrawerViewSize},
     model::{proof::Signature, Action},
 };
 
@@ -17,6 +17,7 @@ mod symmetries;
 #[derive(Clone, PartialEq, Properties)]
 pub struct Props {
     pub signature: Signature,
+    pub drafts: DraftProps,
     pub dispatch: Callback<Action>,
     pub drawer_view_size: DrawerViewSize,
     /// The diagram in the workspace, if any.
@@ -42,6 +43,7 @@ pub fn SignatureView(props: &Props) -> Html {
             <FolderView
                 dispatch={props.dispatch.clone()}
                 signature={props.signature.clone()}
+                drafts={props.drafts.clone()}
                 drawer_view_size={props.drawer_view_size}
                 workspace={props.workspace.clone()}
             />
