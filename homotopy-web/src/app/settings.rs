@@ -7,6 +7,7 @@ declare_settings! {
     pub struct AppSettings {
         show_previews: bool = true,
         weak_units: bool = false,
+        mouse_undo: bool = true,
         animated_3d: bool = false,
         contraction_step: u32 = 1,
         merge_exchanges: bool = false,
@@ -75,6 +76,13 @@ impl Component for SettingsView {
                             "Allow attaching weak units",
                             AppSettings::get_weak_units(),
                             AppSettings::set_weak_units,
+                        )
+                    }
+                    {
+                        Self::view_checkbox(
+                            "Mouse back and forward buttons undo and redo",
+                            AppSettings::get_mouse_undo(),
+                            AppSettings::set_mouse_undo,
                         )
                     }
                     {

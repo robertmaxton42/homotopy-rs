@@ -23,11 +23,11 @@ pub fn get_help_message() -> Html {
                 </tr>
                 <tr>
                     <td class="help-action"><kbd class="kbc-button">{"U"}</kbd></td>
-                    <td class="help-description">{"Undo"}</td>
+                    <td class="help-description">{"Undo (or the mouse back button, see the settings)"}</td>
                 </tr>
                 <tr>
                     <td class="help-action"><kbd class="kbc-button">{"Y"}</kbd></td>
-                    <td class="help-description">{"Redo"}</td>
+                    <td class="help-description">{"Redo (or the mouse forward button)"}</td>
                 </tr>
                 <tr>
                     <td class="help-action"><kbd class="kbc-button">{"A"}</kbd></td>

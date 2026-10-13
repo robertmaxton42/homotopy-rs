@@ -1,4 +1,5 @@
 use boundary::BoundaryPreview;
+use mouse_buttons::MouseButtons;
 use settings::{AppSettings, AppSettingsKey, AppSettingsMsg};
 use sidebar::Sidebar;
 use signature_stylesheet::SignatureStylesheet;
@@ -28,6 +29,7 @@ mod diagram_svg;
 mod image_export;
 mod info;
 mod keybindings;
+mod mouse_buttons;
 mod project;
 pub mod settings;
 mod sidebar;
@@ -48,6 +50,8 @@ pub struct App {
     loading: bool,
     signature_stylesheet: SignatureStylesheet,
     before_unload: Option<Closure<dyn FnMut(web_sys::BeforeUnloadEvent)>>,
+    // Hold onto the listener so that it is dropped when the app is destroyed
+    _mouse_buttons: MouseButtons,
 }
 
 impl Component for App {
@@ -68,6 +72,7 @@ impl Component for App {
             loading: false,
             signature_stylesheet,
             before_unload: None,
+            _mouse_buttons: MouseButtons::install(ctx.link().callback(Message::BlockingDispatch)),
         }
     }
 
