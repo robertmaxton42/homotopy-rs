@@ -70,3 +70,21 @@ Descriptions are made when a panel is shown, so how much of a diagram they look 
 (48 steps in all), whatever its size. A composite is described by its steps only if every step
 can be told apart: one that has several different cells at the same height is described by the
 type of the whole composite.
+
+## Tooltips
+
+Hovering over the diagram shows a tooltip with the label of the cell under the pointer, rendered
+by KaTeX like the labels everywhere else, and in a muted type where in the diagram it is (such as
+`@ S0, S1`: the heights from the outermost direction, regular `R`, singular `S`, or the source `S`
+and target `T`). The tooltip follows the pointer and never takes it, and goes away when the pointer
+leaves the diagram or a button is pressed.
+
+The label of a cell that is drawn as the generator `f` is `f`. The reverse of an invertible `f` is
+`f^{-1}`; of a generator that is only dualisable, `f^{*}` (for a 1-cell, where this is the dual in
+the only direction there is) or `\overline{f}` (other cells, which may have been reflected in
+several directions; the tooltip only knows that the cell is drawn reversed). A cell drawn as a
+fold, where a cell turns back on itself (these show as *homotopy* points), is named by the step of
+the diagram that it belongs to, as in the table above: the counit `\varepsilon_{f}` where `f` and
+its reverse are cancelled, the unit `\eta_{f}` where they are created, and `\mathrm{h}(f)` for any
+other homotopy that the tooltip cannot tell more about (this is only worked out for 2-dimensional
+diagrams, at the point itself).

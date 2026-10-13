@@ -44,6 +44,7 @@ mod signature;
 mod signature_stylesheet;
 mod stash;
 mod tex;
+mod tooltip;
 mod workspace;
 
 /// How long the app works on a job before it lets the page respond to input. Input is only
@@ -490,6 +491,7 @@ impl App {
         html! {
             <main class="app">
                 <BusyIndicator on_cancel={ctx.link().callback(|()| Message::Cancel)} />
+                <tooltip::HoverTooltip />
                 <Sidebar
                     dispatch={dispatch}
                     proof={proof.clone()}

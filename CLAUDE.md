@@ -57,6 +57,14 @@ existing expensive path that does not, fix it or note it as a known gap.
   actions (anything typed or stepped through quickly: renames, slices, ...) never get a label,
   because input that arrives while a job runs is refused.
 
+- **What is cheap by construction**: things that run on every render or pointer move are bounded
+  instead of made into jobs. `Signature::describe` and `describe_point` (names for diagrams in
+  the Instantiate panel and the attach options, and for the cell under the pointer; see
+  `doc/labels.md`) look at no more than `MAX_STEPS` diagrams whatever the size, and cut long
+  composites and types short. The hover tooltip (`app/tooltip.rs`) is told what to show through
+  `tooltip::show/move_to/hide` like the busy indicator, and `DiagramSvg` only works out a new label
+  when the pointer changes what it is over: moving over one part of the diagram renders nothing.
+
 New expensive work: write it as a job (or give an existing job another kind of step), label it,
 and check it with the debug hooks below.
 

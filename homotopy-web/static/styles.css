@@ -342,6 +342,49 @@ button, .button {
   flex: 1;
 }
 
+/* The tooltip over a diagram: a label rendered by KaTeX, and where the pointer is. It follows
+   the pointer (positioned by the app, with a transform) and never takes it. */
+
+.hover-tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1005;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  max-width: calc(100vw - 2 * var(--space-1));
+  padding: var(--space-0) var(--space-1);
+  border-radius: var(--space-1);
+  background: var(--tooltip-background);
+  color: var(--tooltip-foreground);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  animation: hover-tooltip__in 90ms ease-out;
+}
+
+@keyframes hover-tooltip__in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.hover-tooltip__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hover-tooltip__detail {
+  flex: none;
+  opacity: 0.6;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Tooltips */
 
 .tooltip {

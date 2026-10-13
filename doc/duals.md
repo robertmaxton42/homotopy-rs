@@ -87,6 +87,15 @@ reversed in their own right. So the mate `D* ⇒ C*` of a directed `F : C ⇒ D`
 exactly when `C` and `D` are invertible or dualisable. This matches the mathematics: mates
 are built from the cups and caps of `C` and `D`.
 
+### Units and counits
+
+For a dualisable `C`, the cap that cancels `C ; C*` into nothing (made by dragging the two wires
+into each other in the workspace) is the *counit* `ε_C`, and the cup that creates `C* ; C` out of
+nothing is the *unit* `η_C`. Their other orders are `ε_{C*}` and `η_{C*}`. Hovering over the
+fold of a cap or cup shows its name, and panels that describe a diagram that has one as a step,
+such as the replacement for a placeholder, use it too (see `labels.md`). The attach menu offers
+the cups of invertible cells as bubbles: `bub_C` is `η_{C*}`, `bub_{C^{-1}}` is `η_C`.
+
 ## Symmetries: duals for free
 
 Some theories have orientation-reversing duals of *directed* cells for free. In **Cat**,
