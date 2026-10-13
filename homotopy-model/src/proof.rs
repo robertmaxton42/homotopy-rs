@@ -296,6 +296,7 @@ impl Action {
                     _,
                     SignatureItemEdit::MakeOriented(true)
                         | SignatureItemEdit::MakePlaceholder(true)
+                        | SignatureItemEdit::SetDependsOn(_)
                         | SignatureItemEdit::MakeInvertible(Invertibility::Dualisable(_))
                 ) | SignatureEdit::AddSymmetry(_)
                     | SignatureEdit::RemoveSymmetry(_)

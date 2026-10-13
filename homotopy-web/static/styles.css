@@ -894,6 +894,19 @@ input.signature__item-name {
   font-style: italic;
 }
 
+.signature__dependency {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0);
+  margin: var(--space-0) 0;
+  cursor: pointer;
+}
+
+.signature__dependency-hint {
+  opacity: 0.6;
+  font-size: 0.85em;
+}
+
 .drawer-expanded .signature__generator-indicator {
   width: auto;
   height: 24px;
