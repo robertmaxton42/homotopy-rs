@@ -71,9 +71,8 @@ impl Diagram {
                 }
                 DiagramN(d) => {
                     for slice in d.slices() {
-                        if !visited.contains(&slice) {
+                        if visited.insert(slice.clone()) {
                             add_generators(&slice, generators, visited);
-                            visited.insert(slice);
                         }
                     }
                 }
