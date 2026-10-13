@@ -16,6 +16,15 @@ mod panic;
 // Model has to be public for tests to work
 pub mod model;
 
+/// What the crash log has recorded (see `panic`), for tests that check that what was not
+/// committed was not logged either: the number of actions, and the size of the import they start
+/// from.
+#[cfg(debug_assertions)]
+#[must_use]
+pub fn crash_log_summary() -> (usize, usize) {
+    panic::debug_summary()
+}
+
 fn tracing_filter(meta: &Metadata<'_>) -> bool {
     meta.target().contains("homotopy")
 }
