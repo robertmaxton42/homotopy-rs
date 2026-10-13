@@ -34,6 +34,16 @@ impl Structure {
     /// The label of this cell for the generator with the given name.
     #[must_use]
     pub fn label(&self, name: &str) -> String {
+        match self {
+            Self::Instance(description) => format!("{} [{}]", seal(name), seal(description)),
+            _ => format!("${}$", self.math(name).unwrap_or_default()),
+        }
+    }
+
+    /// The formula (without dollar signs) for this cell, for the generator with the given name:
+    /// everything but an [instance](Self::Instance), which is a label of its own.
+    #[must_use]
+    pub fn math(&self, name: &str) -> Option<String> {
         let f = || format!("{{{}}}", to_math(name));
         let iterated = |k: &usize| {
             if *k > 1 {
@@ -42,21 +52,21 @@ impl Structure {
                 String::new()
             }
         };
-        match self {
-            Self::Identity(k) => format!("$\\mathrm{{id}}{}_{}$", iterated(k), f()),
+        Some(match self {
+            Self::Identity(k) => format!("\\mathrm{{id}}{}_{}", iterated(k), f()),
             Self::InverseIdentity(k) => {
-                format!("$\\mathrm{{id}}{}_{{{}^{{-1}}}}$", iterated(k), f())
+                format!("\\mathrm{{id}}{}_{{{}^{{-1}}}}", iterated(k), f())
             }
-            Self::Inverse => format!("${}^{{-1}}$", f()),
-            Self::Bubble(k) => format!("$\\mathrm{{bub}}{}_{}$", iterated(k), f()),
+            Self::Inverse => format!("{}^{{-1}}", f()),
+            Self::Bubble(k) => format!("\\mathrm{{bub}}{}_{}", iterated(k), f()),
             Self::InverseBubble(k) => {
-                format!("$\\mathrm{{bub}}{}_{{{}^{{-1}}}}$", iterated(k), f())
+                format!("\\mathrm{{bub}}{}_{{{}^{{-1}}}}", iterated(k), f())
             }
             Self::Reflection(directions) if directions.as_slice() == [1] => {
-                format!("${}^{{*}}$", f())
+                format!("{}^{{*}}", f())
             }
             Self::Reflection(directions) => format!(
-                "$\\mathrm{{R}}_{{{}}}({})$",
+                "\\mathrm{{R}}_{{{}}}({})",
                 directions
                     .iter()
                     .map(ToString::to_string)
@@ -64,9 +74,9 @@ impl Structure {
                     .join(","),
                 f()
             ),
-            Self::Symmetry(symmetry) => format!("${}^{{{}}}$", f(), to_math(symmetry)),
-            Self::Instance(description) => format!("{} [{}]", seal(name), seal(description)),
-        }
+            Self::Symmetry(symmetry) => format!("{}^{{{}}}", f(), to_math(symmetry)),
+            Self::Instance(_) => return None,
+        })
     }
 }
 

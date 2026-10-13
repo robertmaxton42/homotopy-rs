@@ -666,6 +666,18 @@ impl RewriteN {
         })
     }
 
+    /// The cones of the rewrite, each with the singular height of the target that it maps to.
+    ///
+    /// Heights at which the rewrite does nothing are not mentioned (their cones are identities).
+    #[must_use]
+    pub fn cone_views(&self) -> Vec<ConeView<'_>> {
+        self.cones()
+            .iter()
+            .zip(self.targets())
+            .map(|(cone, target)| ConeView { cone, target })
+            .collect()
+    }
+
     /// Find a cone targeting a singular height
     ///
     /// If the cone is an identity cone, return its index.
@@ -1256,6 +1268,41 @@ impl Cone {
 
     fn replace(&self, from: Generator, to: Generator, oriented: bool) -> Self {
         self.map(|r| r.replace(from, to, oriented))
+    }
+}
+
+/// A read-only view of a cone of a [`RewriteN`]: the part of the rewrite that maps a run of
+/// consecutive singular heights of its source to one singular height of its target.
+#[derive(Copy, Clone, Debug)]
+pub struct ConeView<'a> {
+    cone: &'a Cone,
+    target: usize,
+}
+
+impl<'a> ConeView<'a> {
+    /// The singular height of the target that the cone maps to.
+    #[must_use]
+    pub const fn target(&self) -> usize {
+        self.target
+    }
+
+    /// The first singular height of the source that the cone maps from.
+    #[must_use]
+    pub const fn source_start(&self) -> usize {
+        self.cone.index
+    }
+
+    /// How many singular heights of the source the cone maps from: none for a cone that creates
+    /// a height out of nothing, several for one that merges them.
+    #[must_use]
+    pub fn source_len(&self) -> usize {
+        self.cone.len()
+    }
+
+    /// The rewrites between the singular slices of the source heights and that of the target.
+    #[must_use]
+    pub fn singular_slices(&self) -> &'a [Rewrite] {
+        self.cone.singular_slices()
     }
 }
 

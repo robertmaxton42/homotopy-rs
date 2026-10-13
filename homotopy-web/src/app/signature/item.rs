@@ -1055,10 +1055,14 @@ impl ItemView {
                 .unwrap_or_default();
             let content = if let Some(diagram) = ctx.props().draft.get(placeholder) {
                 let inferred = ctx.props().draft.is_inferred(placeholder);
-                let replacement = diagram.max_generator().generator;
-                let single = signature
-                    .generator_info(replacement)
-                    .filter(|info| info.diagram == *diagram);
+                // A generator is shown by its name, and any other diagram by what it is made
+                // of, when that can be told.
+                let description = signature.describe(diagram);
+                let description = if description == "…" {
+                    format!("{}-dimensional diagram", diagram.dimension())
+                } else {
+                    description
+                };
                 let clear = ctx
                     .link()
                     .callback(move |_| ItemViewMessage::ClearSlot(placeholder));
@@ -1068,13 +1072,7 @@ impl ItemView {
                     .callback(move |_| ItemViewMessage::FillSlot(placeholder));
                 html! {
                     <>
-                        if let Some(replacement) = single {
-                            <TexSpan class="signature__slot-value" raw_tex={replacement.name.clone()} />
-                        } else {
-                            <span class="signature__slot-value signature__slot-value-composite">
-                                {format!("{}-dimensional diagram", diagram.dimension())}
-                            </span>
-                        }
+                        <TexSpan class="signature__slot-value" raw_tex={description} />
                         if inferred {
                             <span class="signature__slot-hint" title="Worked out from the other replacements">
                                 {"inferred"}

@@ -28,6 +28,7 @@ mod signature;
 
 mod actions_job;
 mod attach_options;
+mod describe;
 mod drafts;
 pub mod generators;
 pub mod homotopy;

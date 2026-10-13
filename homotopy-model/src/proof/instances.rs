@@ -285,13 +285,6 @@ impl Signature {
         self.generator_info(g)
             .map_or_else(|| format!("{g:?}"), |info| info.name.clone())
     }
-
-    /// The name of the generator with the given diagram, if any.
-    fn describe(&self, diagram: &Diagram) -> String {
-        self.iter()
-            .find(|info| info.diagram == *diagram)
-            .map_or_else(|| "…".to_owned(), |info| seal(&info.name))
-    }
 }
 
 #[cfg(test)]
@@ -458,6 +451,9 @@ mod tests {
         };
         assert_eq!(e_diagram.source(), qq.clone().into());
         assert_eq!(e_diagram.target(), qq.into());
+        // The composite is named by its parts in the name of the instance, not by "…".
+        assert!(info.name.contains(r"\mathbin{;}"), "{}", info.name);
+        assert!(!info.name.contains('…'), "{}", info.name);
     }
 
     /// Limits as right Kan extensions along `! : J → 1`, with the universal property as a schema
