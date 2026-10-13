@@ -18,6 +18,11 @@ pub struct GeneratorInfo {
     pub placeholder: bool,
     /// If this generator is an instance of an axiom schema, the schema and substitution.
     pub instance: Option<Instance>,
+    /// Placeholders this generator depends on although its diagram does not mention them, such
+    /// as the cone `α` that the mediating map `u_α : X → lim D` of a limit depends on. Each
+    /// instance of the generator for a different replacement of such a placeholder is a
+    /// different generator (see [`Signature::parameters`](super::Signature::parameters)).
+    pub depends_on: Vec<Generator>,
     /// Whether the instances of this generator are shown in the signature.
     pub instances_open: bool,
 }

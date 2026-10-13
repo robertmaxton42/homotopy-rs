@@ -52,6 +52,8 @@ pub enum SignatureItemEdit {
     Reshape(VertexShape),
     MakeOriented(bool),
     MakePlaceholder(bool),
+    /// Set the placeholders the generator depends on beyond those its diagram mentions.
+    SetDependsOn(Vec<Generator>),
     MakeInvertible(Invertibility),
     ShowSourceTarget(bool),
 }
@@ -156,6 +158,7 @@ impl Signature {
             placeholder: false,
             instance: None,
             instances_open: false,
+            depends_on: vec![],
         };
 
         self.tree
@@ -191,7 +194,7 @@ impl Signature {
     fn edit(&mut self, node: Node, edit: SignatureItemEdit) {
         use SignatureItem::{Folder, Item};
         use SignatureItemEdit::{
-            MakeInvertible, MakeOriented, MakePlaceholder, Recolor, Rename, Reshape,
+            MakeInvertible, MakeOriented, MakePlaceholder, Recolor, Rename, Reshape, SetDependsOn,
             ShowSourceTarget,
         };
         self.tree
@@ -201,6 +204,7 @@ impl Signature {
                 (Item(info), Reshape(shape)) => info.shape = shape,
                 (Item(info), MakeOriented(true)) => info.oriented = true,
                 (Item(info), MakePlaceholder(placeholder)) => info.placeholder = placeholder,
+                (Item(info), SetDependsOn(depends_on)) => info.depends_on = depends_on,
                 (Item(info), MakeInvertible(invertibility)) => info.invertibility = invertibility,
                 (Item(info), ShowSourceTarget(show)) => info.single_preview = !show,
                 (Folder(info), Rename(name)) => info.name = name,

@@ -66,6 +66,7 @@ fn load(proof: OldProof) -> Option<(Signature, Option<Workspace>)> {
             placeholder: false,
             instance: None,
             instances_open: false,
+            depends_on: vec![],
         };
         signature.insert_item(SignatureItem::Item(info));
     }

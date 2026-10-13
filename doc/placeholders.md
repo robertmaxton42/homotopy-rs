@@ -76,6 +76,51 @@ of that generator must already exist for the schema to match: it occurs in the d
 click on, after all. The search is bounded, so a very large diagram may not offer every
 possibility. Instantiating by hand from the signature still works in that case.
 
+## Cells that depend on placeholders they don't mention
+
+A generator is a schema in the placeholders its diagram mentions. Universal properties also
+need cells that depend on a placeholder without mentioning it. For example, the mediating map
+`u_α : X → L` of a limit depends on the cone `α`, but its type does not mention `α`. Without
+that dependency there would be one `u` shared by every cone. In logical terms, an existential
+under a universal needs a "Skolem function" `u(α)`.
+
+For this, a generator's settings have a **Depends on** list: tick the placeholders it depends
+on. Instances for different replacements of those placeholders are then different generators.
+The dependency is inherited: any generator whose diagram mentions `u` also depends on `α`, so
+instantiating it at a cone also instantiates `u` at that cone.
+
+### Example: limits as right Kan extensions
+
+Work one level up, with categories as 0-cells, functors as 1-cells and natural transformations
+as 2-cells. Write `1` for the terminal category and `! : J → 1`. Then everything is globular:
+
+| generator | type | |
+|---|---|---|
+| `D` | `J → C` | placeholder: the diagram |
+| `L` | `1 → C` | depends on `D`: its limit |
+| `π` | `! ≫ L ⇒ D` | the limit cone |
+| `X` | `1 → C` | placeholder: an apex |
+| `α` | `! ≫ X ⇒ D` | placeholder: a cone |
+| `u` | `X ⇒ L` | depends on `α`: the mediating map |
+| `β` | `α ⇛ (! ◁ u) ≫ π` | the factorisation |
+
+Uniqueness is one more schema with placeholders `v : X ⇒ L` and `γ : α ⇛ (! ◁ v) ≫ π`: an
+invertible cell `v ⇛ u` (compatible with `γ` and `β` if you want it strict).
+
+To say "`C` has all limits of shape `J`", state these as axioms. To say that one particular
+`L` is a limit of one particular `D`, make `D` an ordinary generator instead of a placeholder.
+
+To use the axioms, click a cone `α₀ : ! ≫ X₀ ⇒ D₀` in your diagram. The attach menu offers
+`β [D₀/D, X₀/X, α₀/α]`. Choosing it creates `L[D₀]`, `π[D₀]` and the mediating map `u[…α₀…]`,
+and factors the cone through the limit. `L[D₀]` is shared by all cones over `D₀`, while each
+cone gets its own mediating map. This example is a test in
+`homotopy-model/src/proof/instances.rs`.
+
+The same pattern gives internal homs of a closed (not necessarily compact) monoidal category:
+a placeholder `f : A ⊗ X → B`, a currying `λf : X → [A, B]` that depends on `f`, and
+`f ⇛ ev ∘ (A ⊗ λf)`. For compact closed categories, use duals instead (see
+`doc/duals.md`).
+
 ## Not yet
 
 - Inferring replacements longer than three cells, or replacements whose cells are contracted

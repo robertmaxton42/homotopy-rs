@@ -113,6 +113,29 @@ where `C^op` is the dual of `C`, but it is an extra identification in general.
 Symmetries are declared in the signature drawer (marked experimental). Removing a symmetry
 is refused if a generator or the workspace would then fail to typecheck.
 
+## Internal homs
+
+In a compact closed (rigid) monoidal category, the internal hom is `[A, B] ≅ A* ⊗ B`, so duals
+make it structural:
+
+- **Currying** `f : A ⊗ X → B` to `X → A* ⊗ B` is bending the `A` wire round with a cup.
+- **Evaluation** `A ⊗ A* ⊗ B → B` is a cap.
+- **Names and mates** of morphisms are rotations, which the attach menu offers.
+
+To set this up, use one 0-cell, objects as wires and morphisms as vertices, and make the
+objects **Dualisable** (level 1 is enough). That gives cups and caps in 2D, and the snake
+equations as allowed moves in 3D. Examples are Rel, finite-dimensional vector spaces,
+profunctors and cobordisms.
+
+In a closed category that is not compact, such as Set or **Cat**, `[A, B]` is not
+`A* ⊗ B`. Making `A` dualisable would assert structure that isn't there. homotopy.io's duals
+are also two-sided, which is stronger than one adjunction `- ⊗ A ⊣ [A, -]`. In that case:
+
+- state currying as a schema whose currying cell depends on the morphism being curried (see
+  `doc/placeholders.md`, "Cells that depend on placeholders they don't mention"), or
+- work one level up, with the closed structure as an ordinary adjunction of functors given by
+  its unit, counit and snake axioms.
+
 ## Caveats
 
 - Typechecking is local: it checks the neighbourhood of every point of a diagram against
