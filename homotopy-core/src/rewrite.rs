@@ -1328,7 +1328,7 @@ pub enum CompositionError {
 mod test {
 
     use super::*;
-    use crate::examples::{scalar, two_monoid};
+    use crate::examples::{cap, cup, scalar, two_monoid};
 
     fn correct_number_of_slices(rewrite: &RewriteN) {
         for cone in rewrite.cones() {
@@ -1337,6 +1337,37 @@ mod test {
                 cone.singular_slices().len() + 1,
             );
         }
+    }
+
+    /// How many singular heights of the source each cone of a rewrite maps from, and the height
+    /// of the target that it maps to.
+    fn cones(rewrite: &Rewrite) -> Vec<(usize, usize)> {
+        let rewrite: &RewriteN = rewrite.try_into().unwrap();
+        rewrite
+            .cone_views()
+            .iter()
+            .map(|cone| (cone.source_len(), cone.target()))
+            .collect()
+    }
+
+    #[test]
+    fn a_cap_merges_two_heights_and_creates_one() {
+        let (_sig, cap) = cap();
+        let [Cospan { forward, backward }] = cap.cospans() else {
+            panic!("expected one step");
+        };
+        assert_eq!(cones(forward), vec![(2, 0)]);
+        assert_eq!(cones(backward), vec![(0, 0)]);
+    }
+
+    #[test]
+    fn a_cup_creates_one_height_and_merges_two() {
+        let (_sig, cup) = cup();
+        let [Cospan { forward, backward }] = cup.cospans() else {
+            panic!("expected one step");
+        };
+        assert_eq!(cones(forward), vec![(0, 0)]);
+        assert_eq!(cones(backward), vec![(2, 0)]);
     }
 
     #[test]
