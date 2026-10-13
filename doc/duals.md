@@ -111,7 +111,8 @@ is dualisable and `{1}` is a symmetry, `C^op` *is* `C*`. That is right for profu
 where `C^op` is the dual of `C`, but it is an extra identification in general.
 
 Symmetries are declared in the signature drawer (marked experimental). Removing a symmetry
-is refused if a generator or the workspace would then fail to typecheck.
+is refused if a generator or the workspace would then fail to typecheck. Symmetry names are
+labels, so they can contain LaTeX, e.g. `$\mathrm{op}$` (see `labels.md`).
 
 ## Internal homs
 
