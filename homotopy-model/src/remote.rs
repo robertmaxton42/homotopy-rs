@@ -19,10 +19,10 @@
 
 use homotopy_common::tree::Tree;
 use homotopy_core::{
-    common::{Boundary, SliceIndex},
+    common::{Boundary, BoundaryPath, SliceIndex},
     serialize::{Key, Store},
     signature::{Invertibility, Signature as _, Symmetry},
-    Diagram, Generator,
+    Diagram, DiagramN, Generator,
 };
 use homotopy_graphics::style::{Color, VertexShape};
 use im::Vector;
@@ -168,12 +168,24 @@ enum WireOutput {
         steps: Vec<WireStep>,
         error: Option<String>,
     },
-    AttachOptions(Vec<AttachOption>),
+    AttachOptions(Vec<WireAttachOption>),
+}
+
+/// An [`AttachOption`] but for its diagrams.
+#[derive(Serialize, Deserialize)]
+struct WireAttachOption {
+    generator: Generator,
+    boundary_path: Option<BoundaryPath>,
+    embedding: Vector<usize>,
+    label: Option<String>,
+    diagram: Key<Diagram>,
+    substitution: Option<Vec<(Generator, Key<Diagram>)>>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct WireStep {
-    action: crate::proof::Action,
+    /// Which of the actions of the request it was (they do not need to come back).
+    position: usize,
     state: WireState,
     /// The signature after the action, if the action changed it.
     signature: Option<WireSignature>,
@@ -305,6 +317,41 @@ fn unpack_state(store: &mut Store, wire: WireState, signature: Signature) -> Opt
     })
 }
 
+fn pack_option(store: &mut Store, option: AttachOption) -> WireAttachOption {
+    WireAttachOption {
+        diagram: store.pack_diagram(&option.diagram.into()),
+        substitution: option.substitution.map(|substitution| {
+            substitution
+                .iter()
+                .map(|(generator, diagram)| (*generator, store.pack_diagram(diagram)))
+                .collect()
+        }),
+        generator: option.generator,
+        boundary_path: option.boundary_path,
+        embedding: option.embedding,
+        label: option.label,
+    }
+}
+
+fn unpack_option(store: &mut Store, wire: WireAttachOption) -> Option<AttachOption> {
+    Some(AttachOption {
+        diagram: DiagramN::try_from(store.unpack_diagram(wire.diagram)?).ok()?,
+        substitution: match wire.substitution {
+            None => None,
+            Some(substitution) => Some(
+                substitution
+                    .into_iter()
+                    .map(|(generator, key)| Some((generator, store.unpack_diagram(key)?)))
+                    .collect::<Option<_>>()?,
+            ),
+        },
+        generator: wire.generator,
+        boundary_path: wire.boundary_path,
+        embedding: wire.embedding,
+        label: wire.label,
+    })
+}
+
 fn encode<T: Serialize>(value: &T) -> Vec<u8> {
     rmp_serde::to_vec_named(value).expect("encoding to memory cannot fail")
 }
@@ -322,6 +369,8 @@ pub struct Remote {
     next_number: u64,
     /// The signature the executor holds, as far as it is known, and its number.
     holds: Option<(u64, Signature)>,
+    /// The actions of the last request, which the answer refers to.
+    asked: Vec<crate::proof::Action>,
 }
 
 /// What came of a request.
@@ -357,6 +406,10 @@ impl Remote {
         step_delay_ms: u32,
         send_signature: bool,
     ) -> Vec<u8> {
+        self.asked = match &work {
+            Work::Actions { actions, .. } => actions.clone(),
+            Work::AttachOptions { .. } => vec![],
+        };
         let mut store = Store::default();
         let signature = match &self.holds {
             Some((number, held)) if !send_signature && held.identical(&proof.signature) => {
@@ -406,20 +459,30 @@ impl Remote {
         let output = match done.output {
             WireOutput::Actions { steps, error } => {
                 let mut applied = Vec::with_capacity(steps.len());
+                let mut positions = Vec::with_capacity(steps.len());
                 for step in steps {
                     if let Some(wire) = step.signature {
                         signature = unpack_signature(&mut store, wire).ok_or(CORRUPT)?;
                     }
                     let state =
                         unpack_state(&mut store, step.state, signature.clone()).ok_or(CORRUPT)?;
-                    applied.push((step.action, proof_from_state(state)));
+                    let action = self.asked.get(step.position).ok_or(CORRUPT)?;
+                    positions.push(step.position);
+                    applied.push((action.clone(), proof_from_state(state)));
                 }
                 Output::Actions(ActionsOutcome {
                     applied,
+                    positions,
                     error: error.map(ProofError::Remote),
                 })
             }
-            WireOutput::AttachOptions(options) => Output::AttachOptions(options),
+            WireOutput::AttachOptions(options) => Output::AttachOptions(
+                options
+                    .into_iter()
+                    .map(|option| unpack_option(&mut store, option))
+                    .collect::<Option<_>>()
+                    .ok_or(CORRUPT)?,
+            ),
         };
         self.holds = Some((done.holds, signature));
         Ok(Answer::Done {
@@ -491,14 +554,14 @@ impl Executor {
                 let outcome = run_with(job, step_delay_ms, before_step);
                 let mut previous = signature;
                 let mut steps = Vec::with_capacity(outcome.applied.len());
-                for (action, proof) in outcome.applied {
+                for ((_, proof), position) in outcome.applied.into_iter().zip(outcome.positions) {
                     let changed = !proof.signature.identical(&previous);
                     if changed {
                         previous = proof.signature.clone();
                         holds = fresh;
                     }
                     steps.push(WireStep {
-                        action,
+                        position,
                         state: pack_state(&mut store, &proof),
                         signature: changed.then(|| pack_signature(&mut store, &previous)),
                     });
@@ -512,7 +575,13 @@ impl Executor {
             Work::AttachOptions { point, weak_units } => {
                 let job = AttachOptionsJob::new(&state, &point, weak_units)
                     .map_err(|e| format!("nothing to attach to: {e:?}"))?;
-                WireOutput::AttachOptions(run_with(job, step_delay_ms, before_step))
+                let options = run_with(job, step_delay_ms, before_step);
+                WireOutput::AttachOptions(
+                    options
+                        .into_iter()
+                        .map(|option| pack_option(&mut store, option))
+                        .collect(),
+                )
             }
         };
         Ok(Response::Done(Box::new(Done {

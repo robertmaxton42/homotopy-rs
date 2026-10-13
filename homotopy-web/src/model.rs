@@ -106,7 +106,7 @@ impl Action {
     pub const fn heavy_label(&self) -> Option<&'static str> {
         match self {
             Self::Proof(action) => action.work_label(),
-            Self::ImportActions(_) => Some("Replaying actions"),
+            Self::ImportActions(_) => Some(proof::REPLAYING),
             Self::SelectPoint(_, _) => Some("Finding what can be attached"),
             Self::ExportImage(
                 ImageFormat::Stl(_) | ImageFormat::Tikz(_) | ImageFormat::Manim(_),
@@ -377,7 +377,7 @@ impl State {
                     job: Box::new(ActionsJob::replay(
                         self.proof().clone(),
                         actions.into_iter().take(len),
-                        "Replaying actions",
+                        proof::REPLAYING,
                     )),
                     kind: ActionsKind::Import,
                     redone: false,

@@ -1,7 +1,7 @@
 use boundary::BoundaryPreview;
 use futures::future::select;
 use gloo_timers::future::TimeoutFuture;
-use homotopy_model::job::Job;
+use homotopy_model::{job::Job, remote::Answer};
 use instant::{Duration, Instant};
 use mouse_buttons::MouseButtons;
 use settings::{AppSettings, AppSettingsKey, AppSettingsMsg};
@@ -21,6 +21,7 @@ use crate::{
         toast::{toast, Toast, ToasterComponent},
     },
     model,
+    worker::{self, Client as WorkerClient},
 };
 
 #[allow(clippy::mem_forget, clippy::future_not_send)] // due to wasm_bindgen
@@ -52,6 +53,10 @@ mod workspace;
 /// least; and a step that cannot be split up takes as long as it takes.
 const SLICE: Duration = Duration::from_millis(10);
 
+/// How long after the app starts the worker is started, so as not to compete with the page for
+/// the processor while it loads.
+const WORKER_DELAY: u32 = 500;
+
 pub enum Message {
     /// Do something to the project, or change what is selected.
     Dispatch(model::Action),
@@ -62,6 +67,22 @@ pub enum Message {
     Cancel,
     /// `Esc` was pressed (while focus was in a text field if the flag is set).
     Escape(bool),
+    /// Start the worker, if it is not running.
+    StartWorker,
+    /// The worker (of the given generation) said something.
+    Worker(u32, worker::Event),
+}
+
+/// A task that the worker is doing.
+struct Remote {
+    /// What the worker is doing, as it last said.
+    label: String,
+    sent: Instant,
+    /// For the log: how long it took to prepare the request, and how big it was.
+    encode_ms: f64,
+    bytes_out: usize,
+    /// Whether the worker was asked again, with the signature.
+    retried: bool,
 }
 
 /// A task that is being worked on a slice at a time. It works on a copy of what it needs, and
@@ -72,11 +93,23 @@ struct Running {
     task: model::Task,
     /// The output of the task once it is done, until it is committed.
     finished: Option<model::TaskOutput>,
+    /// Set if the worker is doing the task, rather than the app a slice at a time.
+    remote: Option<Remote>,
     resets_panzoom: bool,
     /// For the log.
     started: Instant,
     steps: usize,
     longest_step: Duration,
+}
+
+impl Running {
+    /// What the job is doing.
+    fn label(&self) -> String {
+        self.remote.as_ref().map_or_else(
+            || self.task.label().to_owned(),
+            |remote| remote.label.clone(),
+        )
+    }
 }
 
 pub struct App {
@@ -85,6 +118,8 @@ pub struct App {
     /// are refused (see [`model::Action::allowed_while_busy`]).
     job: Option<Running>,
     next_job: u64,
+    /// The worker that does the jobs that would block the page, if it can.
+    worker: WorkerClient,
     signature_stylesheet: SignatureStylesheet,
     before_unload: Option<Closure<dyn FnMut(web_sys::BeforeUnloadEvent)>>,
     // Hold onto the listeners so that they are dropped when the app is destroyed
@@ -108,10 +143,26 @@ impl Component for App {
         #[cfg(debug_assertions)]
         debug_hooks::install(ctx.link());
 
+        let mut worker = WorkerClient::new(
+            ctx.link()
+                .callback(|(generation, event)| Message::Worker(generation, event)),
+        );
+        #[cfg(debug_assertions)]
+        match debug_hooks::worker_mode().as_str() {
+            "off" => worker.disable(),
+            "broken" => worker.use_script("/no-such-worker.js"),
+            _ => {}
+        }
+        ctx.link().send_future(async {
+            TimeoutFuture::new(WORKER_DELAY).await;
+            Message::StartWorker
+        });
+
         Self {
             state,
             job: None,
             next_job: 0,
+            worker,
             signature_stylesheet,
             before_unload: None,
             _mouse_buttons: MouseButtons::install(ctx.link().callback(Message::Dispatch)),
@@ -122,7 +173,7 @@ impl Component for App {
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         let rerender = self.handle(ctx, msg);
         #[cfg(debug_assertions)]
-        debug_hooks::publish(&self.state, self.job.as_ref().map(|job| job.task.label()));
+        debug_hooks::publish(&self.state, self.job.as_ref().map(Running::label));
         rerender
     }
 
@@ -158,6 +209,11 @@ impl App {
                 }
             },
             Message::Cancel => self.cancel(),
+            Message::StartWorker => {
+                self.worker.ensure();
+                false
+            }
+            Message::Worker(generation, event) => self.worker_said(ctx, generation, event),
             Message::Escape(in_text_field) => {
                 if self.job.is_some() {
                     self.cancel()
@@ -215,19 +271,13 @@ impl App {
                     id: self.next_job,
                     task,
                     finished: None,
+                    remote: None,
                     resets_panzoom,
                     started: Instant::now(),
                     steps: 0,
                     longest_step: Duration::ZERO,
                 };
-                if job.task.next_step_may_block() {
-                    // A step that cannot be split up comes first, and the page cannot show
-                    // anything while it is on. So get the indicator on the page, and let the
-                    // browser paint it, before starting.
-                    self.wait(ctx, job)
-                } else {
-                    self.work(ctx, job)
-                }
+                self.begin(ctx, job)
             }
             Err(error) => self.updated(Err(error), resets_panzoom),
         }
@@ -255,6 +305,185 @@ impl App {
         }
 
         true
+    }
+
+    /// Starts on a job: the worker is given it if that is worth it and the worker is there,
+    /// and otherwise the app works on it a slice at a time.
+    fn begin(&mut self, ctx: &Context<Self>, mut job: Running) -> bool {
+        if self.send_to_worker(&mut job, false) {
+            Self::show(&job);
+            self.job = Some(job);
+            return false;
+        }
+        if job.task.next_step_may_block() {
+            // A step that cannot be split up comes first, and the page cannot show
+            // anything while it is on. So get the indicator on the page, and let the
+            // browser paint it, before starting.
+            self.wait(ctx, job)
+        } else {
+            self.work(ctx, job)
+        }
+    }
+
+    /// Gives the job to the worker, if it is one for the worker and the worker is ready.
+    /// `with_signature` sends the signature of the proof whether or not the worker holds it.
+    fn send_to_worker(&mut self, job: &mut Running, with_signature: bool) -> bool {
+        if !self.worker.is_ready() {
+            return false;
+        }
+        let proof: &model::proof::ProofState = self.state.proof();
+        let Some((proof, work)) = job.task.offer(proof) else {
+            return false;
+        };
+        let encoding = Instant::now();
+        #[cfg(debug_assertions)]
+        let (delay, crash) = (
+            debug_hooks::step_delay_ms(),
+            debug_hooks::worker_mode() == "crash",
+        );
+        #[cfg(not(debug_assertions))]
+        let (delay, crash) = (0, false);
+        let bytes = self
+            .worker
+            .remote()
+            .request(proof, work, delay, with_signature);
+        let encode_ms = encoding.elapsed().as_secs_f64() * 1000.0;
+        if let Err(error) = self.worker.run(job.id, &bytes, crash) {
+            tracing::error!("Could not give the job to the worker: {:?}", error);
+            self.worker.remote().forget();
+            return false;
+        }
+        job.remote = Some(Remote {
+            label: job.task.label().to_owned(),
+            sent: Instant::now(),
+            encode_ms,
+            bytes_out: bytes.len(),
+            retried: with_signature,
+        });
+        job.started = Instant::now();
+        true
+    }
+
+    /// Takes note of what the worker said.
+    fn worker_said(&mut self, ctx: &Context<Self>, generation: u32, event: worker::Event) -> bool {
+        if !self.worker.heard(generation, &event) {
+            return false;
+        }
+        match event {
+            worker::Event::Ready => {
+                tracing::info!("The worker is ready");
+                false
+            }
+            worker::Event::Progress {
+                job,
+                label,
+                progress,
+            } => {
+                if let Some(running) = self.job.as_mut().filter(|running| running.id == job) {
+                    if let Some(remote) = &mut running.remote {
+                        remote.label = label;
+                        busy::show(busy::Info {
+                            job,
+                            label: remote.label.clone().into(),
+                            progress,
+                        });
+                    }
+                }
+                false
+            }
+            worker::Event::Done { job, bytes } => self.worker_done(ctx, job, &bytes),
+            worker::Event::Crashed { job, message } => self.worker_crashed(ctx, job, &message),
+        }
+    }
+
+    /// The worker has answered for the running job: commits what it came to.
+    fn worker_done(&mut self, ctx: &Context<Self>, id: u64, bytes: &[u8]) -> bool {
+        let Some(mut job) = self.job.take() else {
+            return false;
+        };
+        let Some(remote) = job.remote.take().filter(|_| job.id == id) else {
+            // The answer to a job that was cancelled.
+            self.job = Some(job);
+            return false;
+        };
+        let received = Instant::now();
+        let wall_ms = remote.sent.elapsed().as_secs_f64() * 1000.0;
+        match self.worker.remote().response(bytes) {
+            Ok(Answer::Done { output, worked_ms }) => {
+                let Some(output) = job.task.output_of(output) else {
+                    return self.worker_failed(ctx, job, "the answer was not for the job");
+                };
+                tracing::info!(
+                    "{} took {:.1}ms in the worker: {:.1}ms working, {:.1}ms to prepare and {:.1}ms                      to take in the answer ({}KB there, {}KB back)",
+                    remote.label,
+                    wall_ms + remote.encode_ms,
+                    worked_ms,
+                    remote.encode_ms,
+                    received.elapsed().as_secs_f64() * 1000.0,
+                    remote.bytes_out / 1024,
+                    bytes.len() / 1024
+                );
+                self.commit(ctx, job, output)
+            }
+            Ok(Answer::NeedsSignature) if !remote.retried => {
+                // The worker does not hold the signature after all (it was restarted).
+                if self.send_to_worker(&mut job, true) {
+                    self.job = Some(job);
+                    false
+                } else {
+                    self.worker_failed(ctx, job, "the worker could not be asked again")
+                }
+            }
+            Ok(Answer::NeedsSignature) => {
+                self.worker_failed(ctx, job, "the worker keeps not holding the signature")
+            }
+            Err(message) => self.worker_failed(ctx, job, &message),
+        }
+    }
+
+    /// The worker failed to do the job without crashing: the job is done here instead.
+    fn worker_failed(&mut self, ctx: &Context<Self>, mut job: Running, message: &str) -> bool {
+        tracing::error!("The worker failed: {}", message);
+        toast(Toast::warn(format!(
+            "The background worker failed ({message}); doing {} here instead",
+            job.task.label().to_lowercase()
+        )));
+        self.worker.fail();
+        self.worker.stop();
+        self.worker.ensure();
+        job.remote = None;
+        job.started = Instant::now();
+        if job.task.next_step_may_block() {
+            self.wait(ctx, job)
+        } else {
+            self.work(ctx, job)
+        }
+    }
+
+    /// The worker crashed or never started. If it was doing the running job, that is lost, and
+    /// the project is as it was.
+    fn worker_crashed(&mut self, _ctx: &Context<Self>, job: Option<u64>, message: &str) -> bool {
+        tracing::error!("The worker crashed: {}", message);
+        self.worker.stop();
+        let doing = self.job.as_ref().is_some_and(|running| {
+            running.remote.is_some() && job.is_none_or(|id| id == running.id)
+        });
+        if doing {
+            let running = self.job.take().expect("a job was being done");
+            busy::hide();
+            toast(Toast::error(format!(
+                "The background worker crashed while {}: {message}. The project is unchanged.",
+                running.task.label().to_lowercase()
+            )));
+        }
+        if !self.worker.ensure() {
+            // Too many have crashed, or none would start.
+            toast(Toast::warn(
+                "The background worker is not available; the app will do the work itself and may \
+                 pause while it does",
+            ));
+        }
+        doing
     }
 
     /// Puts the job on the indicator and gets the page to paint it, then works on the job.
@@ -324,6 +553,11 @@ impl App {
                     job.started = Instant::now();
                     job.steps = 0;
                     job.longest_step = Duration::ZERO;
+                    if self.send_to_worker(&mut job, false) {
+                        Self::show(&job);
+                        self.job = Some(job);
+                        return false;
+                    }
                     if job.task.next_step_may_block() {
                         return self.wait(ctx, job);
                     }
@@ -345,11 +579,33 @@ impl App {
         false
     }
 
+    /// Commits the output of a job that the worker did.
+    fn commit(&mut self, ctx: &Context<Self>, mut job: Running, output: model::TaskOutput) -> bool {
+        match self.state.finish(output) {
+            Ok(model::Started::Done(changed)) => {
+                busy::hide();
+                self.updated(Ok(changed), job.resets_panzoom)
+            }
+            Ok(model::Started::Running(task)) => {
+                // Something more to do before it is over.
+                job.task = task;
+                job.started = Instant::now();
+                job.steps = 0;
+                job.longest_step = Duration::ZERO;
+                self.begin(ctx, job)
+            }
+            Err(error) => {
+                busy::hide();
+                self.updated(Err(error), job.resets_panzoom)
+            }
+        }
+    }
+
     fn show(job: &Running) {
         busy::show(busy::Info {
             job: job.id,
-            label: job.task.label(),
-            progress: job.task.progress(),
+            label: job.label().into(),
+            progress: job.remote.is_none().then(|| job.task.progress()).flatten(),
         });
     }
 
@@ -361,12 +617,17 @@ impl App {
         };
         tracing::info!(
             "Cancelled {} after {:.1}ms and {} steps",
-            job.task.label(),
+            job.label(),
             job.started.elapsed().as_secs_f64() * 1000.0,
             job.steps
         );
         busy::hide();
-        toast(Toast::success(format!("Cancelled: {}", job.task.label())));
+        if job.remote.is_some() {
+            // Ending the worker is how a job in it is cancelled; a new one takes its place.
+            self.worker.stop();
+            self.worker.ensure();
+        }
+        toast(Toast::success(format!("Cancelled: {}", job.label())));
         false
     }
 

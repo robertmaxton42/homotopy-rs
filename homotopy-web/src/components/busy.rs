@@ -10,7 +10,7 @@
 //! (a single step that cannot be split up) still shows up, as the browser keeps CSS animations
 //! of this kind going while the page is blocked.
 
-use std::cell::RefCell;
+use std::{borrow::Cow, cell::RefCell};
 
 use homotopy_model::job::Progress;
 use yew::prelude::*;
@@ -24,7 +24,7 @@ const DELAY: f64 = 150.0;
 pub struct Info {
     /// Tells jobs apart.
     pub job: u64,
-    pub label: &'static str,
+    pub label: Cow<'static, str>,
     pub progress: Option<Progress>,
 }
 

@@ -104,6 +104,7 @@ fn actions_output(output: Output) -> ActionsOutcome {
 /// numbering of the nodes of the signatures) and the same error.
 fn assert_same_outcome(here: &ActionsOutcome, there: &ActionsOutcome) {
     assert_eq!(here.applied.len(), there.applied.len());
+    assert_eq!(here.positions, there.positions);
     for ((here_action, here_proof), (there_action, there_proof)) in
         here.applied.iter().zip(&there.applied)
     {

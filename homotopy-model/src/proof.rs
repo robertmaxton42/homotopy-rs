@@ -1280,8 +1280,51 @@ pub struct AttachOption {
     pub substitution: Option<Vec<(Generator, Diagram)>>,
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SerializedData(pub Vec<u8>);
+
+// As bytes, which formats that have them (such as the one jobs are sent to a worker in) take
+// without a thought for each, and as a sequence of numbers in those that do not (JSON).
+impl Serialize for SerializedData {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for SerializedData {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = SerializedData;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("bytes")
+            }
+
+            fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Self::Value, E> {
+                Ok(SerializedData(bytes.to_vec()))
+            }
+
+            fn visit_byte_buf<E>(self, bytes: Vec<u8>) -> Result<Self::Value, E> {
+                Ok(SerializedData(bytes))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(byte) = seq.next_element()? {
+                    bytes.push(byte);
+                }
+                Ok(SerializedData(bytes))
+            }
+        }
+
+        deserializer.deserialize_byte_buf(Visitor)
+    }
+}
 
 impl std::fmt::Debug for SerializedData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

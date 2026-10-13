@@ -6,11 +6,14 @@ use homotopy_model::{
     history::UndoState,
     job::{Job, Progress},
     proof::{self, SerializedData},
+    remote::{Answer, Executor, Remote},
     serialize,
 };
-use homotopy_web::model::{Action, Started, State};
+use homotopy_web::model::{Action, Started, State, Task};
 
 const ASSOCIATOR: &str = include_str!("../../homotopy-model/tests/examples/associator.json");
+const SYMMETRIC_MONOIDAL: &str =
+    include_str!("../../homotopy-model/tests/examples/symmetric_monoidal_abelianize.json");
 const MERGE_CONTRACT: &str =
     include_str!("../../homotopy-model/tests/examples/merge_contract_RI.json");
 
@@ -265,4 +268,93 @@ fn the_heavy_actions_are_labelled_and_the_light_ones_are_not() {
     ] {
         assert!(Action::Proof(action).heavy_label().is_none());
     }
+}
+
+/// Does the task as a worker would: on a thread of its own that shares none of the diagrams with
+/// this one, reached by bytes only. Returns `None` if the task is not one for a worker.
+fn done_by_a_worker(state: &State, task: &Task) -> Option<homotopy_web::model::TaskOutput> {
+    let (proof, work) = task.offer(&**state.proof())?;
+    let mut remote = Remote::default();
+    let request = remote.request(proof, work, 0, false);
+    let response = std::thread::spawn(move || Executor::default().run(&request, &mut |_| {}))
+        .join()
+        .unwrap();
+    match remote.response(&response).unwrap() {
+        Answer::Done { output, .. } => Some(task.output_of(output).unwrap()),
+        Answer::NeedsSignature => panic!("a new worker holds nothing, and was sent everything"),
+    }
+}
+
+#[test]
+fn a_task_done_by_a_worker_is_committed_as_if_done_here() {
+    for json in [MERGE_CONTRACT, SYMMETRIC_MONOIDAL] {
+        let actions = recorded_actions(json);
+        let heavy = actions
+            .iter()
+            .rposition(|a| a.work_label().is_some() && *a != proof::Action::MergeExchanges)
+            .unwrap();
+        let state = state_before(&actions, heavy);
+
+        let mut here = state.clone();
+        here.update(Action::Proof(actions[heavy].clone())).unwrap();
+
+        let mut there = state.clone();
+        let Started::Running(task) = there.start(Action::Proof(actions[heavy].clone())).unwrap()
+        else {
+            panic!("a heavy action is a task");
+        };
+        let output = done_by_a_worker(&there, &task).expect("heavy actions are for the worker");
+        // The state is as it was until the output is committed.
+        assert_eq!(summary(&there), summary(&state));
+        assert!(matches!(there.finish(output), Ok(Started::Done(true))));
+        assert_eq!(summary(&there), summary(&here));
+    }
+}
+
+#[test]
+fn only_what_is_heavy_is_for_a_worker() {
+    let actions = recorded_actions(MERGE_CONTRACT);
+    // An action that does not take long is done in place.
+    let mut state = State::default();
+    let Started::Running(task) = state
+        .start(Action::Proof(proof::Action::CreateGeneratorZero))
+        .unwrap()
+    else {
+        panic!("actions are tasks");
+    };
+    assert!(task.offer(&**state.proof()).is_none());
+
+    // A homotopy is not, and neither is replaying actions.
+    let heavy = actions
+        .iter()
+        .rposition(|a| matches!(a, proof::Action::Homotopy(_)))
+        .unwrap();
+    let mut state = state_before(&actions, heavy);
+    let Started::Running(task) = state.start(Action::Proof(actions[heavy].clone())).unwrap() else {
+        panic!("a homotopy is a task");
+    };
+    assert!(task.offer(&**state.proof()).is_some());
+
+    let mut state = State::default();
+    let Started::Running(task) = state
+        .start(Action::ImportActions(SerializedData(
+            MERGE_CONTRACT.as_bytes().to_vec(),
+        )))
+        .unwrap()
+    else {
+        panic!("replaying is a task");
+    };
+    assert!(task.offer(&**state.proof()).is_some());
+
+    // Importing a small project takes about as long as sending it would.
+    let mut state = State::default();
+    let Started::Running(task) = state
+        .start(Action::Proof(proof::Action::ImportProof(SerializedData(
+            vec![0; 1000],
+        ))))
+        .unwrap()
+    else {
+        panic!("importing is a task");
+    };
+    assert!(task.offer(&**state.proof()).is_none());
 }

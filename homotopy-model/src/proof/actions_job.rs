@@ -20,6 +20,8 @@ pub struct ActionsOutcome {
     /// The actions that changed the proof, each with the proof as it was after that action, for
     /// adding to the history.
     pub applied: Vec<(Action, Proof)>,
+    /// Where each of the applied actions is among those the job was given.
+    pub positions: Vec<usize>,
     /// The error that cut the sequence short, if any. What was applied before it still stands.
     pub error: Option<ProofError>,
 }
@@ -47,6 +49,7 @@ pub struct ActionsJob {
     /// What the action being performed is doing.
     doing: Option<&'static str>,
     applied: Vec<(Action, Proof)>,
+    positions: Vec<usize>,
     error: Option<ProofError>,
 }
 
@@ -86,6 +89,7 @@ impl ActionsJob {
             merging: None,
             doing: None,
             applied: vec![],
+            positions: vec![],
             error: None,
         }
     }
@@ -125,6 +129,7 @@ impl ActionsJob {
     fn outcome(&mut self) -> ActionsOutcome {
         ActionsOutcome {
             applied: std::mem::take(&mut self.applied),
+            positions: std::mem::take(&mut self.positions),
             error: self.error.take(),
         }
     }
@@ -138,7 +143,10 @@ impl ActionsJob {
         self.consumed += 1;
         self.doing = None;
         match result {
-            Ok(true) => self.applied.push((action, self.proof.clone())),
+            Ok(true) => {
+                self.applied.push((action, self.proof.clone()));
+                self.positions.push(self.consumed - 1);
+            }
             Ok(false) if self.stop_at_noop => return Some(self.outcome()),
             Ok(false) => {}
             Err(error) => {

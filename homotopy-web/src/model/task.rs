@@ -14,10 +14,16 @@ use homotopy_core::{Diagram, Height};
 use homotopy_graphics::{manim, stl, tikz};
 use homotopy_model::{
     job::{Job, Progress},
-    proof::{ActionsJob, ActionsOutcome, AttachOption, AttachOptionsJob, Signature},
+    proof::{ActionsJob, ActionsOutcome, AttachOption, AttachOptionsJob, ProofState, Signature},
+    remote::{Output, Work},
 };
 
-use super::ImageFormat;
+use super::{proof, ImageFormat};
+
+/// The size in bytes below which importing a project is not worth having a worker do (the
+/// import takes about as long as preparing the request and taking in the answer, and under
+/// 100ms in the debug build).
+const SMALL_IMPORT: usize = 64 * 1024;
 
 /// What the actions of a task were, which decides what committing them involves.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -60,6 +66,63 @@ impl Task {
             Self::Actions { job, .. } => job.next_step_is_heavy(),
             Self::AttachOptions(_) => false,
             Self::Export(job) => job.next_step_is_heavy(),
+        }
+    }
+}
+
+impl Task {
+    /// What it takes to have the task done in a worker (see [`homotopy_model::remote`]) if that is
+    /// worth the trouble: the proof it works on, given that of the state it was made from, and
+    /// the work to do on it. A task is worth it when a step of it can take long and cannot be
+    /// split up (the cost of passing the proof to the worker is then the smaller part of it),
+    /// or when it is made of many. Cheap tasks, which are nearly all of them, stay where they are.
+    #[must_use]
+    pub fn offer<'a>(&'a self, proof: &'a ProofState) -> Option<(&'a ProofState, Work)> {
+        match self {
+            Self::Actions { job, .. } => {
+                let (state, work) = job.offer()?;
+                let worth_it = match &work {
+                    // Importing a project is mostly turning bytes into diagrams, which has to
+                    // be done again on this side of the worker for the result: so only a
+                    // project too big for that to be quick is worth sending.
+                    Work::Actions { actions, replay } => {
+                        *replay
+                            || (job.next_step_is_heavy()
+                                && !matches!(
+                                    actions.first(),
+                                    Some(proof::Action::ImportProof(data))
+                                        if data.0.len() < SMALL_IMPORT
+                                ))
+                    }
+                    Work::AttachOptions { .. } => false,
+                };
+                worth_it.then_some((state, work))
+            }
+            // The search takes long when there are schemas to infer instances of.
+            Self::AttachOptions(job) => job
+                .has_schemas()
+                .then(|| job.offer())
+                .flatten()
+                .map(|work| (proof, work)),
+            Self::Export(_) => None,
+        }
+    }
+
+    /// What the task came to, given what the worker answered.
+    #[must_use]
+    pub fn output_of(&self, output: Output) -> Option<TaskOutput> {
+        match (self, output) {
+            (Self::Actions { kind, redone, .. }, Output::Actions(outcome)) => {
+                Some(TaskOutput::Actions {
+                    outcome,
+                    kind: *kind,
+                    redone: *redone,
+                })
+            }
+            (Self::AttachOptions(_), Output::AttachOptions(options)) => {
+                Some(TaskOutput::AttachOptions(options))
+            }
+            _ => None,
         }
     }
 }

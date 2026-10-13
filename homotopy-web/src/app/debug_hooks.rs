@@ -6,7 +6,10 @@
 //! - `state()` is a JSON summary of the project and the job in progress (see [`Summary`]).
 //! - `profile(json)` replays recorded actions and times each kind (in milliseconds).
 //! - `window.__homotopy_step_delay_ms`, if set, makes every step of a job take at least that long,
-//!   to make jobs slow enough to test with.
+//!   to make jobs slow enough to test with (also those done in the worker, which is told when
+//!   it is given the job).
+//! - `window.__homotopy_worker` can be set to `"off"` before the app starts to do without the
+//!   worker, and to `"crash"` to have the first job given to it panic there, to test falling back.
 
 use std::cell::RefCell;
 
@@ -64,7 +67,7 @@ impl From<Command> for model::Action {
 /// What is going on, for a test to compare before and after.
 #[derive(Serialize)]
 struct Summary {
-    busy: Option<&'static str>,
+    busy: Option<String>,
     can_undo: bool,
     can_redo: bool,
     /// The number of actions in the history up to the current proof.
@@ -80,11 +83,11 @@ struct Summary {
 }
 
 thread_local! {
-    static STATE: RefCell<(model::State, Option<&'static str>)> = RefCell::default();
+    static STATE: RefCell<(model::State, Option<String>)> = RefCell::default();
 }
 
 /// Records what is going on, for `state()`.
-pub fn publish(state: &model::State, busy: Option<&'static str>) {
+pub fn publish(state: &model::State, busy: Option<String>) {
     STATE.with(|s| *s.borrow_mut() = (state.clone(), busy));
 }
 
@@ -117,17 +120,33 @@ fn summary() -> String {
     serde_json::to_string(&summary).unwrap()
 }
 
+/// How long `window.__homotopy_step_delay_ms` says a step is to take, if it is set (in
+/// milliseconds). This is passed to the worker with each job, as it has no such window.
+pub fn step_delay_ms() -> u32 {
+    web_sys::window()
+        .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_step_delay_ms".into()).ok())
+        .and_then(|delay| delay.as_f64())
+        .map_or(0, |delay| delay as u32)
+}
+
+/// What `window.__homotopy_worker` says about the worker, if anything: `"off"` for none, `"broken"`
+/// for one whose script cannot be loaded, `"crash"` for one that panics in the first job.
+pub fn worker_mode() -> String {
+    web_sys::window()
+        .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_worker".into()).ok())
+        .and_then(|mode| mode.as_string())
+        .unwrap_or_default()
+}
+
 /// Makes a step take as long as `window.__homotopy_step_delay_ms` says, if it is set.
 pub fn artificial_delay() {
     let Some(window) = web_sys::window() else {
         return;
     };
-    let Some(delay) = js_sys::Reflect::get(&window, &"__homotopy_step_delay_ms".into())
-        .ok()
-        .and_then(|delay| delay.as_f64())
-    else {
+    let delay = f64::from(step_delay_ms());
+    if delay == 0.0 {
         return;
-    };
+    }
     let Some(performance) = window.performance() else {
         return;
     };
