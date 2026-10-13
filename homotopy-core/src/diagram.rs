@@ -52,6 +52,8 @@ impl Diagram {
 
     /// Returns all the generators mentioned by this diagram.
     #[must_use]
+    // `Diagram` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
+    #[allow(clippy::mutable_key_type)]
     pub fn generators(&self) -> FastHashMap<Generator, FastHashSet<Orientation>> {
         use Diagram::{Diagram0, DiagramN};
         fn add_generators(
@@ -69,9 +71,8 @@ impl Diagram {
                 }
                 DiagramN(d) => {
                     for slice in d.slices() {
-                        if !visited.contains(&slice) {
+                        if visited.insert(slice.clone()) {
                             add_generators(&slice, generators, visited);
-                            visited.insert(slice);
                         }
                     }
                 }
@@ -380,6 +381,8 @@ impl<'de> Deserialize<'de> for DiagramN {
 }
 
 impl DiagramN {
+    // `Diagram` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
+    #[allow(clippy::mutable_key_type)]
     pub fn from_generator(
         generator: Generator,
         source: impl Into<Diagram>,
@@ -707,14 +710,40 @@ impl DiagramN {
         )
     }
 
+    /// All reflections of the diagram in a non-empty set of directions, deduplicated and
+    /// excluding the diagram itself.
+    ///
+    /// Each reflection is returned along with the reflected directions, numbered from the
+    /// innermost direction `1` to the outermost direction `n`, so that reflecting in `{n}` is
+    /// the [inverse](Self::inverse) and reflecting in `{1}` takes `C ⇒ D` to `C* ⇒ D*`.
+    ///
+    /// The reflections need not be well-typed: whether they are depends on the signature.
+    #[must_use]
+    // `Diagram` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
+    #[allow(clippy::mutable_key_type)]
+    pub fn reflections(&self) -> Vec<(Vec<usize>, Self)> {
+        let n = self.dimension();
+        let mut seen = FastHashSet::default();
+        seen.insert(self.clone());
+        (1..1_u64 << n)
+            .filter_map(|mask| {
+                let reflected = self.reflect(&Direction::from_mask(mask, n), 0);
+                seen.insert(reflected.clone()).then(|| {
+                    let reflected_directions = (1..=n).filter(|j| mask & (1 << (j - 1)) != 0);
+                    (reflected_directions.collect(), reflected)
+                })
+            })
+            .collect()
+    }
+
     #[must_use]
     pub fn reflect(&self, directions: &[Direction], codimension: usize) -> Self {
         assert_eq!(directions.len(), self.dimension() + codimension);
 
-        if directions[codimension..]
-            .iter()
-            .all(|d| *d == Direction::Forward)
-        {
+        // Reflecting in an outer direction also flips the orientation of points of
+        // high-dimensional generators deeper down, so we can only skip the work when
+        // no direction at all is reflected.
+        if directions.iter().all(|d| *d == Direction::Forward) {
             return self.clone();
         }
 
@@ -928,7 +957,7 @@ impl Iterator for Slices {
             }
         };
 
-        std::mem::replace(&mut self.current, Some(next))
+        self.current.replace(next)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

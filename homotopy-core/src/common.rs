@@ -111,7 +111,7 @@ impl From<Height> for usize {
 
 impl From<usize> for Height {
     fn from(h: usize) -> Self {
-        if h % 2 == 0 {
+        if h.is_multiple_of(2) {
             Self::Regular(h / 2)
         } else {
             Self::Singular((h - 1) / 2)
@@ -385,6 +385,23 @@ impl From<Boundary> for BoundaryPath {
 pub enum Direction {
     Forward,
     Backward,
+}
+
+impl Direction {
+    /// The directions of an `n`-diagram reflecting those in the mask, where bit `j - 1` stands
+    /// for the `j`-th direction from the inside (so the outermost direction comes first).
+    #[must_use]
+    pub fn from_mask(mask: u64, n: usize) -> Vec<Self> {
+        (0..n)
+            .map(|i| {
+                if mask & (1 << (n - 1 - i)) == 0 {
+                    Self::Forward
+                } else {
+                    Self::Backward
+                }
+            })
+            .collect()
+    }
 }
 
 pub trait WithDirection: DoubleEndedIterator {

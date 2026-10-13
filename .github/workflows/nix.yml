@@ -7,6 +7,7 @@ on:
 jobs:
   lockfile:
     name: Update flake.lock
+    if: github.repository == 'homotopy-io/homotopy-rs'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

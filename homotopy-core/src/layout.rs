@@ -414,7 +414,7 @@ fn compute_averages(width: f32, singular_positions: Vec<(f32, f32)>) -> Vec<f32>
         let a = 2.0 * a + 2.0;
         let b = 2.0 * b + 2.0;
         positions.push((start + a - 1.0) / 2.0);
-        positions.push((a + b) / 2.0);
+        positions.push(f32::midpoint(a, b));
         start = b + 1.0;
     }
     positions.push((start + 2.0 * width + 1.0) / 2.0);

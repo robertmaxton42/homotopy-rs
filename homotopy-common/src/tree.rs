@@ -33,7 +33,7 @@ impl<T> NodeData<T> {
     }
 
     #[inline]
-    pub fn inner_mut(&mut self) -> &mut T {
+    pub const fn inner_mut(&mut self) -> &mut T {
         &mut self.data
     }
 
@@ -75,7 +75,7 @@ impl<T> NodeData<T> {
     }
 
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.children.is_empty()
     }
 }
@@ -322,7 +322,7 @@ impl<T> Tree<T> {
             }
 
             // Drain all of the children from the node in working memory
-            let children: Vec<_> = nodes[node].children.drain(0..).collect();
+            let children: Vec<_> = std::mem::take(&mut nodes[node].children);
 
             // For each of these children, add them to the back of the queue
             // and set their parent field to point to the newly created node
@@ -422,7 +422,7 @@ pub struct AncestorIterator<'a, T> {
     current: Option<Node>,
 }
 
-impl<'a, T> Iterator for AncestorIterator<'a, T> {
+impl<T> Iterator for AncestorIterator<'_, T> {
     type Item = Node;
 
     #[inline]
@@ -433,14 +433,14 @@ impl<'a, T> Iterator for AncestorIterator<'a, T> {
     }
 }
 
-impl<'a, T> FusedIterator for AncestorIterator<'a, T> {}
+impl<T> FusedIterator for AncestorIterator<'_, T> {}
 
 pub struct DescendantsIterator<'a, T> {
     tree: &'a Tree<T>,
     to_visit: VecDeque<Node>,
 }
 
-impl<'a, T> Iterator for DescendantsIterator<'a, T> {
+impl<T> Iterator for DescendantsIterator<'_, T> {
     type Item = Node;
 
     #[inline]
@@ -455,4 +455,4 @@ impl<'a, T> Iterator for DescendantsIterator<'a, T> {
     }
 }
 
-impl<'a, T> FusedIterator for DescendantsIterator<'a, T> {}
+impl<T> FusedIterator for DescendantsIterator<'_, T> {}

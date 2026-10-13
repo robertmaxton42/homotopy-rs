@@ -1037,6 +1037,53 @@ input.signature__item-name {
   height: 0;
 }
 
+.number-stepper {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Symmetries */
+
+.signature__symmetries {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-0) var(--space-1);
+  border: 1px solid var(--drawer-border);
+  border-radius: var(--space-0);
+}
+
+.signature__symmetries ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.signature__symmetry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.signature__symmetry-remove {
+  display: flex;
+  cursor: pointer;
+}
+
+.signature__symmetry-form {
+  display: flex;
+  gap: var(--space-0);
+  margin-top: var(--space-0);
+}
+
+.signature__symmetry-form input[type=text] {
+  min-width: 0;
+  user-select: text;
+}
+
+.signature__symmetry-form.invalid input[type=text] {
+  outline: 1px solid #c0392b;
+}
+
 /* Stash */
 
 .stash__element {

@@ -166,10 +166,7 @@ impl Store {
                     Some(DiagramN::new_unsafe(source, cospans).into())
                 }
             };
-            diagram
-                .as_ref()
-                .cloned()
-                .map(|r| self.diagram_keys.insert(r, key));
+            diagram.clone().map(|r| self.diagram_keys.insert(r, key));
             diagram
         })
     }
@@ -205,10 +202,7 @@ impl Store {
                     Some(RewriteN::new_unsafe(u32::from(dimension) as usize, cones).into())
                 }
             };
-            rewrite
-                .as_ref()
-                .cloned()
-                .map(|r| self.rewrite_keys.insert(r, key));
+            rewrite.clone().map(|r| self.rewrite_keys.insert(r, key));
             rewrite
         })
     }
@@ -252,9 +246,7 @@ impl Store {
                     regular_slices,
                     singular_slices,
                 ));
-                cone.as_ref()
-                    .cloned()
-                    .map(|c| self.cone_keys.insert(c, key));
+                cone.clone().map(|c| self.cone_keys.insert(c, key));
                 cone
             })
     }

@@ -114,6 +114,8 @@ pub enum Rewrite {
 }
 
 impl Rewrite {
+    // `Diagram` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
+    #[allow(clippy::mutable_key_type)]
     pub fn cone_over_generator(
         generator: Generator,
         base: Diagram,
@@ -272,7 +274,7 @@ impl Rewrite {
     #[must_use]
     pub fn is_homotopy(&self) -> bool {
         self.max_generator(Boundary::Target)
-            .map_or(true, |d| d.generator.dimension <= self.dimension())
+            .is_none_or(|d| d.generator.dimension <= self.dimension())
     }
 
     /// This will implicitly mangle/strip labels
@@ -897,10 +899,10 @@ impl RewriteN {
     pub fn reflect(&self, source: &DiagramN, directions: &[Direction], codimension: usize) -> Self {
         assert_eq!(directions.len(), self.dimension() + codimension);
 
-        if directions[codimension..]
-            .iter()
-            .all(|&d| d == Direction::Forward)
-        {
+        // Reflecting in an outer direction also flips the orientation of points of
+        // high-dimensional generators deeper down, so we can only skip the work when
+        // no direction at all is reflected.
+        if directions.iter().all(|&d| d == Direction::Forward) {
             return self.clone();
         }
 

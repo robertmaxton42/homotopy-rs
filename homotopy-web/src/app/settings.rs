@@ -9,6 +9,7 @@ declare_settings! {
         weak_units: bool = false,
         animated_3d: bool = false,
         contraction_step: u32 = 1,
+        merge_exchanges: bool = false,
 
         cubical_subdivision: bool = true,
         dpr_scale: bool = true,
@@ -81,6 +82,13 @@ impl Component for SettingsView {
                             "Render 3D diagrams as movies",
                             AppSettings::get_animated_3d(),
                             AppSettings::set_animated_3d,
+                        )
+                    }
+                    {
+                        Self::view_checkbox(
+                            "Merge exchanges automatically",
+                            AppSettings::get_merge_exchanges(),
+                            AppSettings::set_merge_exchanges,
                         )
                     }
                     {

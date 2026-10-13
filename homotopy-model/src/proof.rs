@@ -132,6 +132,12 @@ pub enum Action {
 
     Squash,
 
+    /// Merge each contraction-only step of the workspace diagram with a following expansion-only
+    /// step into a single exchange step ("en passant"), see [DiagramN::merge_exchanges]. Does
+    /// nothing unless the path is empty or starts with a boundary slice, which is the case
+    /// while homotopies extend a diagram that was boosted with [Action::TakeIdentityDiagram].
+    MergeExchanges,
+
     Behead,
 
     Befoot,
@@ -225,6 +231,15 @@ impl Action {
                 .workspace
                 .as_ref()
                 .is_some_and(|ws| ws.visible_diagram().size().is_some_and(|size| size > 0)),
+            // Only checks for a candidate pair of steps; typechecking the merge is left to the
+            // handler, which may still decide not to merge.
+            Self::MergeExchanges => proof.workspace.as_ref().is_some_and(|ws| {
+                matches!(ws.path.front(), None | Some(SliceIndex::Boundary(_)))
+                    && matches!(&ws.diagram, Diagram::DiagramN(diagram) if diagram
+                        .cospans()
+                        .windows(2)
+                        .any(|pair| pair[0].backward.is_identity() && pair[1].forward.is_identity()))
+            }),
             Self::Behead | Self::Befoot => {
                 proof
                     .workspace
@@ -269,11 +284,14 @@ impl Action {
     pub const fn is_experimental(&self) -> bool {
         matches!(
             self,
-            Self::EditSignature(SignatureEdit::Edit(
-                _,
-                SignatureItemEdit::MakeOriented(true)
-                    | SignatureItemEdit::MakeInvertible(Invertibility::Dualisable(_))
-            ))
+            Self::EditSignature(
+                SignatureEdit::Edit(
+                    _,
+                    SignatureItemEdit::MakeOriented(true)
+                        | SignatureItemEdit::MakeInvertible(Invertibility::Dualisable(_))
+                ) | SignatureEdit::AddSymmetry(_)
+                    | SignatureEdit::RemoveSymmetry(_)
+            )
         )
     }
 }
@@ -339,6 +357,7 @@ impl ProofState {
             Action::Homotopy(Homotopy::Expand(homotopy)) => self.homotopy_expand(homotopy)?,
             Action::Homotopy(Homotopy::Contract(homotopy)) => self.homotopy_contract(homotopy)?,
             Action::Squash => self.squash()?,
+            Action::MergeExchanges => self.merge_exchanges(),
             Action::Behead => self.behead(),
             Action::Befoot => self.befoot(),
             Action::Invert => self.invert()?,
@@ -552,7 +571,7 @@ impl ProofState {
     /// Handler for [Action::DecreaseView].
     ///
     /// Invalid if the workspace is empty or the view dimension is too low.
-    fn decrease_view(&mut self, count: u8) -> bool {
+    const fn decrease_view(&mut self, count: u8) -> bool {
         let Some(ws) = &mut self.workspace else {
             return false;
         };
@@ -719,6 +738,30 @@ impl ProofState {
             bias: None,
             location: Default::default(),
         })
+    }
+
+    /// Handler for [Action::MergeExchanges].
+    ///
+    /// Invalid if the workspace is empty, has dimension 0, or the path starts with an interior
+    /// slice (merging changes the interior slices, but not the boundaries, of the diagram). Does
+    /// nothing if there is no pair of steps to merge.
+    fn merge_exchanges(&mut self) -> bool {
+        let Some(ws) = &mut self.workspace else {
+            return false;
+        };
+        let Diagram::DiagramN(diagram) = &ws.diagram else {
+            return false;
+        };
+        if matches!(ws.path.front(), Some(SliceIndex::Interior(_))) {
+            return false;
+        }
+
+        let (merged, count) = diagram.merge_exchanges(&self.signature);
+        if count == 0 {
+            return false;
+        }
+        ws.diagram = merged.into();
+        true
     }
 
     /// Handler for [Action::Behead].
@@ -905,6 +948,7 @@ impl ProofState {
                 })
             }
         });
+        self.signature.suspend_symmetries();
 
         for diagram in self.diagrams_mut() {
             *diagram = diagram.suspend(source, target).into();
@@ -1035,6 +1079,30 @@ impl ProofState {
             }
         }
 
+        if let SignatureEdit::RemoveSymmetry(index) = edit {
+            if *index >= self.signature.symmetries().len() {
+                return Ok(false);
+            }
+            // Removing a symmetry makes typechecking stricter. The signature checks that its
+            // generators remain well-typed, and we check the diagrams in the proof state.
+            let mut signature = self.signature.clone();
+            signature.update(edit)?;
+            let mode = Mode {
+                directed: true,
+                dualisable: true,
+                simplices: false,
+                generator: None,
+            };
+            if self
+                .diagrams()
+                .any(|diagram| typecheck(diagram, &signature, mode, true).is_err())
+            {
+                return Err(ProofError::SignatureError(SignatureError::SymmetryInUse));
+            }
+            self.signature = signature;
+            return Ok(true);
+        }
+
         self.signature.update(edit)?;
 
         Ok(true)
@@ -1054,7 +1122,7 @@ impl ProofState {
     /// Handler for [Action::FlipBoundary].
     ///
     /// Invalid if the selected boundary is empty.
-    fn flip_boundary(&mut self) -> bool {
+    const fn flip_boundary(&mut self) -> bool {
         let Some(selected) = &mut self.boundary else {
             return false;
         };
@@ -1141,5 +1209,179 @@ impl From<Vec<u8>> for SerializedData {
 impl From<SerializedData> for Vec<u8> {
     fn from(data: SerializedData) -> Self {
         data.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use homotopy_core::signature::Symmetry;
+
+    use super::*;
+
+    fn symmetry(name: &str, directions: &[usize]) -> SignatureEdit {
+        SignatureEdit::AddSymmetry(Symmetry {
+            name: name.to_owned(),
+            directions: directions.to_vec(),
+        })
+    }
+
+    #[test]
+    fn invalid_symmetries_are_rejected() {
+        let mut state = ProofState::default();
+        for edit in [
+            symmetry("", &[1]),
+            symmetry("  ", &[1]),
+            symmetry("op", &[]),
+            symmetry("op", &[0]),
+            symmetry("op", &[65]),
+        ] {
+            assert!(state.update(&Action::EditSignature(edit)).is_err());
+        }
+
+        // Directions are sorted and deduplicated, and names are unique.
+        let add = Action::EditSignature(symmetry(" op ", &[3, 1, 3]));
+        assert!(state.update(&add).unwrap());
+        assert_eq!(
+            state.signature.symmetries(),
+            [Symmetry {
+                name: "op".to_owned(),
+                directions: vec![1, 3]
+            }]
+        );
+        assert!(state.update(&add).is_err());
+    }
+
+    #[test]
+    fn symmetry_in_use_cannot_be_removed() {
+        let mut state = ProofState::default();
+        let x = state.signature.create_generator_zero("x");
+        let f = state
+            .signature
+            .create_generator(x.into(), x.into(), "f", Invertibility::Directed)
+            .unwrap();
+        let remove = Action::EditSignature(SignatureEdit::RemoveSymmetry(0));
+
+        // The reverse of a directed generator needs a symmetry in the workspace.
+        state
+            .update(&Action::EditSignature(symmetry("op", &[1])))
+            .unwrap();
+        state.workspace = Some(Workspace::new(f.inverse().into()));
+        assert!(matches!(
+            state.update(&remove),
+            Err(ProofError::SignatureError(SignatureError::SymmetryInUse))
+        ));
+        assert_eq!(state.signature.symmetries().len(), 1);
+
+        state.workspace = None;
+        assert!(state.update(&remove).unwrap());
+        assert!(state.signature.symmetries().is_empty());
+        // Removing a symmetry that does not exist does nothing.
+        assert!(!state.update(&remove).unwrap());
+    }
+
+    /// Builds the 3-diagram exchanging the 2-diagram `f ▷ b ≫ a ◁ g` through `f ◫ g` with a
+    /// contraction followed by an expansion.
+    fn wrench(state: &mut ProofState) -> DiagramN {
+        let sig = &mut state.signature;
+        let x = sig.create_generator_zero("x");
+        let mut cell = |source: Diagram, target: Diagram| {
+            sig.create_generator(source, target, "c", Invertibility::Directed)
+                .unwrap()
+        };
+        let x = Diagram::from(x);
+        let (a, b) = (cell(x.clone(), x.clone()), cell(x.clone(), x));
+        let (f, g) = (
+            cell(a.clone().into(), a.clone().into()),
+            cell(b.clone().into(), b.clone().into()),
+        );
+        let ab = a.attach(&b, Boundary::Target, &[]).unwrap();
+        let fg = ab
+            .identity()
+            .attach(&f, Boundary::Target, &[0])
+            .unwrap()
+            .attach(&g, Boundary::Target, &[1])
+            .unwrap();
+
+        let to_parallel = fg
+            .clone()
+            .identity()
+            .contract(
+                Boundary::Target.into(),
+                &mut [],
+                0,
+                Direction::Forward,
+                1,
+                None,
+                &state.signature,
+            )
+            .unwrap();
+        let parallel = DiagramN::try_from(to_parallel.target()).unwrap();
+        let (parallel, signature) = (&parallel, &state.signature);
+        let from_parallel = [Direction::Forward, Direction::Backward]
+            .into_iter()
+            .flat_map(|direction| {
+                (0..2).filter_map(move |h| {
+                    (parallel.clone().identity())
+                        .expand(
+                            Boundary::Target.into(),
+                            &mut [],
+                            [Height::Singular(0), Height::Singular(h)],
+                            direction,
+                            signature,
+                        )
+                        .ok()
+                })
+            })
+            .find(|e| DiagramN::try_from(e.target()).unwrap() != fg)
+            .unwrap();
+
+        DiagramN::new(
+            to_parallel.source(),
+            to_parallel
+                .cospans()
+                .iter()
+                .chain(from_parallel.cospans())
+                .cloned()
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn merge_exchanges_merges_wrench() {
+        let mut state = ProofState::default();
+        let wrench = wrench(&mut state);
+        assert_eq!(wrench.size(), 2);
+        let merge = Action::MergeExchanges;
+
+        // Nothing to do without a workspace, or if there is nothing to merge.
+        assert!(!state.update(&merge).unwrap());
+        state.workspace = Some(Workspace::new(wrench.source().into()));
+        assert!(!state.update(&merge).unwrap());
+
+        // Interior slices would be invalidated by merging.
+        state.workspace = Some(Workspace::new(wrench.clone().into()));
+        state.workspace.as_mut().unwrap().path =
+            vec![SliceIndex::Interior(Height::Regular(0))].into();
+        assert!(!merge.is_valid(&state));
+        assert!(!state.update(&merge).unwrap());
+
+        // Boundary slices are not, which is where homotopies on identities are performed.
+        state.workspace = Some(Workspace::new(wrench.clone().into()));
+        state.workspace.as_mut().unwrap().path = vec![Boundary::Target.into()].into();
+        assert!(merge.is_valid(&state));
+        assert!(state.update(&merge).unwrap());
+        let ws = state.workspace.as_ref().unwrap();
+        assert_eq!(ws.path.len(), 1);
+        assert_eq!(DiagramN::try_from(ws.diagram.clone()).unwrap().size(), 1);
+
+        state.workspace = Some(Workspace::new(wrench.clone().into()));
+        assert!(merge.is_valid(&state));
+        assert!(state.update(&merge).unwrap());
+        let ws = state.workspace.as_ref().unwrap();
+        let merged = DiagramN::try_from(ws.diagram.clone()).unwrap();
+        assert_eq!(merged.size(), 1);
+        assert_eq!(merged.source(), wrench.source());
+        assert_eq!(merged.target(), wrench.target());
+        assert!(!state.update(&merge).unwrap());
     }
 }

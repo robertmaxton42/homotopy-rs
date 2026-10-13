@@ -5,10 +5,11 @@ use history::{History, UndoState};
 use homotopy_core::{
     common::{BoundaryPath, Generator},
     signature::Signature,
+    typecheck::{typecheck, Mode},
     Boundary, Diagram, DiagramN, Height, SliceIndex,
 };
 use homotopy_graphics::{manim, stl, svg, tikz};
-use homotopy_model::proof::AttachOption;
+use homotopy_model::proof::{generators::GeneratorInfo, AttachOption};
 pub use homotopy_model::{history, migration, proof, serialize};
 use serde::Serialize;
 use thiserror::Error;
@@ -17,6 +18,7 @@ use wasm_bindgen::JsCast;
 use crate::app::{
     account,
     diagram_gl::{FrameCaptureControl, FRAME_CAPTURE},
+    settings::AppSettings,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -163,9 +165,18 @@ impl State {
                         crate::panic::pop_action();
                         return Ok(res?);
                     }
-                    self.history.add(action, proof);
+                    self.history.add(action.clone(), proof);
                 }
                 self.clear_selections();
+
+                // Merging is its own history step (rather than being folded into the homotopy's)
+                // so that the recorded actions replay to the same proof when exported. It cannot
+                // loop, as `MergeExchanges` is not a `Homotopy`.
+                if matches!(action, proof::Action::Homotopy(_))
+                    && AppSettings::get_merge_exchanges()
+                {
+                    self.update(Action::Proof(proof::Action::MergeExchanges))?;
+                }
             }
 
             Action::History(history::Action::Move(dir)) => {
@@ -188,7 +199,7 @@ impl State {
                             }
                         }
                     }
-                };
+                }
                 self.clear_selections();
             }
 
@@ -453,6 +464,15 @@ impl State {
                         if info.invertibility.is_invertible() {
                             extend!(d.inverse(), Some("inverse".to_owned()));
                         }
+                        self.extend_with_reflections(
+                            &mut matches,
+                            info,
+                            d,
+                            &haystack,
+                            &point,
+                            boundary,
+                            boundary_path,
+                        );
                     }
                 }
                 std::cmp::Ordering::Greater => (),
@@ -480,13 +500,82 @@ impl State {
         Ok(())
     }
 
+    /// Offers the well-typed reflections of a generator other than its inverse: duals, mates,
+    /// adjoints and so on. These are only valid when some of the generators involved are
+    /// invertible or dualisable, or when the signature has symmetries, and are typechecked only
+    /// once they are known to match. Reflections by a symmetry are tagged with its name.
+    #[allow(clippy::too_many_arguments)]
+    fn extend_with_reflections(
+        &self,
+        matches: &mut Vec<AttachOption>,
+        info: &GeneratorInfo,
+        diagram: &DiagramN,
+        haystack: &Diagram,
+        point: &[Height],
+        boundary: Boundary,
+        boundary_path: Option<BoundaryPath>,
+    ) {
+        let signature = &self.proof().signature;
+        let any_invertible = Diagram::from(diagram.clone()).generators().keys().any(|g| {
+            signature
+                .generator_info(*g)
+                .is_some_and(|info| info.invertibility.is_invertible())
+        });
+        if !any_invertible && signature.symmetries().is_empty() {
+            return;
+        }
+
+        let n = diagram.dimension();
+        for (directions, reflected) in diagram.reflections() {
+            if info.invertibility.is_invertible() && directions == [n] {
+                // Already offered as the inverse.
+                continue;
+            }
+            let needle = reflected.slice(boundary.flip()).unwrap();
+            let embeddings: Vec<_> = haystack
+                .embeddings(&needle)
+                .filter(|embedding| needle.contains_point(point, embedding))
+                .collect();
+            if embeddings.is_empty()
+                || typecheck(&reflected.clone().into(), signature, Mode::default(), true).is_err()
+            {
+                continue;
+            }
+            let mask = directions.iter().fold(0_u64, |mask, j| mask | 1 << (j - 1));
+            let tag = signature
+                .symmetries()
+                .iter()
+                .find(|symmetry| symmetry.mask() & ((1 << n) - 1) == mask)
+                .map_or_else(
+                    || {
+                        format!(
+                            "dual in {}",
+                            directions
+                                .iter()
+                                .map(|j| format!("x{}", subscript(*j)))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    },
+                    |symmetry| symmetry.name.clone(),
+                );
+            matches.extend(embeddings.into_iter().map(|embedding| AttachOption {
+                generator: info.generator,
+                diagram: reflected.clone(),
+                tag: Some(tag.clone()),
+                boundary_path,
+                embedding: embedding.into_iter().collect(),
+            }));
+        }
+    }
+
     /// Handler for [Action::HighlightAttachment].
     fn highlight_attachment(&mut self, option: Option<AttachOption>) {
         self.attachment_highlight = option;
     }
 
     /// Handler for [Action::HighlightSlice].
-    fn highlight_slice(&mut self, option: Option<SliceIndex>) {
+    const fn highlight_slice(&mut self, option: Option<SliceIndex>) {
         self.slice_highlight = option;
     }
 
@@ -579,8 +668,8 @@ pub fn zip_files(files: impl Iterator<Item = (String, impl AsRef<[u8]>)>) -> Vec
 
 pub fn generate_download(name: &str, ext: &str, data: &[u8]) -> Result<(), wasm_bindgen::JsValue> {
     let val: js_sys::Uint8Array = data.into();
-    let mut options = web_sys::BlobPropertyBag::new();
-    options.type_("application/msgpack");
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type("application/msgpack");
     let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(
         &js_sys::Array::of1(&val.into()).into(),
         &options,
@@ -594,7 +683,7 @@ pub fn generate_download(name: &str, ext: &str, data: &[u8]) -> Result<(), wasm_
         .dyn_ref::<web_sys::HtmlElement>()
         .ok_or("failed to create anchor")?;
     a.set_attribute("href", &url)?;
-    a.set_attribute("download", &format!("{}.{}", &name, &ext))?;
+    a.set_attribute("download", &format!("{name}.{ext}"))?;
     body.append_child(a)?;
     a.click();
     a.remove();
@@ -613,4 +702,12 @@ pub fn update_window_url_path(new_path: &str) {
             Some(&format!("{origin}{new_path}")),
         )
         .unwrap();
+}
+
+#[must_use]
+pub fn subscript(n: usize) -> String {
+    n.to_string()
+        .chars()
+        .map(|c| char::from_u32(0x2080 + c.to_digit(10).unwrap()).unwrap())
+        .collect()
 }

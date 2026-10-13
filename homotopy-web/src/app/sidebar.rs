@@ -49,17 +49,12 @@ pub fn SidebarButton(props: &SidebarButtonProps) -> Html {
     }
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum DrawerViewSize {
     TemporarilyHidden,
+    #[default]
     Regular,
     Expanded,
-}
-
-impl Default for DrawerViewSize {
-    fn default() -> Self {
-        Self::Regular
-    }
 }
 
 // from pixel width of drawer to size
@@ -237,7 +232,7 @@ impl Component for SidebarDrawer {
                         <span class="drawer__title">
                             {ctx.props().title}
                         </span>
-                        if let (Some(icon), Some(action)) = (ctx.props().icon, ctx.props().on_click.as_ref().cloned()) {
+                        if let (Some(icon), Some(action)) = (ctx.props().icon, ctx.props().on_click.clone()) {
                             <span
                                 class="drawer__icon"
                                 onclick={ctx.props().model_dispatch.reform(move |_| action.clone())}
@@ -362,7 +357,7 @@ impl Component for Sidebar {
 impl Sidebar {
     const WIDTH: i32 = 48; // px
 
-    #[allow(clippy::let_underscore_untyped)]
+    #[allow(clippy::let_underscore_untyped, clippy::let_underscore_must_use)]
     fn drawer(&self, ctx: &Context<Self>) -> Html {
         let model_dispatch = &ctx.props().dispatch;
         let sidebar_dispatch = ctx.link().callback(|x| x);
@@ -393,7 +388,7 @@ impl Sidebar {
                     model_dispatch,
                     &sidebar_dispatch,
                     &ctx.props().proof,
-                    &ctx.props().remote_project_metadata,
+                    ctx.props().remote_project_metadata.as_ref(),
                     self.last_drawer_width,
                     self.drawer_view_size,
                 )

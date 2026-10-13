@@ -1,5 +1,7 @@
 use folder::FolderView;
+use homotopy_core::signature::Signature as _;
 use homotopy_model::proof;
+use symmetries::SymmetriesView;
 use yew::prelude::*;
 use yew_macro::function_component;
 
@@ -10,6 +12,7 @@ use crate::{
 
 mod folder;
 mod item;
+mod symmetries;
 
 #[derive(Clone, PartialEq, Properties)]
 pub struct Props {
@@ -38,6 +41,10 @@ pub fn SignatureView(props: &Props) -> Html {
                 dispatch={props.dispatch.clone()}
                 signature={props.signature.clone()}
                 drawer_view_size={props.drawer_view_size}
+            />
+            <SymmetriesView
+                dispatch={props.dispatch.clone()}
+                symmetries={props.signature.symmetries().to_vec()}
             />
         </div>
     }

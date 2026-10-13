@@ -10,7 +10,7 @@ env:
   CARGO_HUSKY_DONT_INSTALL_HOOKS: true
   NIX_BUILD: nix build -L --show-trace
   NIX_BUILD_UNCACHED: nix run nixpkgs#nix-build-uncached -- -build-flags -L --show-trace
-  FLAKE: 'github:homotopy-io/homotopy-rs?rev=${{ github.sha }}'
+  FLAKE: 'github:${{ github.repository }}?rev=${{ github.sha }}'
 
 jobs:
   test:
@@ -102,7 +102,7 @@ jobs:
     name: Deploy
     runs-on: ubuntu-latest
     needs: [build, test]
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/master' && github.repository == 'homotopy-io/homotopy-rs'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -136,6 +136,8 @@ jobs:
     name: Benchmark
     runs-on: ubuntu-latest
     needs: [build, test]
+    # Compares against the benchmark history on upstream's gh-pages branch.
+    if: github.repository == 'homotopy-io/homotopy-rs'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -168,7 +170,7 @@ jobs:
     name: Sync benchmark data to Firebase Hosting
     runs-on: ubuntu-latest
     needs: benchmark
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/master' && github.repository == 'homotopy-io/homotopy-rs'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -190,7 +192,7 @@ jobs:
     name: Preview
     runs-on: ubuntu-latest
     needs: build
-    if: '${{ github.event.pull_request.head.repo.full_name == github.repository }}'
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.repository == 'homotopy-io/homotopy-rs' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

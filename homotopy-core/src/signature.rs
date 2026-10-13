@@ -39,6 +39,33 @@ impl Invertibility {
     }
 }
 
+/// A reflection symmetry of a whole theory, such as `op` on **Cat**.
+///
+/// Declaring a symmetry asserts that reflecting any diagram in the given directions yields
+/// another valid diagram, so that every generator `g` may also appear reflected in the
+/// directions of the symmetry that lie within its own dimension. Directions are numbered from
+/// the innermost direction `1`, as in [`DiagramN::reflections`].
+///
+/// For example, if 1-cells are categories and 2-cells functors, the symmetry `{1}` sends
+/// `F : C → D` to `F^op : C^op → D^op` and a natural transformation `α : F ⇒ G` to
+/// `α^op : F^op ⇒ G^op`, while `{1, 3}` sends `α` to `α^op : G^op ⇒ F^op` instead.
+#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+pub struct Symmetry {
+    pub name: String,
+    pub directions: Vec<usize>,
+}
+
+impl Symmetry {
+    /// The directions of the symmetry as a bit mask, with bit `j - 1` for direction `j`.
+    #[must_use]
+    pub fn mask(&self) -> u64 {
+        self.directions
+            .iter()
+            .filter(|&&j| (1..=64).contains(&j))
+            .fold(0, |mask, j| mask | 1 << (j - 1))
+    }
+}
+
 pub trait GeneratorInfo {
     fn diagram(&self) -> &Diagram;
     fn invertibility(&self) -> Invertibility;
@@ -48,6 +75,11 @@ pub trait Signature {
     type Info: GeneratorInfo;
     fn generators(&self) -> impl Iterator<Item = Generator>;
     fn generator_info(&self, g: Generator) -> Option<&Self::Info>;
+
+    /// The reflection symmetries of the theory (see [`Symmetry`]).
+    fn symmetries(&self) -> &[Symmetry] {
+        &[]
+    }
 
     fn globular_pairs(&self, generator: Generator) -> Vec<Generator> {
         let diagram = self.generator_info(generator).unwrap().diagram();

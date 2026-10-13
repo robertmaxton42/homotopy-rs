@@ -3,7 +3,7 @@ use std::{collections::VecDeque, str::FromStr};
 use homotopy_common::tree::{Node, Tree};
 use homotopy_core::{
     diagram::NewDiagramError,
-    signature::{Invertibility, Signature as _},
+    signature::{Invertibility, Signature as _, Symmetry},
     typecheck::{typecheck, Mode},
     Diagram, Diagram0, DiagramN, Generator,
 };
@@ -23,6 +23,9 @@ pub const COLORS: &[&str] = &[
     "#f6f5f4", // white(ish)
     "#000000", // black
 ];
+
+/// The largest direction of a [`Symmetry`], which is stored as a 64-bit mask.
+pub const MAX_SYMMETRY_DIRECTION: usize = 64;
 
 pub const VERTEX_SHAPES: &[VertexShape] = &[VertexShape::Circle, VertexShape::Square];
 
@@ -60,27 +63,38 @@ pub enum SignatureEdit {
     ToggleFolder(Node),
     NewFolder(Node),
     Remove(Node),
+    /// Declare a reflection symmetry of the theory. This only makes typechecking more permissive.
+    AddSymmetry(Symmetry),
+    /// Remove the symmetry at the given index, if the signature remains well-typed without it.
+    RemoveSymmetry(usize),
 }
 
 #[derive(Debug, Error)]
 pub enum SignatureError {
     #[error("generator cannot be marked as {0} because it is being used in an incompatible way")]
     Invertibility(Invertibility),
+    #[error("invalid symmetry: {0}")]
+    InvalidSymmetry(&'static str),
+    #[error("symmetry cannot be removed because it is being used")]
+    SymmetryInUse,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
-pub struct Signature(Tree<SignatureItem>);
+pub struct Signature {
+    tree: Tree<SignatureItem>,
+    symmetries: Vec<Symmetry>,
+}
 
 impl Signature {
     pub fn iter(&self) -> impl Iterator<Item = &GeneratorInfo> {
-        self.0.iter().filter_map(|(_, data)| match data.inner() {
+        self.tree.iter().filter_map(|(_, data)| match data.inner() {
             SignatureItem::Item(info) => Some(info),
             &SignatureItem::Folder(_) => None,
         })
     }
 
     pub fn folder_iter(&self) -> impl Iterator<Item = &FolderInfo> {
-        self.0.iter().filter_map(|(_, data)| match data.inner() {
+        self.tree.iter().filter_map(|(_, data)| match data.inner() {
             SignatureItem::Folder(info) => Some(info),
             SignatureItem::Item(_) => None,
         })
@@ -107,13 +121,16 @@ impl Signature {
     where
         F: Fn(&GeneratorInfo) -> Option<GeneratorInfo>,
     {
-        Self(self.as_tree().filter_map(|data| {
-            if let SignatureItem::Item(info) = data {
-                Some(SignatureItem::Item(f(info)?))
-            } else {
-                Some(data.clone())
-            }
-        }))
+        Self {
+            tree: self.as_tree().filter_map(|data| {
+                if let SignatureItem::Item(info) = data {
+                    Some(SignatureItem::Item(f(info)?))
+                } else {
+                    Some(data.clone())
+                }
+            }),
+            symmetries: self.symmetries.clone(),
+        }
     }
 
     pub(crate) fn insert(
@@ -135,22 +152,25 @@ impl Signature {
             diagram,
         };
 
-        self.0.push_onto(self.0.root(), SignatureItem::Item(info));
+        self.tree
+            .push_onto(self.tree.root(), SignatureItem::Item(info));
     }
 
     pub fn insert_item(&mut self, item: SignatureItem) {
-        self.0.push_onto(self.0.root(), item);
+        self.tree.push_onto(self.tree.root(), item);
     }
 
     fn find_node(&self, generator: Generator) -> Option<Node> {
-        self.0.iter().find_map(|(node, item)| match item.inner() {
-            SignatureItem::Item(info) if info.generator == generator => Some(node),
-            _ => None,
-        })
+        self.tree
+            .iter()
+            .find_map(|(node, item)| match item.inner() {
+                SignatureItem::Item(info) if info.generator == generator => Some(node),
+                _ => None,
+            })
     }
 
     pub(crate) fn find_generator(&self, node: Node) -> Option<Generator> {
-        self.0
+        self.tree
             .with(node, |n| match n.inner() {
                 SignatureItem::Item(info) => Some(info.generator),
                 SignatureItem::Folder(_) => None,
@@ -163,22 +183,23 @@ impl Signature {
         use SignatureItemEdit::{
             MakeInvertible, MakeOriented, Recolor, Rename, Reshape, ShowSourceTarget,
         };
-        self.0.with_mut(node, move |n| match (n.inner_mut(), edit) {
-            (Item(info), Rename(name)) => info.name = name,
-            (Item(info), Recolor(color)) => info.color = color,
-            (Item(info), Reshape(shape)) => info.shape = shape,
-            (Item(info), MakeOriented(true)) => info.oriented = true,
-            (Item(info), MakeInvertible(invertibility)) => info.invertibility = invertibility,
-            (Item(info), ShowSourceTarget(show)) => info.single_preview = !show,
-            (Folder(info), Rename(name)) => info.name = name,
-            (_, _) => {}
-        });
+        self.tree
+            .with_mut(node, move |n| match (n.inner_mut(), edit) {
+                (Item(info), Rename(name)) => info.name = name,
+                (Item(info), Recolor(color)) => info.color = color,
+                (Item(info), Reshape(shape)) => info.shape = shape,
+                (Item(info), MakeOriented(true)) => info.oriented = true,
+                (Item(info), MakeInvertible(invertibility)) => info.invertibility = invertibility,
+                (Item(info), ShowSourceTarget(show)) => info.single_preview = !show,
+                (Folder(info), Rename(name)) => info.name = name,
+                (_, _) => {}
+            });
     }
 
     #[must_use]
     pub fn has_descendents_in(&self, node: Node, diagram: &Diagram) -> bool {
-        self.0.descendents_of(node).any(|node| {
-            self.0
+        self.tree.descendents_of(node).any(|node| {
+            self.tree
                 .with(node, |n| {
                     if let SignatureItem::Item(info) = n.inner() {
                         diagram.generators().contains_key(&info.generator)
@@ -212,9 +233,20 @@ impl Signature {
         Ok(diagram)
     }
 
+    /// Re-number the directions of the symmetries after the signature has been suspended, which
+    /// adds a new innermost direction. Directions that no longer fit in a mask are dropped.
+    pub(crate) fn suspend_symmetries(&mut self) {
+        for symmetry in &mut self.symmetries {
+            symmetry.directions = (symmetry.directions.iter())
+                .map(|j| j + 1)
+                .filter(|j| *j <= MAX_SYMMETRY_DIRECTION)
+                .collect();
+        }
+    }
+
     pub fn remove(&mut self, generator: Generator) {
         if let Some(node) = self.find_node(generator) {
-            self.0.remove(node);
+            self.tree.remove(node);
         }
     }
 
@@ -226,7 +258,7 @@ impl Signature {
                 // Intercept edit in order to update the whole signature.
                 if matches!(edit, SignatureItemEdit::MakeOriented(true)) {
                     if let Some(generator) = self.find_generator(*node) {
-                        self.0 = self.0.clone().map(|item| match item {
+                        self.tree = self.tree.clone().map(|item| match item {
                             SignatureItem::Item(info) => SignatureItem::Item(GeneratorInfo {
                                 diagram: info.diagram.remove_framing(generator),
                                 ..info
@@ -256,7 +288,7 @@ impl Signature {
                 }
             }
             SignatureEdit::NewFolder(node) => {
-                self.0.push_onto(
+                self.tree.push_onto(
                     *node,
                     SignatureItem::Folder(FolderInfo {
                         id: self.next_folder_id(),
@@ -266,29 +298,81 @@ impl Signature {
                 );
             }
             SignatureEdit::MoveBefore(from, to) => {
-                if *from != self.0.root() && !self.0.descendents_of(*from).any(|node| node == *to) {
-                    self.0.reparent_before(*from, *to);
+                if *from != self.tree.root()
+                    && !self.tree.descendents_of(*from).any(|node| node == *to)
+                {
+                    self.tree.reparent_before(*from, *to);
                 }
             }
             SignatureEdit::MoveInto(from, to) => {
-                if *from != self.0.root() && !self.0.descendents_of(*from).any(|node| node == *to) {
-                    self.0.reparent_under(*from, *to);
+                if *from != self.tree.root()
+                    && !self.tree.descendents_of(*from).any(|node| node == *to)
+                {
+                    self.tree.reparent_under(*from, *to);
                 }
             }
             SignatureEdit::ToggleFolder(node) => {
-                self.0.with_mut(*node, |n| {
+                self.tree.with_mut(*node, |n| {
                     if let SignatureItem::Folder(info) = n.inner_mut() {
                         info.open = !info.open;
                     }
                 });
             }
+            SignatureEdit::AddSymmetry(symmetry) => {
+                let mut symmetry = symmetry.clone();
+                symmetry.name = symmetry.name.trim().into();
+                symmetry.directions.sort_unstable();
+                symmetry.directions.dedup();
+                if symmetry.name.is_empty() {
+                    return Err(SignatureError::InvalidSymmetry("the name is empty"));
+                }
+                if symmetry.directions.is_empty() {
+                    return Err(SignatureError::InvalidSymmetry("there are no directions"));
+                }
+                if !symmetry
+                    .directions
+                    .iter()
+                    .all(|j| (1..=MAX_SYMMETRY_DIRECTION).contains(j))
+                {
+                    return Err(SignatureError::InvalidSymmetry(
+                        "directions must be between 1 and 64",
+                    ));
+                }
+                if self.symmetries.iter().any(|s| s.name == symmetry.name) {
+                    return Err(SignatureError::InvalidSymmetry(
+                        "a symmetry with this name already exists",
+                    ));
+                }
+                self.symmetries.push(symmetry);
+            }
+            SignatureEdit::RemoveSymmetry(index) => {
+                if *index < self.symmetries.len() {
+                    let mut signature = self.clone();
+                    signature.symmetries.remove(*index);
+                    // Removing a symmetry makes typechecking stricter, so every generator must
+                    // still be well-typed without it.
+                    let mode = Mode {
+                        directed: true,
+                        dualisable: true,
+                        simplices: false,
+                        generator: None,
+                    };
+                    if self
+                        .iter()
+                        .any(|info| typecheck(&info.diagram, &signature, mode, true).is_err())
+                    {
+                        return Err(SignatureError::SymmetryInUse);
+                    }
+                    *self = signature;
+                }
+            }
             SignatureEdit::Remove(node) => {
                 // Prepare to remove all of the descendents of the deleted node
-                let mut to_remove: VecDeque<_> = self.0.descendents_of(*node).collect();
+                let mut to_remove: VecDeque<_> = self.tree.descendents_of(*node).collect();
                 // So long as we have something left to delete
                 while let Some(removing) = to_remove.pop_front() {
                     let mut implied = self
-                        .0
+                        .tree
                         .iter()
                         .filter_map(|(node, item)| {
                             // Find all of the generators in the signature
@@ -305,7 +389,7 @@ impl Signature {
                     // Queue these for deletion
                     to_remove.append(&mut implied);
                     // Delete the node
-                    self.0.remove(removing);
+                    self.tree.remove(removing);
                 }
             }
         }
@@ -315,12 +399,19 @@ impl Signature {
 
     #[must_use]
     pub fn as_tree(&self) -> Tree<SignatureItem> {
-        self.0.clone()
+        self.tree.clone()
     }
 
     #[must_use]
     pub fn into_tree(self) -> Tree<SignatureItem> {
-        self.0
+        self.tree
+    }
+
+    /// Replace the symmetries of the signature, e.g. when loading a saved file.
+    #[must_use]
+    pub fn with_symmetries(mut self, symmetries: Vec<Symmetry>) -> Self {
+        self.symmetries = symmetries;
+        self
     }
 }
 
@@ -342,11 +433,18 @@ impl homotopy_core::signature::Signature for Signature {
     fn generator_info(&self, g: Generator) -> Option<&GeneratorInfo> {
         self.iter().find(|info| info.generator == g)
     }
+
+    fn symmetries(&self) -> &[Symmetry] {
+        &self.symmetries
+    }
 }
 
 impl From<Tree<SignatureItem>> for Signature {
     fn from(tree: Tree<SignatureItem>) -> Self {
-        Self(tree)
+        Self {
+            tree,
+            symmetries: Vec::new(),
+        }
     }
 }
 

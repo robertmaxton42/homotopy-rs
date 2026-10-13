@@ -341,8 +341,8 @@ where
                                     target_height,
                                     flange: true,
                                 },
-                                cone.map_or(
-                                    target_diagram.cospans()[target_height].forward.clone(),
+                                cone.map_or_else(
+                                    || target_diagram.cospans()[target_height].forward.clone(),
                                     |c| c.regular_slices()[0].clone(),
                                 ),
                             );
@@ -384,8 +384,8 @@ where
                                     target_height,
                                     flange: true,
                                 },
-                                cone.map_or(
-                                    target_diagram.cospans()[target_height].backward.clone(),
+                                cone.map_or_else(
+                                    || target_diagram.cospans()[target_height].backward.clone(),
                                     |c| c.regular_slices()[end - start].clone(),
                                 ),
                             );

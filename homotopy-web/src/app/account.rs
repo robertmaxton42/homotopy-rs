@@ -40,17 +40,12 @@ pub struct RemoteProjectMetadata {
     pub version: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ProjectVisibility {
+    #[default]
     Private,
     Public,
     Published,
-}
-
-impl Default for ProjectVisibility {
-    fn default() -> Self {
-        Self::Private
-    }
 }
 
 impl fmt::Display for ProjectVisibility {
@@ -353,17 +348,12 @@ impl Component for AccountView {
                         "Project published: {}v{}",
                         res.tag, res.version
                     )));
-                    let meta =
-                        ctx.props()
-                            .remote_project_metadata
-                            .as_ref()
-                            .cloned()
-                            .map(|mut m| {
-                                m.id = res.tag;
-                                m.visibility = ProjectVisibility::Published;
-                                m.version = Some(1);
-                                m
-                            });
+                    let meta = ctx.props().remote_project_metadata.clone().map(|mut m| {
+                        m.id = res.tag;
+                        m.visibility = ProjectVisibility::Published;
+                        m.version = Some(1);
+                        m
+                    });
                     set_remote_project_metadata.emit(meta);
                 } else {
                     self.status = OperationStatus::Failed;
@@ -399,19 +389,14 @@ impl Component for AccountView {
                     };
                 }
                 if ctx.props().remote_project_metadata.as_ref().map(|m| &m.id) == Some(&id) {
-                    let metadata =
-                        ctx.props()
-                            .remote_project_metadata
-                            .as_ref()
-                            .cloned()
-                            .map(|mut m| {
-                                m.visibility = if public {
-                                    ProjectVisibility::Public
-                                } else {
-                                    ProjectVisibility::Private
-                                };
-                                m
-                            });
+                    let metadata = ctx.props().remote_project_metadata.clone().map(|mut m| {
+                        m.visibility = if public {
+                            ProjectVisibility::Public
+                        } else {
+                            ProjectVisibility::Private
+                        };
+                        m
+                    });
                     set_remote_project_metadata.emit(metadata);
                 }
                 toast(Toast::success(format!(
@@ -434,7 +419,7 @@ impl Component for AccountView {
                 if ctx.props().remote_project_metadata.as_ref().map(|m| &m.id) == Some(&id) {
                     set_remote_project_metadata.emit(None);
                 }
-                toast(Toast::success(format!("Project {id} deleted",)));
+                toast(Toast::success(format!("Project {id} deleted")));
                 true
             }
             Msg::OpenPersonalProject(uid, id) => {
@@ -953,9 +938,9 @@ pub(super) async fn download_published_project(
 }
 
 async fn download(url: &str) -> Option<Vec<u8>> {
-    let mut opts = web_sys::RequestInit::new();
-    opts.method("GET");
-    opts.mode(web_sys::RequestMode::Cors);
+    let opts = web_sys::RequestInit::new();
+    opts.set_method("GET");
+    opts.set_mode(web_sys::RequestMode::Cors);
     let req = web_sys::Request::new_with_str_and_init(url, &opts).unwrap();
     req.headers().set("Accept", "application/msgpack").unwrap();
     let window = web_sys::window().unwrap();

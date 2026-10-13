@@ -108,7 +108,7 @@ impl Component for ProjectView {
             Msg::ImportProof(file) => {
                 let is_zip = std::path::Path::new(&file.name())
                     .extension()
-                    .map_or(false, |ext| ext.eq_ignore_ascii_case("zip"));
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"));
                 let task = gloo::file::callbacks::read_as_bytes(
                     &file.into(),
                     closure!(clone dispatch, |res| {
@@ -122,7 +122,7 @@ impl Component for ProjectView {
                                     .filter_map(|name| {
                                         let path = std::path::Path::new(name);
                                         (!path.starts_with("__MACOSX/")
-                                            && path.extension().map_or(false, |ext| {
+                                            && path.extension().is_some_and(|ext| {
                                                 ext.eq_ignore_ascii_case("hom")
                                                     || ext.eq_ignore_ascii_case("json")
                                             }))

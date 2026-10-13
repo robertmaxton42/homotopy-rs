@@ -271,7 +271,7 @@ impl Cone {
 #[derive(Clone, Debug, Error)]
 pub enum MalformedDiagram {
     #[error("slice {0:?} is malformed: {1:?}")]
-    Slice(Height, Vec<MalformedDiagram>),
+    Slice(Height, Vec<Self>),
 
     #[error("rewrite {0} in direction {1:?} is malformed: {2:?}")]
     Rewrite(usize, Direction, Vec<MalformedRewrite>),

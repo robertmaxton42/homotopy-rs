@@ -4,16 +4,11 @@ use web_sys::{WebGl2RenderingContext, WebGlTexture};
 
 use super::{framebuffer::Attachable, GlCtx, GlCtxHandle, GlCtxHook, GlError, Result};
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub enum Filter {
+    #[default]
     Nearest = WebGl2RenderingContext::NEAREST as isize,
     Linear = WebGl2RenderingContext::LINEAR as isize,
-}
-
-impl Default for Filter {
-    fn default() -> Self {
-        Self::Nearest
-    }
 }
 
 #[derive(Copy, Clone)]
