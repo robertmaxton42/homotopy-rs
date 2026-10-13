@@ -123,10 +123,44 @@ pub fn seal(label: &str) -> String {
     sealed
 }
 
+/// The formula that shows `label` inside another formula, with its text in `\text{...}` and its
+/// formulas as they are: `f $\alpha$` becomes `\text{f }{\alpha}`.
+#[must_use]
+pub fn to_math(label: &str) -> String {
+    let mut math = String::with_capacity(label.len());
+    for piece in pieces(label) {
+        match piece {
+            Piece::Text(text) => {
+                math.push_str("\\text{");
+                for c in text.chars() {
+                    match c {
+                        '\\' => math.push_str("\\textbackslash{}"),
+                        '{' | '}' | '$' | '%' | '#' | '&' | '_' => {
+                            math.push('\\');
+                            math.push(c);
+                        }
+                        '^' => math.push_str("\\textasciicircum{}"),
+                        '~' => math.push_str("\\textasciitilde{}"),
+                        c => math.push(c),
+                    }
+                }
+                math.push('}');
+            }
+            Piece::Dollar => math.push_str("\\text{\\$}"),
+            Piece::Math(formula) => {
+                math.push('{');
+                math.push_str(formula);
+                math.push('}');
+            }
+        }
+    }
+    math
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        pieces, seal,
+        pieces, seal, to_math,
         Piece::{Dollar, Math, Text},
     };
 
@@ -222,5 +256,17 @@ mod tests {
         }
         assert_eq!(seal("a $x"), "a \\$x");
         assert_eq!(seal("$x$"), "$x$");
+    }
+
+    #[test]
+    fn labels_can_be_put_in_formulas() {
+        assert_eq!(to_math(""), "");
+        assert_eq!(to_math("f"), "\\text{f}");
+        assert_eq!(to_math("$\\alpha$ 1"), "{\\alpha}\\text{ 1}");
+        assert_eq!(to_math("a $x"), "\\text{a }\\text{\\$}\\text{x}");
+        assert_eq!(to_math("100% {a_b}"), "\\text{100\\% \\{a\\_b\\}}");
+        // Whatever the label, the braces balance.
+        let math = to_math("}$x$\\{");
+        assert_eq!(math, "\\text{\\}}{x}\\text{\\textbackslash{}\\{}");
     }
 }

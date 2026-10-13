@@ -44,8 +44,9 @@ Reflections in an even number of a cell's normal directions are rotations, and l
 cell positively oriented. Reflections in an odd number reverse its orientation.
 
 In the app, the attach menu offers each reflection of a generator that typechecks, labelled
-by the reflected directions (e.g. *dual in x₁, x₂*) or by the name of the symmetry that
-gives it (see below). Its inverse `Rₙ` is labelled *inverse*. **Theorems are generators
+by the reflected directions (`R_{1,2}(f)`, or `f^*` for `R₁`) or by the name of the symmetry
+that gives it (`f^{op}`, see below). Its inverse `Rₙ` is labelled `f^{-1}`. See `labels.md`
+for how these cells are named. **Theorems are generators
 too**, so a theorem's dual versions are offered in the same way, without adding anything to
 the signature. The *Invert* action (`v`) reflects the whole workspace in its outermost
 direction.

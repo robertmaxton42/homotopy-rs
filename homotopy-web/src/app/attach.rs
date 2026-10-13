@@ -60,9 +60,7 @@ fn view_attach_option(props: &Props, option: &AttachOption) -> Html {
             <TexSpan
                 class="attach__option-name"
                 error_color="#c004"
-                raw_tex={
-                    format!("{}{}", seal(&info.name), option.tag.as_ref().map_or_else(Default::default, |t| format!(" ({})", seal(t))))
-                }
+                raw_tex={option.label.clone().unwrap_or_else(|| seal(&info.name))}
             />
         </li>
     }

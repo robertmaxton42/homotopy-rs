@@ -9,7 +9,7 @@ use homotopy_core::{
     Boundary, Diagram, DiagramN, Height, SliceIndex,
 };
 use homotopy_graphics::{manim, stl, svg, tikz};
-use homotopy_model::proof::{generators::GeneratorInfo, AttachOption};
+use homotopy_model::proof::{generators::GeneratorInfo, AttachOption, Structure};
 pub use homotopy_model::{history, migration, proof, serialize};
 use serde::Serialize;
 use thiserror::Error;
@@ -409,7 +409,7 @@ impl State {
 
         for info in self.proof().signature.iter() {
             macro_rules! extend {
-                ($diagram:expr, $tag:expr) => {
+                ($diagram:expr, $structure:expr) => {
                     let needle = $diagram.slice(boundary.flip()).unwrap();
                     matches.extend(
                         haystack
@@ -418,7 +418,8 @@ impl State {
                             .map(|embedding| AttachOption {
                                 generator: info.generator,
                                 diagram: $diagram,
-                                tag: $tag,
+                                label: $structure
+                                    .map(|structure: Structure| structure.label(&info.name)),
                                 boundary_path,
                                 embedding: embedding.into_iter().collect(),
                                 substitution: None,
@@ -441,8 +442,13 @@ impl State {
 
             match info.generator.dimension.cmp(&(haystack.dimension() + 1)) {
                 std::cmp::Ordering::Less => {
+                    // How many dimensions the cell is raised by.
+                    let k = haystack.dimension() + 1 - info.generator.dimension;
                     if weak_units {
-                        extend!(weak_unit(info.diagram.clone()), Some("identity".to_owned()));
+                        extend!(
+                            weak_unit(info.diagram.clone()),
+                            Some(Structure::Identity(k))
+                        );
                     }
 
                     if let Diagram::DiagramN(d) = &info.diagram {
@@ -450,12 +456,12 @@ impl State {
                             if weak_units {
                                 extend!(
                                     weak_unit(d.inverse().into()),
-                                    Some("inverse identity".to_owned())
+                                    Some(Structure::InverseIdentity(k))
                                 );
                             }
 
-                            extend!(bubble(d.clone()), Some("bubble".to_owned()));
-                            extend!(bubble(d.inverse()), Some("inverse bubble".to_owned()));
+                            extend!(bubble(d.clone()), Some(Structure::Bubble(k)));
+                            extend!(bubble(d.inverse()), Some(Structure::InverseBubble(k)));
                         }
                     }
                 }
@@ -463,7 +469,7 @@ impl State {
                     if let Diagram::DiagramN(d) = &info.diagram {
                         extend!(d.clone(), None);
                         if info.invertibility.is_invertible() {
-                            extend!(d.inverse(), Some("inverse".to_owned()));
+                            extend!(d.inverse(), Some(Structure::Inverse));
                         }
                         // Instances of schemas, with placeholders inferred from the point.
                         let signature = &self.proof().signature;
@@ -472,10 +478,12 @@ impl State {
                         {
                             matches.push(AttachOption {
                                 generator: info.generator,
-                                tag: Some(format!(
-                                    "[{}]",
-                                    signature.describe_substitution(&inferred.substitution)
-                                )),
+                                label: Some(
+                                    Structure::Instance(
+                                        signature.describe_substitution(&inferred.substitution),
+                                    )
+                                    .label(&info.name),
+                                ),
                                 diagram: inferred.diagram,
                                 boundary_path,
                                 embedding: inferred.embedding.into_iter().collect(),
@@ -560,27 +568,19 @@ impl State {
                 continue;
             }
             let mask = directions.iter().fold(0_u64, |mask, j| mask | 1 << (j - 1));
-            let tag = signature
+            let structure = signature
                 .symmetries()
                 .iter()
                 .find(|symmetry| symmetry.mask() & ((1 << n) - 1) == mask)
                 .map_or_else(
-                    || {
-                        format!(
-                            "dual in {}",
-                            directions
-                                .iter()
-                                .map(|j| format!("x{}", subscript(*j)))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    },
-                    |symmetry| symmetry.name.clone(),
+                    || Structure::Reflection(directions.clone()),
+                    |symmetry| Structure::Symmetry(symmetry.name.clone()),
                 );
+            let label = structure.label(&info.name);
             matches.extend(embeddings.into_iter().map(|embedding| AttachOption {
                 generator: info.generator,
                 diagram: reflected.clone(),
-                tag: Some(tag.clone()),
+                label: Some(label.clone()),
                 boundary_path,
                 embedding: embedding.into_iter().collect(),
                 substitution: None,

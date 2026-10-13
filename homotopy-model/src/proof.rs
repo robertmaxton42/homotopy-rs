@@ -16,6 +16,7 @@ pub use inference::InferredInstance;
 pub use instances::InstantiationError;
 use serde::{Deserialize, Serialize};
 pub use signature::*;
+pub use structure::Structure;
 use thiserror::Error;
 
 use self::homotopy::{Contract, Expand};
@@ -28,6 +29,7 @@ pub mod generators;
 pub mod homotopy;
 mod inference;
 mod instances;
+mod structure;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub struct View {
@@ -1218,7 +1220,9 @@ pub struct AttachOption {
     pub generator: Generator,
     pub boundary_path: Option<BoundaryPath>,
     pub embedding: Vector<usize>,
-    pub tag: Option<String>,
+    /// The label to show instead of the name of the generator, for cells derived from it such as
+    /// its identity or its inverse (see [`Structure`]), if it is not just the generator.
+    pub label: Option<String>,
     pub diagram: DiagramN,
     /// If set, `generator` is a schema to be instantiated with this substitution, and the
     /// instance attached in place of `diagram` (which has the same shape).
