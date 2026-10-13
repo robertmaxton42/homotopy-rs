@@ -11,6 +11,7 @@ use homotopy_core::{
     Diagram, Diagram0, DiagramN,
 };
 use im::Vector;
+pub use inference::InferredInstance;
 pub use instances::InstantiationError;
 use serde::{Deserialize, Serialize};
 pub use signature::*;
@@ -23,6 +24,7 @@ mod signature;
 
 pub mod generators;
 pub mod homotopy;
+mod inference;
 mod instances;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
@@ -602,6 +604,19 @@ impl ProofState {
     ///
     /// Invalid if the workspace is empty or has dimension 0 (if the boundary path is not null).
     fn attach(&mut self, option: &AttachOption) -> Result<bool, ProofError> {
+        if self.workspace.is_none() {
+            return Ok(false);
+        }
+        let attached = match &option.substitution {
+            None => option.diagram.clone(),
+            Some(substitution) => {
+                let instance = self.signature.instantiate(option.generator, substitution)?;
+                match &self.signature.generator_info(instance).unwrap().diagram {
+                    Diagram::DiagramN(diagram) => diagram.clone(),
+                    Diagram::Diagram0(_) => return Ok(false),
+                }
+            }
+        };
         let Some(ws) = &mut self.workspace else {
             return Ok(false);
         };
@@ -613,12 +628,12 @@ impl ProofState {
             let Diagram::DiagramN(diagram) = diagram else {
                 return Ok(false);
             };
-            *diagram = diagram.attach(&option.diagram, bp.boundary(), &embedding)?;
+            *diagram = diagram.attach(&attached, bp.boundary(), &embedding)?;
         } else {
             *diagram = diagram
                 .clone()
                 .identity()
-                .attach(&option.diagram, Boundary::Target, &embedding)?
+                .attach(&attached, Boundary::Target, &embedding)?
                 .target();
         }
 
@@ -1202,6 +1217,10 @@ pub struct AttachOption {
     pub embedding: Vector<usize>,
     pub tag: Option<String>,
     pub diagram: DiagramN,
+    /// If set, `generator` is a schema to be instantiated with this substitution, and the
+    /// instance attached in place of `diagram` (which has the same shape).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substitution: Option<Vec<(Generator, Diagram)>>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -57,8 +57,26 @@ replaced cell is caught up in a genuinely higher-dimensional interchange, such a
 crossing in the boundary of a 4-cell or higher. Replacing a single cell there by a composite
 would need new homotopies.
 
+## Inferring instances when attaching
+
+You usually don't need to instantiate by hand. When you click a point in the workspace, the
+attach menu also offers instances of schemas whose placeholders can be filled in so that they
+fit there. These are tagged with the substitution, e.g. `A [Q ≫ R/P]`. Choosing one creates the
+instance and attaches it in one step, which is undone in one step too.
+
+The search tries replacements made from the cells of the diagram you click on:
+
+- for a 0-cell placeholder, its 0-cells;
+- for a placeholder of dimension `k`, composites of up to three of its `k`-cells (and the
+  inverses of invertible ones), including identities, with the right source and target.
+
+Placeholders are solved from the lowest dimension up, so a placeholder's type is known when it
+is solved. If a schema depends on another generator that mentions a placeholder, the instance
+of that generator must already exist for the schema to match: it occurs in the diagram you
+click on, after all. The search is bounded, so a very large diagram may not offer every
+possibility. Instantiating by hand from the signature still works in that case.
+
 ## Not yet
 
-- Choosing a schema from the attach menu and filling in its placeholders there, so that the
-  kernel checks the whole attachment in one step.
-- Placeholder-aware matching, which would infer the substitution from where you click.
+- Inferring replacements longer than three cells, or replacements whose cells are contracted
+  into one height (`f ◫ g`) in the diagram you click on.

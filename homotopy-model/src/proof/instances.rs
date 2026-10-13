@@ -69,17 +69,7 @@ impl Signature {
             .ok_or(InstantiationError::UnknownGenerator)?;
         let parameters = self.parameters(schema);
 
-        // Normalise the substitution, dropping trivial entries.
-        let mut substitution: Vec<(Generator, Diagram)> = substitution
-            .iter()
-            .filter(|(p, d)| {
-                self.generator_info(*p)
-                    .is_none_or(|info| info.diagram != *d)
-            })
-            .cloned()
-            .collect();
-        substitution.sort_by_key(|(p, _)| (p.dimension, p.id));
-        substitution.dedup_by_key(|(p, _)| *p);
+        let substitution = self.normalise(substitution);
         if substitution.is_empty() {
             return Ok(schema);
         }
@@ -95,27 +85,7 @@ impl Signature {
         let mut replacements = substitution.clone();
 
         // Instantiate the generators in the boundary that mention instantiated placeholders.
-        let mut dependents: Vec<Generator> = info
-            .diagram
-            .generators()
-            .into_keys()
-            .filter(|&g| {
-                g != schema
-                    && self.generator_info(g).is_some_and(|info| !info.placeholder)
-                    && self
-                        .parameters(g)
-                        .iter()
-                        .any(|p| substitution.iter().any(|(q, _)| q == p))
-            })
-            .collect();
-        dependents.sort_by_key(|g| (g.dimension, g.id));
-        for b in dependents {
-            let parameters = self.parameters(b);
-            let restricted: Vec<_> = substitution
-                .iter()
-                .filter(|(p, _)| parameters.contains(p))
-                .cloned()
-                .collect();
+        for (b, restricted) in self.dependents(schema, &substitution) {
             let instance = self.instantiate(b, &restricted)?;
             let diagram = self.generator_info(instance).unwrap().diagram.clone();
             replacements.push((b, diagram));
@@ -145,16 +115,13 @@ impl Signature {
             }
         }
 
+        if let Some(existing) = self.find_instance(schema, &substitution) {
+            return Ok(existing);
+        }
         let instance = Instance {
             schema,
             substitution: substitution.clone(),
         };
-        if let Some(existing) = self
-            .iter()
-            .find(|info| info.instance.as_ref() == Some(&instance))
-        {
-            return Ok(existing.generator);
-        }
 
         let Diagram::DiagramN(diagram) = &info.diagram else {
             return Err(InstantiationError::NotAParameter(
@@ -169,11 +136,7 @@ impl Signature {
             substitute(&diagram.target())?,
         )?;
 
-        let arguments = substitution
-            .iter()
-            .map(|(p, d)| format!("{}/{}", self.describe(d), self.name_of(*p)))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let arguments = self.describe_substitution(&substitution);
         let node = self.find_node(schema).unwrap();
         self.insert_item_under(
             node,
@@ -188,6 +151,87 @@ impl Signature {
             }),
         );
         Ok(generator)
+    }
+
+    /// Sorts a substitution and drops its trivial entries.
+    pub(crate) fn normalise(
+        &self,
+        substitution: &[(Generator, Diagram)],
+    ) -> Vec<(Generator, Diagram)> {
+        let mut substitution: Vec<(Generator, Diagram)> = substitution
+            .iter()
+            .filter(|(p, d)| {
+                self.generator_info(*p)
+                    .is_none_or(|info| info.diagram != *d)
+            })
+            .cloned()
+            .collect();
+        substitution.sort_by_key(|(p, _)| (p.dimension, p.id));
+        substitution.dedup_by_key(|(p, _)| *p);
+        substitution
+    }
+
+    /// The generators mentioned by a schema, other than placeholders, that mention a placeholder
+    /// replaced by a (normalised) substitution, each with the substitution restricted to it.
+    pub(crate) fn dependents(
+        &self,
+        schema: Generator,
+        substitution: &[(Generator, Diagram)],
+    ) -> Vec<(Generator, Vec<(Generator, Diagram)>)> {
+        let Some(info) = self.generator_info(schema) else {
+            return vec![];
+        };
+        let mut dependents: Vec<Generator> = info
+            .diagram
+            .generators()
+            .into_keys()
+            .filter(|&g| {
+                g != schema
+                    && self.generator_info(g).is_some_and(|info| !info.placeholder)
+                    && self
+                        .parameters(g)
+                        .iter()
+                        .any(|p| substitution.iter().any(|(q, _)| q == p))
+            })
+            .collect();
+        dependents.sort_by_key(|g| (g.dimension, g.id));
+        dependents
+            .into_iter()
+            .map(|b| {
+                let parameters = self.parameters(b);
+                let restricted = substitution
+                    .iter()
+                    .filter(|(p, _)| parameters.contains(p))
+                    .cloned()
+                    .collect();
+                (b, restricted)
+            })
+            .collect()
+    }
+
+    /// The existing instance of a schema for a (normalised) substitution.
+    pub(crate) fn find_instance(
+        &self,
+        schema: Generator,
+        substitution: &[(Generator, Diagram)],
+    ) -> Option<Generator> {
+        self.iter()
+            .find(|info| {
+                info.instance
+                    .as_ref()
+                    .is_some_and(|i| i.schema == schema && i.substitution == substitution)
+            })
+            .map(|info| info.generator)
+    }
+
+    /// A short description of a substitution, like `Q/P, R/S`.
+    #[must_use]
+    pub fn describe_substitution(&self, substitution: &[(Generator, Diagram)]) -> String {
+        substitution
+            .iter()
+            .map(|(p, d)| format!("{}/{}", self.describe(d), self.name_of(*p)))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     fn name_of(&self, g: Generator) -> String {
