@@ -1,10 +1,12 @@
 use std::convert::{Into, TryFrom};
 
+pub use actions_job::{ActionsJob, ActionsOutcome};
+pub use attach_options::{AttachOptionsJob, NoAttachment};
 pub use drafts::{Draft, DraftEdit, Drafts};
 use homotopy::Homotopy;
 use homotopy_core::{
     common::{Boundary, BoundaryPath, Direction, Generator, Height, SliceIndex},
-    contraction::ContractionError,
+    contraction::{self, ContractionError},
     diagram::{AttachmentError, NewDiagramError},
     expansion::ExpansionError,
     signature::{Invertibility, Signature as _},
@@ -24,6 +26,8 @@ use crate::{migration, proof::generators::GeneratorInfo, serialize};
 
 mod signature;
 
+mod actions_job;
+mod attach_options;
 mod drafts;
 pub mod generators;
 pub mod homotopy;
@@ -287,6 +291,31 @@ impl Action {
             Self::Stash => proof.workspace.is_some(),
             Self::StashDrop | Self::StashPop | Self::StashApply => !proof.stash.is_empty(),
             Self::Nothing => false,
+        }
+    }
+
+    /// What the action is doing, as a gerund phrase, if it can take noticeably long (see the
+    /// policy in `CLAUDE.md`), for the busy indicator. Which actions can was decided by timing
+    /// the debug build in a browser on the examples in `tests/examples` and a project with
+    /// limits and their universal property as schemas: a homotopy takes from 10ms to 1.5s, a
+    /// theorem from 20 to 260ms, squashing from 10 to 230ms, importing a 40KB project 50ms, and
+    /// instantiating a schema 10 to 35ms; whereas merging generators, suspending and editing
+    /// the signature each took under 20ms, and everything else well under 5ms.
+    #[must_use]
+    pub const fn work_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Homotopy(Homotopy::Expand(_)) => Some("Expanding"),
+            Self::Homotopy(Homotopy::Contract(_)) => Some("Contracting"),
+            Self::Squash => Some("Squashing"),
+            Self::MergeExchanges => Some("Merging exchanges"),
+            Self::Theorem => Some("Proving theorem"),
+            Self::Instantiate(_, _)
+            | Self::Attach(AttachOption {
+                substitution: Some(_),
+                ..
+            }) => Some("Instantiating"),
+            Self::ImportProof(_) => Some("Importing project"),
+            _ => None,
         }
     }
 
@@ -779,20 +808,36 @@ impl ProofState {
     /// slice (merging changes the interior slices, but not the boundaries, of the diagram). Does
     /// nothing if there is no pair of steps to merge.
     fn merge_exchanges(&mut self) -> bool {
-        let Some(ws) = &mut self.workspace else {
+        let Some(mut merging) = self.start_merge_exchanges() else {
             return false;
         };
+        while merging.step(&self.signature) {}
+        self.finish_merge_exchanges(merging)
+    }
+
+    /// The first part of [Action::MergeExchanges], which can be done a step at a time: `None` if
+    /// the action is invalid.
+    fn start_merge_exchanges(&self) -> Option<contraction::MergeExchanges> {
+        let ws = self.workspace.as_ref()?;
         let Diagram::DiagramN(diagram) = &ws.diagram else {
-            return false;
+            return None;
         };
         if matches!(ws.path.front(), Some(SliceIndex::Interior(_))) {
-            return false;
+            return None;
         }
+        Some(diagram.merge_exchanges_steps())
+    }
 
-        let (merged, count) = diagram.merge_exchanges(&self.signature);
+    /// The last part of [Action::MergeExchanges], once the steps are done: returns whether there
+    /// was anything to merge.
+    fn finish_merge_exchanges(&mut self, merging: contraction::MergeExchanges) -> bool {
+        let (merged, count) = merging.finish();
         if count == 0 {
             return false;
         }
+        let Some(ws) = &mut self.workspace else {
+            return false;
+        };
         ws.diagram = merged.into();
         true
     }
