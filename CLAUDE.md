@@ -13,6 +13,10 @@ anything that can exceed ~100 ms on a realistic diagram) must:
 3. **Be cancellable.** Clicking the indicator or pressing `Esc` cancels it, leaving the project
    exactly as it was before the operation started.
 
+While such an operation runs, further expensive input is **refused, not queued**: the indicator
+stays up (and should visibly acknowledge the refused input), and cancelling never replays
+anything. "Is this thing responding? *click click*" must not stack up several expensive jobs.
+
 New features that add expensive work are not done until they meet all three. When touching an
 existing expensive path that does not, fix it or note it as a known gap.
 
