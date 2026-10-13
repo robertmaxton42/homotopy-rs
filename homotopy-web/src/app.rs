@@ -143,6 +143,7 @@ impl Component for App {
         #[cfg(debug_assertions)]
         debug_hooks::install(ctx.link());
 
+        #[allow(unused_mut)] // It is only changed by the debug hooks.
         let mut worker = WorkerClient::new(
             ctx.link()
                 .callback(|(generation, event)| Message::Worker(generation, event)),
@@ -337,18 +338,15 @@ impl App {
         };
         let encoding = Instant::now();
         #[cfg(debug_assertions)]
-        let (delay, crash) = (
-            debug_hooks::step_delay_ms(),
-            debug_hooks::worker_mode() == "crash",
-        );
+        let (delay, fault) = (debug_hooks::step_delay_ms(), debug_hooks::worker_mode());
         #[cfg(not(debug_assertions))]
-        let (delay, crash) = (0, false);
+        let (delay, fault) = (0, String::new());
         let bytes = self
             .worker
             .remote()
             .request(proof, work, delay, with_signature);
         let encode_ms = encoding.elapsed().as_secs_f64() * 1000.0;
-        if let Err(error) = self.worker.run(job.id, &bytes, crash) {
+        if let Err(error) = self.worker.run(job.id, &bytes, &fault) {
             tracing::error!("Could not give the job to the worker: {:?}", error);
             self.worker.remote().forget();
             return false;
@@ -398,11 +396,14 @@ impl App {
 
     /// The worker has answered for the running job: commits what it came to.
     fn worker_done(&mut self, ctx: &Context<Self>, id: u64, bytes: &[u8]) -> bool {
+        if self.job.as_ref().is_none_or(|job| job.id != id) {
+            // The answer to a job that was cancelled.
+            return false;
+        }
         let Some(mut job) = self.job.take() else {
             return false;
         };
-        let Some(remote) = job.remote.take().filter(|_| job.id == id) else {
-            // The answer to a job that was cancelled.
+        let Some(remote) = job.remote.take() else {
             self.job = Some(job);
             return false;
         };

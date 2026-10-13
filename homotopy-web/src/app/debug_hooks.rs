@@ -130,7 +130,8 @@ pub fn step_delay_ms() -> u32 {
 }
 
 /// What `window.__homotopy_worker` says about the worker, if anything: `"off"` for none, `"broken"`
-/// for one whose script cannot be loaded, `"crash"` for one that panics in the first job.
+/// for one whose script cannot be loaded, `"crash"` for one that panics in each job, `"garble"`
+/// for one that answers with nonsense.
 pub fn worker_mode() -> String {
     web_sys::window()
         .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_worker".into()).ok())

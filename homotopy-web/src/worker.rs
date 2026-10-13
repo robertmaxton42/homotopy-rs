@@ -186,7 +186,7 @@ impl Client {
     }
 
     /// Gives the worker a job, which is the bytes of a request to the [`Executor`].
-    pub fn run(&self, job: u64, bytes: &[u8], crash: bool) -> Result<(), JsValue> {
+    pub fn run(&self, job: u64, bytes: &[u8], fault: &str) -> Result<(), JsValue> {
         let Some(spawned) = &self.spawned else {
             return Err("no worker".into());
         };
@@ -195,9 +195,9 @@ impl Client {
         Reflect::set(&message, &"kind".into(), &"run".into())?;
         Reflect::set(&message, &"job".into(), &(job as f64).into())?;
         Reflect::set(&message, &"bytes".into(), &buffer)?;
-        if crash {
+        if !fault.is_empty() {
             // For testing.
-            Reflect::set(&message, &"crash".into(), &true.into())?;
+            Reflect::set(&message, &"fault".into(), &fault.into())?;
         }
         let transfer = Array::of1(&buffer.buffer());
         spawned
@@ -210,7 +210,8 @@ impl Client {
         self.failures += 1;
     }
 
-    /// Gives up on workers for good, such as when one cannot be made to work.
+    /// Does without workers, for testing.
+    #[cfg(debug_assertions)]
     pub fn disable(&mut self) {
         self.stop();
         self.status = Status::Disabled;
@@ -343,23 +344,26 @@ pub fn worker_message(data: &JsValue) {
         return;
     };
     CURRENT.with(|current| *current.borrow_mut() = Some(job));
-    assert!(
-        !get(data, "crash").is_truthy(),
-        "the worker was asked to crash"
-    );
+    let fault = get(data, "fault").as_string().unwrap_or_default();
+    assert!(fault != "crash", "the worker was asked to crash");
 
     let mut last_report: Option<Instant> = None;
-    let response = EXECUTOR.with(|executor| {
-        executor
-            .borrow_mut()
-            .run(&bytes.to_vec(), &mut |step: Step| {
-                if last_report.is_none_or(|at| at.elapsed() >= PROGRESS_INTERVAL) {
-                    last_report = Some(Instant::now());
-                    report(job, step);
-                }
-                spin(step.delay_ms);
-            })
-    });
+    let response = if fault == "garble" {
+        // The answer is not one.
+        vec![0xc1, 0xc1]
+    } else {
+        EXECUTOR.with(|executor| {
+            executor
+                .borrow_mut()
+                .run(&bytes.to_vec(), &mut |step: Step| {
+                    if last_report.is_none_or(|at| at.elapsed() >= PROGRESS_INTERVAL) {
+                        last_report = Some(Instant::now());
+                        report(job, step);
+                    }
+                    spin(step.delay_ms);
+                })
+        })
+    };
     CURRENT.with(|current| *current.borrow_mut() = None);
 
     let buffer = Uint8Array::from(response.as_slice());
