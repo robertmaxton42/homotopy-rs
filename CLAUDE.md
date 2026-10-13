@@ -92,6 +92,10 @@ existing expensive path that does not, fix it or note it as a known gap.
   restarts it, shows a toast and leaves the project unchanged (three crashes in a row without a
   finished job, and workers are given up on for the session); a *failure without a crash* (a
   garbled message) does the job in the page instead.
+- **Size**: the wire format and its MessagePack code added 1.2MB to the release `.wasm` (6.2MB to
+  7.4MB; 1.54MB to 1.75MB gzipped). Most of that is `rmp_serde` instantiated for the proof types;
+  if it matters, the request could carry less through the `Store` (the actions are sent with
+  `serde`, diagrams and all).
 - **Cost on the page**: the page still has to build the request (`Remote::request`) and take in
   the answer (`Remote::response`, which unpacks diagrams into the page's hash-consing tables), and
   these are not chunked: 1-15ms for a homotopy on a workspace of 20-30KB, up to 36ms for a
