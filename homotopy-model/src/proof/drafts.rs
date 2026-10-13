@@ -6,31 +6,61 @@
 //! not part of the proof, and neither undoing nor redoing touches them.
 
 use homotopy_common::hash::FastHashMap;
-use homotopy_core::{Diagram, Generator};
+use homotopy_core::{signature::Signature as _, Diagram, Generator};
 
 use super::Signature;
 
+/// The diagram replacing a placeholder in a [`Draft`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Slot {
+    placeholder: Generator,
+    diagram: Diagram,
+    /// Whether the diagram was inferred from the others rather than chosen.
+    inferred: bool,
+}
+
 /// The diagrams chosen so far to replace the placeholders of one schema, in the order they were
-/// chosen.
+/// chosen, and those that follow from them.
+///
+/// Choosing a diagram for a placeholder also fills in the placeholders that it determines (see
+/// [`Signature::infer_replacements`]): choosing a cone fixes the diagram and the apex that it is
+/// a cone over. Those are marked as inferred. They are recomputed whenever a diagram is chosen
+/// or cleared, so they never go out of date, and they never replace something that was chosen.
+/// Choosing a diagram for an inferred placeholder makes it chosen, and clearing it keeps it
+/// from being inferred again, until none of the diagrams it was inferred from are left.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Draft {
-    slots: Vec<(Generator, Diagram)>,
+    slots: Vec<Slot>,
+    /// The placeholders whose inferred replacement was cleared.
+    declined: Vec<Generator>,
 }
 
 impl Draft {
-    /// The diagram chosen to replace a placeholder, if any.
-    #[must_use]
-    pub fn get(&self, placeholder: Generator) -> Option<&Diagram> {
+    fn slot(&self, placeholder: Generator) -> Option<&Slot> {
         self.slots
             .iter()
-            .find(|(p, _)| *p == placeholder)
-            .map(|(_, d)| d)
+            .find(|slot| slot.placeholder == placeholder)
     }
 
-    /// The substitution chosen so far.
+    /// The diagram that replaces a placeholder, if any.
     #[must_use]
-    pub fn substitution(&self) -> &[(Generator, Diagram)] {
-        &self.slots
+    pub fn get(&self, placeholder: Generator) -> Option<&Diagram> {
+        self.slot(placeholder).map(|slot| &slot.diagram)
+    }
+
+    /// Whether the diagram that replaces a placeholder was inferred rather than chosen.
+    #[must_use]
+    pub fn is_inferred(&self, placeholder: Generator) -> bool {
+        self.slot(placeholder).is_some_and(|slot| slot.inferred)
+    }
+
+    /// The substitution so far, with both chosen and inferred replacements.
+    #[must_use]
+    pub fn substitution(&self) -> Vec<(Generator, Diagram)> {
+        self.slots
+            .iter()
+            .map(|slot| (slot.placeholder, slot.diagram.clone()))
+            .collect()
     }
 
     #[must_use]
@@ -38,13 +68,32 @@ impl Draft {
         self.slots.is_empty()
     }
 
-    fn fill(&mut self, placeholder: Generator, diagram: Diagram) {
-        self.clear(placeholder);
-        self.slots.push((placeholder, diagram));
+    fn chosen(&self) -> Vec<(Generator, Diagram)> {
+        self.slots
+            .iter()
+            .filter(|slot| !slot.inferred)
+            .map(|slot| (slot.placeholder, slot.diagram.clone()))
+            .collect()
     }
 
-    fn clear(&mut self, placeholder: Generator) {
-        self.slots.retain(|(p, _)| *p != placeholder);
+    /// Redoes the inference after a replacement was chosen or cleared. This can be slow: see
+    /// [`Signature::infer_replacements`].
+    fn infer(&mut self, signature: &Signature, schema: Generator) {
+        self.slots.retain(|slot| !slot.inferred);
+        let chosen = self.chosen();
+        if chosen.is_empty() {
+            self.declined.clear();
+            return;
+        }
+        for (placeholder, diagram) in signature.infer_replacements(schema, &chosen) {
+            if !self.declined.contains(&placeholder) {
+                self.slots.push(Slot {
+                    placeholder,
+                    diagram,
+                    inferred: true,
+                });
+            }
+        }
     }
 }
 
@@ -70,20 +119,31 @@ impl Drafts {
         self.drafts.get(&schema).cloned().unwrap_or_default()
     }
 
-    pub fn apply(&mut self, _signature: &Signature, edit: DraftEdit) {
+    /// Makes a change. Inferring the replacements that follow can be slow.
+    pub fn apply(&mut self, signature: &Signature, edit: DraftEdit) {
         match edit {
             DraftEdit::Fill(schema, placeholder, diagram) => {
-                self.drafts
-                    .entry(schema)
-                    .or_default()
-                    .fill(placeholder, diagram);
+                let draft = self.drafts.entry(schema).or_default();
+                draft.slots.retain(|slot| slot.placeholder != placeholder);
+                draft.declined.retain(|&p| p != placeholder);
+                draft.slots.push(Slot {
+                    placeholder,
+                    diagram,
+                    inferred: false,
+                });
+                draft.infer(signature, schema);
             }
             DraftEdit::Clear(schema, placeholder) => {
-                if let Some(draft) = self.drafts.get_mut(&schema) {
-                    draft.clear(placeholder);
-                    if draft.is_empty() {
-                        self.drafts.remove(&schema);
-                    }
+                let Some(draft) = self.drafts.get_mut(&schema) else {
+                    return;
+                };
+                if draft.is_inferred(placeholder) {
+                    draft.declined.push(placeholder);
+                }
+                draft.slots.retain(|slot| slot.placeholder != placeholder);
+                draft.infer(signature, schema);
+                if draft.is_empty() {
+                    self.drafts.remove(&schema);
                 }
             }
         }
@@ -95,7 +155,15 @@ impl Drafts {
     pub fn retain_valid(&mut self, signature: &Signature) {
         self.drafts.retain(|&schema, draft| {
             let parameters = signature.parameters(schema);
-            draft.slots.retain(|(p, _)| parameters.contains(p));
+            draft.slots.retain(|slot| {
+                parameters.contains(&slot.placeholder)
+                    && slot
+                        .diagram
+                        .generators()
+                        .into_keys()
+                        .all(|g| signature.generator_info(g).is_some())
+            });
+            draft.declined.retain(|p| parameters.contains(p));
             !draft.is_empty()
         });
     }
@@ -142,12 +210,12 @@ mod tests {
 
         drafts.apply(&sig, DraftEdit::Fill(e, p, q.clone()));
         assert_eq!(drafts.get(e).get(p), Some(&q));
-        assert_eq!(drafts.get(e).substitution(), &[(p, q.clone())]);
+        assert_eq!(drafts.get(e).substitution(), vec![(p, q.clone())]);
 
         // Filling a slot again replaces its diagram.
         let id: Diagram = q.clone().identity().into();
         drafts.apply(&sig, DraftEdit::Fill(e, p, id.clone()));
-        assert_eq!(drafts.get(e).substitution(), &[(p, id)]);
+        assert_eq!(drafts.get(e).substitution(), vec![(p, id)]);
 
         drafts.apply(&sig, DraftEdit::Clear(e, p));
         assert!(drafts.get(e).is_empty());

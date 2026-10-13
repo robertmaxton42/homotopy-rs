@@ -1054,6 +1054,7 @@ impl ItemView {
                 .map(|info| info.name.clone())
                 .unwrap_or_default();
             let content = if let Some(diagram) = ctx.props().draft.get(placeholder) {
+                let inferred = ctx.props().draft.is_inferred(placeholder);
                 let replacement = diagram.max_generator().generator;
                 let single = signature
                     .generator_info(replacement)
@@ -1061,6 +1062,10 @@ impl ItemView {
                 let clear = ctx
                     .link()
                     .callback(move |_| ItemViewMessage::ClearSlot(placeholder));
+                // An inferred replacement can be replaced by choosing another one.
+                let replace = ctx
+                    .link()
+                    .callback(move |_| ItemViewMessage::FillSlot(placeholder));
                 html! {
                     <>
                         if let Some(replacement) = single {
@@ -1069,6 +1074,14 @@ impl ItemView {
                             <span class="signature__slot-value signature__slot-value-composite">
                                 {format!("{}-dimensional diagram", diagram.dimension())}
                             </span>
+                        }
+                        if inferred {
+                            <span class="signature__slot-hint" title="Worked out from the other replacements">
+                                {"inferred"}
+                            </span>
+                            <button disabled={!has_workspace} title="Replace with the workspace" onclick={replace}>
+                                {"Use workspace"}
+                            </button>
                         }
                         <button title="Clear" onclick={clear}>{"\u{d7}"}</button>
                     </>
@@ -1083,7 +1096,7 @@ impl ItemView {
             };
 
             html! {
-                <div class="signature__slot">
+                <div class={classes!("signature__slot", ctx.props().draft.is_inferred(placeholder).then_some("signature__slot-inferred"))}>
                     <TexSpan class="signature__slot-name" raw_tex={name} />
                     <span class="signature__slot-arrow">{"\u{21a6}"}</span>
                     {content}
@@ -1092,7 +1105,7 @@ impl ItemView {
         });
 
         let schema = info.generator;
-        let substitution = ctx.props().draft.substitution().to_vec();
+        let substitution = ctx.props().draft.substitution();
         let create = ctx
             .props()
             .dispatch

@@ -25,3 +25,14 @@ existing expensive path that does not, fix it or note it as a known gap.
 - Debug web build: `.claude/dev/build-dist.sh`, then `python3 -m http.server 8765` in `dist/`.
   It uses `.claude/dev/highs-shim.js` because the nix HiGHS build is blocked in the sandbox.
 - Commit messages containing backticks: write them to a file and use `git commit -F`.
+
+## Known gaps against the policy above
+
+Expensive work that still runs on the main thread, without a busy indicator or cancellation
+(for the responsiveness work):
+
+- `Signature::infer_instances`, called for every generator on each click in the workspace
+  (`select_point` in `homotopy-web/src/model.rs`).
+- `Signature::infer_replacements`, called when a replacement is chosen or cleared in the
+  Instantiate panel (`Drafts::apply` in `homotopy-model/src/proof/drafts.rs`). Bounded by
+  `MAX_COMPLETION_NODES`.
