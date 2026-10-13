@@ -74,13 +74,15 @@ impl Signature {
         }
     }
 
-    /// The label of the cell shown at a point of a diagram, for the generator `cell` there
-    /// (the one that is drawn, with its orientation).
+    /// The label of the cell drawn at a vertex of a diagram, for the generator `cell` there
+    /// (with its orientation): `point` is the vertex in the projection of `diagram` to two
+    /// dimensions, the heights in its outermost direction and then in the next one.
     ///
-    /// A generator at a point is named by the generator, or its reverse; a point of the diagram
-    /// where a cell is cancelled or created, which is drawn as the generator turned back on
-    /// itself, is named for the step (see the [module](self)) if it can be recognised in a
-    /// 2-dimensional `diagram` at the `point` of it, and `\mathrm{h}(f)` otherwise.
+    /// A generator is named by the generator, or its reverse. A vertex where no cell of the
+    /// dimension of the diagram is, but several things happen at once (two strands crossing,
+    /// a cell cancelled or created), is named for the step of the diagram that it is (see the
+    /// [module](self)): `\mathrm{ex}_{f,g}`, `\beta_{f,g}`, `\varepsilon_f`, `\eta_f`. If the step is
+    /// not recognised, a cell drawn as a fold is `\mathrm{h}(f)`, and any other is named as it is.
     #[must_use]
     pub fn describe_point(
         &self,
@@ -89,13 +91,20 @@ impl Signature {
         cell: Diagram0,
     ) -> String {
         let describer = Describer::new(self);
-        let math = match cell.orientation {
-            Orientation::Zero => describer
-                .fold(diagram, point)
-                .unwrap_or_else(|| describer.cell(cell)),
-            _ => describer.cell(cell),
-        };
+        let homotopy =
+            cell.orientation == Orientation::Zero || cell.generator.dimension < diagram.dimension();
+        let math = homotopy
+            .then(|| describer.step_at(diagram, point))
+            .flatten()
+            .unwrap_or_else(|| describer.cell(cell));
         format!("${math}$")
+    }
+
+    /// The label of a cell, as drawn on a wire or a surface: see
+    /// [`describe_point`](Self::describe_point).
+    #[must_use]
+    pub fn describe_cell(&self, cell: Diagram0) -> String {
+        format!("${}$", Describer::new(self).cell(cell))
     }
 }
 
@@ -429,18 +438,16 @@ impl<'a> Describer<'a> {
         }
     }
 
-    /// The cancelling or creation of a cell at a point of a 2-dimensional diagram, if that is
-    /// what it is.
-    fn fold(&self, diagram: &Diagram, point: &[SliceIndex]) -> Option<String> {
+    /// The exchange, braid, cancelling or creation of cells that is a vertex of the projection of
+    /// a diagram, if that is what it is: the step of the diagram at the first height of the
+    /// point, and what it does at the second.
+    fn step_at(&self, diagram: &Diagram, point: &[SliceIndex]) -> Option<String> {
         use SliceIndex::Interior;
 
         let [Interior(Height::Singular(step)), Interior(Height::Singular(height))] = point else {
             return None;
         };
         let diagram = DiagramN::try_from(diagram.clone()).ok()?;
-        if diagram.dimension() != 2 {
-            return None;
-        }
         let cospan = diagram.cospans().get(*step)?;
         let forward = cone_at(&cospan.forward, *height)?;
         let backward = cone_at(&cospan.backward, *height)?;
@@ -875,13 +882,19 @@ mod tests {
             ]
         };
         let point = at(0, 0);
+        // On wires and surfaces, the cell is named as drawn.
         assert_eq!(
-            sig.describe_point(&cap, &point, cell(Orientation::Positive)),
+            sig.describe_cell(cell(Orientation::Positive)),
             r"$\text{f}$"
         );
         assert_eq!(
-            sig.describe_point(&cap, &point, cell(Orientation::Negative)),
+            sig.describe_cell(cell(Orientation::Negative)),
             r"${\text{f}}^{-1}$"
+        );
+        // Where no wire is, a step of the diagram is.
+        assert_eq!(
+            sig.describe_point(&cap, &at(0, 1), cell(Orientation::Positive)),
+            r"$\text{f}$"
         );
         assert_eq!(
             sig.describe_point(&cap, &point, cell(Orientation::Zero)),
@@ -895,6 +908,100 @@ mod tests {
         assert_eq!(
             sig.describe_point(&cap, &[], cell(Orientation::Zero)),
             r"$\mathrm{h}(\text{f})$"
+        );
+    }
+
+    fn vertex(step: usize, height: usize) -> [SliceIndex; 2] {
+        [
+            SliceIndex::Interior(Height::Singular(step)),
+            SliceIndex::Interior(Height::Singular(height)),
+        ]
+    }
+
+    #[test]
+    fn crossings_in_projections_are_named_for_the_step() {
+        let Exchange { sig, wrench, .. } = exchange();
+        let (merged, _) = wrench.merge_exchanges(&sig);
+        let merged = Diagram::from(merged);
+        // The vertex is drawn as one of the two cells; its dimension is below that of the
+        // diagram, so it is the step that is named.
+        let alpha = sig.iter().find(|info| info.name == "α").unwrap().generator;
+        let beta = sig.iter().find(|info| info.name == "β").unwrap().generator;
+        let drawn = |generator| Diagram0 {
+            generator,
+            orientation: Orientation::Positive,
+        };
+        for generator in [alpha, beta] {
+            assert_eq!(
+                sig.describe_point(&merged, &vertex(0, 0), drawn(generator)),
+                r"$\mathrm{ex}_{\text{α},\text{β}}$"
+            );
+        }
+        // Not anywhere else: where nothing happens (there is no height 1), it is the cell.
+        assert_eq!(
+            sig.describe_point(&merged, &vertex(0, 1), drawn(alpha)),
+            r"$\text{α}$"
+        );
+        // And a wire or surface is named by its cell.
+        assert_eq!(sig.describe_cell(drawn(alpha)), r"$\text{α}$");
+    }
+
+    #[test]
+    fn a_cell_of_the_dimension_of_the_diagram_is_not_a_step() {
+        let Exchange {
+            mut sig, wrench, ..
+        } = exchange();
+        let (merged, _) = wrench.merge_exchanges(&sig);
+        // A 3-cell from one order of the cells to the other, whose cones look like the exchange.
+        let directed = Invertibility::Directed;
+        let gamma = cell(&mut sig, "γ", merged.source(), merged.target(), directed);
+        let drawn = Diagram0 {
+            generator: gamma.max_generator().generator,
+            orientation: Orientation::Positive,
+        };
+        assert_eq!(
+            sig.describe_point(&gamma.into(), &vertex(0, 0), drawn),
+            r"$\text{γ}$"
+        );
+    }
+
+    #[test]
+    fn braids_in_projections_are_named_with_the_side_they_pass_on() {
+        let Fixture { mut sig, x, .. } = fixture();
+        let id = Diagram::from(x).identity();
+        let directed = Invertibility::Directed;
+        let s = cell(
+            &mut sig,
+            "s",
+            id.clone().into(),
+            id.clone().into(),
+            directed,
+        );
+        let t = cell(&mut sig, "t", id.clone().into(), id.into(), directed);
+        let st = s.attach(&t, Boundary::Target, &[]).unwrap();
+        let wrenches = [Bias::Lower, Bias::Higher]
+            .into_iter()
+            .flat_map(|bias| exchanges(&sig, &st, Some(bias)).1);
+        let mut points = vec![];
+        for wrench in wrenches {
+            let (merged, _) = wrench.merge_exchanges(&sig);
+            let drawn = Diagram0 {
+                generator: s.max_generator().generator,
+                orientation: Orientation::Positive,
+            };
+            let merged = Diagram::from(merged);
+            let point = sig.describe_point(&merged, &vertex(0, 0), drawn);
+            assert_eq!(point, sig.describe(&merged));
+            points.push(point);
+        }
+        points.sort();
+        points.dedup();
+        assert_eq!(
+            points,
+            vec![
+                r"$\beta^{-1}_{\text{s},\text{t}}$".to_owned(),
+                r"$\beta_{\text{s},\text{t}}$".to_owned()
+            ]
         );
     }
 

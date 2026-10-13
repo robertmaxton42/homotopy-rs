@@ -82,9 +82,12 @@ leaves the diagram or a button is pressed.
 The label of a cell that is drawn as the generator `f` is `f`. The reverse of an invertible `f` is
 `f^{-1}`; of a generator that is only dualisable, `f^{*}` (for a 1-cell, where this is the dual in
 the only direction there is) or `\overline{f}` (other cells, which may have been reflected in
-several directions; the tooltip only knows that the cell is drawn reversed). A cell drawn as a
-fold, where a cell turns back on itself (these show as *homotopy* points), is named by the step of
-the diagram that it belongs to, as in the table above: the counit `\varepsilon_{f}` where `f` and
-its reverse are cancelled, the unit `\eta_{f}` where they are created, and `\mathrm{h}(f)` for any
-other homotopy that the tooltip cannot tell more about (this is only worked out for 2-dimensional
-diagrams, at the point itself).
+several directions; the tooltip only knows that the cell is drawn reversed). A wire or surface
+always shows its own cell.
+
+A vertex where no cell of the dimension of the diagram is, but things happen at once, is named by
+the step of the diagram that it belongs to, as in the table above, also when the diagram is
+projected from higher dimensions: where two strands cross, `\mathrm{ex}_{f,g}` or
+`\beta_{f,g}` (`\beta^{-1}_{f,g}` for the other way of passing), and where a cell is cancelled or
+created, the counit `\varepsilon_{f}` or the unit `\eta_{f}`. A homotopy that is not recognised is
+`\mathrm{h}(f)` if the vertex is drawn as a fold, and the cell as drawn otherwise.

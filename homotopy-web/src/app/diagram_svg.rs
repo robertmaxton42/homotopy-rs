@@ -647,8 +647,14 @@ impl<const N: usize> DiagramSvg<N> {
             Simplex::Wire(_) | Simplex::Point(_) => self.prepared.projection.front_generator(p).0,
         };
         let props = ctx.props();
+        // A vertex may be where strands cross, or a cell is cancelled or created, which is named
+        // for that (it is a step of the diagram); wires and surfaces are named by their cell.
+        let label = match simplex {
+            Simplex::Point(_) => props.signature.describe_point(&props.diagram, &p, d),
+            Simplex::Wire(_) | Simplex::Surface(_) => props.signature.describe_cell(d),
+        };
         tooltip::Content {
-            label: props.signature.describe_point(&props.diagram, &p, d),
+            label,
             detail: format!("@ {}", p.map(|si| si.to_string()).join(", ")),
         }
     }
