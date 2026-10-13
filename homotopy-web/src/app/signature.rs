@@ -1,5 +1,5 @@
 use folder::FolderView;
-use homotopy_core::signature::Signature as _;
+use homotopy_core::{signature::Signature as _, Diagram};
 use homotopy_model::proof;
 use symmetries::SymmetriesView;
 use yew::prelude::*;
@@ -19,6 +19,8 @@ pub struct Props {
     pub signature: Signature,
     pub dispatch: Callback<Action>,
     pub drawer_view_size: DrawerViewSize,
+    /// The diagram in the workspace, if any.
+    pub workspace: Option<Diagram>,
 }
 
 #[function_component]
@@ -41,6 +43,7 @@ pub fn SignatureView(props: &Props) -> Html {
                 dispatch={props.dispatch.clone()}
                 signature={props.signature.clone()}
                 drawer_view_size={props.drawer_view_size}
+                workspace={props.workspace.clone()}
             />
             <SymmetriesView
                 dispatch={props.dispatch.clone()}

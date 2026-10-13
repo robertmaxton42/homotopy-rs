@@ -63,6 +63,9 @@ fn load(proof: OldProof) -> Option<(Signature, Option<Workspace>)> {
             color,
             shape: VertexShape::default(),
             diagram: v.diagram.clone(),
+            placeholder: false,
+            instance: None,
+            instances_open: false,
         };
         signature.insert_item(SignatureItem::Item(info));
     }

@@ -15,14 +15,15 @@ use homotopy_core::{
     projection::{Depths, Projection},
     rewrite::RewriteN,
     signature::Signature as _,
-    Boundary, Diagram, DiagramN, Height, Orientation, SliceIndex,
+    Boundary, Diagram, DiagramN, Generator, Height, Orientation, SliceIndex,
 };
 use homotopy_graphics::{
-    style::VertexShape,
+    style::{GeneratorStyle, SignatureStyleData, VertexShape},
     svg::{
         generator_class_from_diagram_dim,
         render::{ActionRegion, GraphicElement},
         shape::{path_to_svg, project_2d, Point, Shape},
+        PLACEHOLDER_HATCH_ID,
     },
 };
 use web_sys::Element;
@@ -319,6 +320,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
                 if let Some(title) = &self.title {
                     <title>{title}</title>
                 }
+                {self.view_placeholder_hatch(ctx)}
                 {self.prepared.graphic.iter().enumerate().map(|(i, e)| self.view_element(ctx, i, e)).collect::<Html>()}
                 {self.view_highlight(ctx)}
             </svg>
@@ -346,6 +348,49 @@ impl<const N: usize> DiagramSvg<N> {
         )
     }
 
+    fn is_placeholder(ctx: &Context<Self>, generator: Generator) -> bool {
+        ctx.props()
+            .signature
+            .generator_style(generator)
+            .is_some_and(GeneratorStyle::is_placeholder)
+    }
+
+    fn hatch_id(ctx: &Context<Self>) -> String {
+        format!("{}-{PLACEHOLDER_HATCH_ID}", ctx.props().id)
+    }
+
+    /// Defines the pattern with which the surfaces of placeholders are hatched, if there are any.
+    fn view_placeholder_hatch(&self, ctx: &Context<Self>) -> Html {
+        let has_placeholder_surface = self.prepared.graphic.iter().any(|element| {
+            matches!(element, GraphicElement::Surface(d, _) if Self::is_placeholder(ctx, d.generator))
+        });
+        if !has_placeholder_surface {
+            return html! {};
+        }
+
+        html! {
+            <defs>
+                <pattern
+                    id={Self::hatch_id(ctx)}
+                    width="7"
+                    height="7"
+                    patternUnits="userSpaceOnUse"
+                    patternTransform="rotate(45)"
+                >
+                    <line
+                        x1="0"
+                        y1="0"
+                        x2="0"
+                        y2="7"
+                        stroke="black"
+                        stroke-width="2"
+                        stroke-opacity="0.55"
+                    />
+                </pattern>
+            </defs>
+        }
+    }
+
     /// Creates the SVG elements for the diagram.
     fn view_element(&self, ctx: &Context<Self>, index: usize, element: &GraphicElement<N>) -> Html {
         let class = generator_class_from_diagram_dim(
@@ -356,10 +401,24 @@ impl<const N: usize> DiagramSvg<N> {
         );
 
         match element {
-            GraphicElement::Surface(_, path) => {
+            GraphicElement::Surface(d, path) => {
                 let path = path_to_svg(&path.clone().transformed(&self.prepared.transform));
-                html! {
-                    <path d={path} class={class} />
+                if Self::is_placeholder(ctx, d.generator) {
+                    // Placeholders are translucent (by their stylesheet) and also hatched.
+                    html! {
+                        <>
+                            <path d={path.clone()} class={class} />
+                            <path
+                                d={path}
+                                fill={format!("url(#{})", Self::hatch_id(ctx))}
+                                stroke="none"
+                            />
+                        </>
+                    }
+                } else {
+                    html! {
+                        <path d={path} class={class} />
+                    }
                 }
             }
             GraphicElement::Wire(_, _, path, mask) => {

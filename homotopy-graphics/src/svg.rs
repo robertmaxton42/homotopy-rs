@@ -7,6 +7,15 @@ use crate::style::{GeneratorRepresentation, GeneratorStyle, SignatureStyleData};
 pub mod render;
 pub mod shape;
 
+/// How translucent placeholders are drawn.
+const FILL_OPACITY: f32 = 0.4;
+const STROKE_OPACITY: f32 = 0.65;
+const WIRE_DASH: &str = "7 5";
+
+/// The id of the pattern with which the surfaces of placeholders are hatched (on top of being
+/// translucent). It is up to the renderer of the SVG to define it.
+pub const PLACEHOLDER_HATCH_ID: &str = "placeholder-hatch";
+
 macro_rules! write_styles_for {
     (
         @c_r
@@ -14,27 +23,35 @@ macro_rules! write_styles_for {
         $orientation:expr,
         $generator:expr,
         $color:expr,
+        $placeholder:expr,
         $stylesheet:expr
      ) => {{
-        writeln!(
-            $stylesheet,
-            ".{name} {{ fill: {color}; stroke: {color}; }}",
-            name = generator_class($generator, $c, $orientation),
-            color = $color.lighten($c, $orientation).hex(),
-        )
-        .unwrap()
+        let name = generator_class($generator, $c, $orientation);
+        let color = $color.lighten($c, $orientation).hex();
+        writeln!($stylesheet, ".{name} {{ fill: {color}; stroke: {color}; }}").unwrap();
+        if $placeholder {
+            // Placeholders are translucent, with dashed wires (and hatched surfaces, which the
+            // renderer draws on top of them using `PLACEHOLDER_HATCH_ID`).
+            writeln!(
+                $stylesheet,
+                ".{name} {{ fill-opacity: {FILL_OPACITY}; stroke-opacity: {STROKE_OPACITY}; }} \
+                 .{name}.wire {{ stroke-dasharray: {WIRE_DASH}; }}",
+            )
+            .unwrap();
+        }
     }};
     (
         $generator:expr,
         $styles:expr,
         $stylesheet:expr
     ) => {{
-        let color = $styles.generator_style($generator).unwrap().color();
+        let style = $styles.generator_style($generator).unwrap();
+        let (color, placeholder) = (style.color(), style.is_placeholder());
 
         for c in 0..3 {
-            write_styles_for!(@c_r c, Orientation::Positive, $generator, color, $stylesheet);
-            write_styles_for!(@c_r c, Orientation::Zero, $generator, color, $stylesheet);
-            write_styles_for!(@c_r c, Orientation::Negative, $generator, color, $stylesheet);
+            write_styles_for!(@c_r c, Orientation::Positive, $generator, color, placeholder, $stylesheet);
+            write_styles_for!(@c_r c, Orientation::Zero, $generator, color, placeholder, $stylesheet);
+            write_styles_for!(@c_r c, Orientation::Negative, $generator, color, placeholder, $stylesheet);
         }
     }};
 }

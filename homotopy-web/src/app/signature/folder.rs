@@ -1,4 +1,5 @@
 use homotopy_common::{idx::Idx, tree::Node};
+use homotopy_core::Diagram;
 use yew::prelude::*;
 
 use super::item::ItemView;
@@ -22,6 +23,7 @@ pub struct Props {
     pub dispatch: Callback<Action>,
     pub signature: Signature,
     pub drawer_view_size: DrawerViewSize,
+    pub workspace: Option<Diagram>,
 }
 
 fn on_valid_callback<F>(props: &Props, node: Node, f: F) -> Callback<DragEvent>
@@ -146,6 +148,7 @@ fn render_item(props: &Props, node: Node) -> Html {
                         item={item.inner().clone()}
                         signature={props.signature.clone()}
                         drawer_view_size={props.drawer_view_size}
+                        workspace={props.workspace.clone()}
                         on_drag_over={on_drag_over(props, node)}
                         on_drag_enter={on_drag_enter(props, node)}
                         on_drop={on_drop(props, node, DropPosition::After)}
@@ -162,6 +165,7 @@ fn render_item(props: &Props, node: Node) -> Html {
                         item={item.inner().clone()}
                         signature={props.signature.clone()}
                         drawer_view_size={props.drawer_view_size}
+                        workspace={props.workspace.clone()}
                         on_drag_start={on_drag_start(node)}
                     />
                 }
@@ -189,6 +193,16 @@ fn render_children(props: &Props, node: Node) -> Html {
                     <ul class={class}>
                         {for children}
                         {render_drop_zone(props, node, DropPosition::After)}
+                    </ul>
+                }
+            }
+            // The children of a generator are its instances, which are collapsed by default.
+            SignatureItem::Item(info) if info.instances_open && !n.is_empty() => {
+                let children = n.children().map(|child| render_tree(props, child));
+
+                html! {
+                    <ul class="signature__branch signature__branch-instances">
+                        {for children}
                     </ul>
                 }
             }

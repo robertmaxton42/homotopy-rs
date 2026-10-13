@@ -421,6 +421,7 @@ impl State {
                                 tag: $tag,
                                 boundary_path,
                                 embedding: embedding.into_iter().collect(),
+                                substitution: None,
                             }),
                     );
                 };
@@ -463,6 +464,23 @@ impl State {
                         extend!(d.clone(), None);
                         if info.invertibility.is_invertible() {
                             extend!(d.inverse(), Some("inverse".to_owned()));
+                        }
+                        // Instances of schemas, with placeholders inferred from the point.
+                        let signature = &self.proof().signature;
+                        for inferred in
+                            signature.infer_instances(info.generator, &haystack, boundary, &point)
+                        {
+                            matches.push(AttachOption {
+                                generator: info.generator,
+                                tag: Some(format!(
+                                    "[{}]",
+                                    signature.describe_substitution(&inferred.substitution)
+                                )),
+                                diagram: inferred.diagram,
+                                boundary_path,
+                                embedding: inferred.embedding.into_iter().collect(),
+                                substitution: Some(inferred.substitution),
+                            });
                         }
                         self.extend_with_reflections(
                             &mut matches,
@@ -565,6 +583,7 @@ impl State {
                 tag: Some(tag.clone()),
                 boundary_path,
                 embedding: embedding.into_iter().collect(),
+                substitution: None,
             }));
         }
     }

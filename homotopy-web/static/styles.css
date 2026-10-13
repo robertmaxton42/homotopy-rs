@@ -839,6 +839,61 @@ input.signature__item-name {
   background-color: #27ae60;
 }
 
+.signature__generator-indicator-placeholder {
+  background-color: #575f66;
+  background-image: repeating-linear-gradient(
+    45deg, transparent 0 4px, rgba(255, 255, 255, 0.28) 4px 6px
+  );
+}
+
+/* Placeholders are hatched in the signature, as they are in diagrams. */
+.signature__generator-placeholder {
+  background-image: repeating-linear-gradient(
+    45deg, transparent 0 4px, rgba(0, 0, 0, 0.45) 4px 6px
+  );
+}
+
+/* The disclosure control for the instances of a generator. */
+.signature__instances-toggle {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 0 var(--space-0);
+  padding: 0 var(--space-0);
+  border-radius: var(--space-0);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+  color: var(--drawer-foreground-dimmed-text);
+  border: 1px solid var(--toolbar-border);
+}
+
+.signature__instances-toggle:hover {
+  background: var(--drawer-selected);
+}
+
+/* Instantiating a generator. */
+.signature__slot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0);
+  margin: var(--space-0) 0;
+}
+
+.signature__slot-name,
+.signature__slot-arrow {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.signature__slot-value {
+  flex: 1 1 auto;
+}
+
+.signature__slot-value-composite {
+  font-style: italic;
+}
+
 .drawer-expanded .signature__generator-indicator {
   width: auto;
   height: 24px;
