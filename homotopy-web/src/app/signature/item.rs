@@ -968,9 +968,65 @@ impl ItemView {
                     {placeholder_toggle}
                     {Self::view_dualisability_options(ctx, info)}
                     {merge_button}
+                    {Self::view_dependencies(ctx, info, &color)}
                     {self.view_instantiation(ctx, info, &color)}
                 </div>
             },
+        }
+    }
+
+    /// The section of the settings of a generator for choosing the placeholders it depends on
+    /// although its diagram does not mention them. Placeholders that the diagram mentions are
+    /// always dependencies, so they are checked and disabled.
+    fn view_dependencies(ctx: &Context<Self>, info: &GeneratorInfo, color: &str) -> Html {
+        let signature = &ctx.props().signature;
+        let generator = info.generator;
+        let mut placeholders: Vec<_> = signature
+            .iter()
+            .filter(|other| other.placeholder && other.generator != generator)
+            .collect();
+        if info.placeholder || info.instance.is_some() || placeholders.is_empty() {
+            return html! {};
+        }
+        placeholders.sort_by_key(|other| (other.generator.dimension, other.generator.id));
+
+        let parameters = signature.parameters(generator);
+        let rows = placeholders.into_iter().map(|placeholder| {
+            let p = placeholder.generator;
+            let explicit = info.depends_on.contains(&p);
+            let mentioned = !explicit && parameters.contains(&p);
+            let current = info.depends_on.clone();
+            let onchange = ctx.link().callback(move |_| {
+                let mut depends_on = current.clone();
+                if explicit {
+                    depends_on.retain(|&g| g != p);
+                } else {
+                    depends_on.push(p);
+                }
+                ItemViewMessage::Edit(SignatureItemEdit::SetDependsOn(depends_on))
+            });
+
+            html! {
+                <label class="signature__dependency">
+                    <input
+                        type="checkbox"
+                        checked={explicit || mentioned}
+                        disabled={mentioned}
+                        {onchange}
+                    />
+                    <TexSpan class="signature__dependency-name" raw_tex={placeholder.name.clone()} />
+                    if mentioned {
+                        <span class="signature__dependency-hint">{"(mentioned)"}</span>
+                    }
+                </label>
+            }
+        });
+
+        html! {
+            <fieldset style={format!("border: 1px solid {color};")}>
+                <legend>{"Depends on"}</legend>
+                {for rows}
+            </fieldset>
         }
     }
 

@@ -124,22 +124,40 @@ impl Search<'_> {
     }
 
     /// Applies a partial substitution to a diagram mentioned by `generator`, using the existing
-    /// instances of the generators it depends on.
+    /// instances of the generators it depends on. Unless `strict`, a missing instance is stood in
+    /// for by the dependent generator with a substituted diagram, which is enough for a preview:
+    /// the actual instance is only created when attaching.
     fn substitute(
         &self,
         generator: Generator,
         substitution: &[(Generator, Diagram)],
         diagram: &Diagram,
+        strict: bool,
     ) -> Option<Diagram> {
         let substitution = self.signature.normalise(substitution);
         let mut replacements = substitution.clone();
+        let mentioned = diagram.generators();
         for (b, restricted) in self.signature.dependents(generator, &substitution) {
             let restricted = self.signature.normalise(&restricted);
-            if restricted.is_empty() {
+            if restricted.is_empty() || !mentioned.contains_key(&b) {
                 continue;
             }
-            let instance = self.signature.find_instance(b, &restricted)?;
-            let diagram = self.signature.generator_info(instance)?.diagram.clone();
+            let diagram = match self.signature.find_instance(b, &restricted) {
+                Some(instance) => self.signature.generator_info(instance)?.diagram.clone(),
+                None if strict => return None,
+                None => {
+                    let Diagram::DiagramN(own) = &self.signature.generator_info(b)?.diagram else {
+                        return None;
+                    };
+                    DiagramN::from_generator(
+                        b,
+                        self.substitute(b, &restricted, &own.source(), false)?,
+                        self.substitute(b, &restricted, &own.target(), false)?,
+                    )
+                    .ok()?
+                    .into()
+                }
+            };
             replacements.push((b, diagram));
         }
         substitute(diagram, self.signature, &|g| {
@@ -176,8 +194,8 @@ impl Search<'_> {
                 .collect();
         };
         let (Some(source), Some(target)) = (
-            self.substitute(placeholder, substitution, &own_n.source()),
-            self.substitute(placeholder, substitution, &own_n.target()),
+            self.substitute(placeholder, substitution, &own_n.source(), true),
+            self.substitute(placeholder, substitution, &own_n.target(), true),
         ) else {
             return vec![];
         };
@@ -217,11 +235,14 @@ impl Search<'_> {
 
     /// Checks whether a complete substitution lets the schema attach at the point.
     fn check(&mut self, substitution: &[(Generator, Diagram)]) {
+        // The side attached along must match the diagram, so it can only use existing instances;
+        // instances on the other side may be created when attaching.
+        let strict_source = self.boundary == Boundary::Target;
         let source = self.schema_diagram.source();
         let target = self.schema_diagram.target();
         let (Some(source), Some(target)) = (
-            self.substitute(self.schema, substitution, &source),
-            self.substitute(self.schema, substitution, &target),
+            self.substitute(self.schema, substitution, &source, strict_source),
+            self.substitute(self.schema, substitution, &target, !strict_source),
         ) else {
             return;
         };

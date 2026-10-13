@@ -74,6 +74,8 @@ struct GeneratorData {
     diagram: Key<Diagram>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     placeholder: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    depends_on: Vec<Generator>,
     /// Older versions ignore this, and treat instances as ordinary generators.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     instance: Option<InstanceData>,
@@ -117,6 +119,7 @@ pub fn serialize(
                 _ => None,
             },
             placeholder: info.placeholder,
+            depends_on: info.depends_on,
             instance: info.instance.map(|instance| InstanceData {
                 schema: instance.schema,
                 substitution: instance
@@ -181,6 +184,7 @@ pub fn deserialize(data: &[u8]) -> Option<((Signature, Option<Workspace>), Metad
                     // TODO: `single_preview` should be properly serialized
                     single_preview: true,
                     placeholder: gd.placeholder,
+                    depends_on: gd.depends_on,
                     instance: match gd.instance {
                         None => None,
                         Some(instance) => Some(Instance {
@@ -333,12 +337,23 @@ mod tests {
                 SignatureItemEdit::MakePlaceholder(true),
             ))
             .unwrap();
+        let q_generator = q.max_generator().generator;
+        signature
+            .update(&SignatureEdit::Edit(
+                signature.find_node(q_generator).unwrap(),
+                SignatureItemEdit::SetDependsOn(vec![p]),
+            ))
+            .unwrap();
         let instance = signature.instantiate(e, &[(p, Diagram::from(q))]).unwrap();
 
         let data = serialize(signature.clone(), None, Default::default());
         let ((loaded, _), _) = deserialize(&data).unwrap();
 
         assert!(loaded.generator_info(p).unwrap().placeholder);
+        assert_eq!(
+            loaded.generator_info(q_generator).unwrap().depends_on,
+            vec![p]
+        );
         assert_eq!(
             loaded.generator_info(instance).unwrap().instance,
             signature.generator_info(instance).unwrap().instance

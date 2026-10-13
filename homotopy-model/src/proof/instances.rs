@@ -34,21 +34,33 @@ pub enum InstantiationError {
 }
 
 impl Signature {
-    /// The placeholders mentioned by a generator, i.e. those it can be instantiated at.
+    /// The placeholders a generator can be instantiated at: those its diagram mentions, those
+    /// it explicitly [depends on](GeneratorInfo::depends_on), and those that the generators its
+    /// diagram mentions explicitly depend on.
     #[must_use]
     pub fn parameters(&self, generator: Generator) -> Vec<Generator> {
         let Some(info) = self.generator_info(generator) else {
             return vec![];
         };
-        let mut parameters: Vec<_> = info
-            .diagram
-            .generators()
-            .into_keys()
-            .filter(|&g| {
-                g != generator && self.generator_info(g).is_some_and(|info| info.placeholder)
-            })
-            .collect();
+        let mut parameters = vec![];
+        for g in info.diagram.generators().into_keys() {
+            if g == generator {
+                continue;
+            }
+            match self.generator_info(g) {
+                Some(info) if info.placeholder => parameters.push(g),
+                // The generators a diagram mentions have lower dimensions, so this terminates.
+                Some(info) if !info.depends_on.is_empty() => {
+                    parameters.extend(self.parameters(g));
+                }
+                _ => {}
+            }
+        }
+        parameters.extend(info.depends_on.iter().copied().filter(|&p| {
+            p != generator && self.generator_info(p).is_some_and(|info| info.placeholder)
+        }));
         parameters.sort_by_key(|g| (g.dimension, g.id));
+        parameters.dedup();
         parameters
     }
 
@@ -147,6 +159,7 @@ impl Signature {
                 placeholder: false,
                 instance: Some(instance),
                 instances_open: false,
+                depends_on: vec![],
                 ..info
             }),
         );
@@ -381,5 +394,190 @@ mod tests {
         };
         assert_eq!(e_diagram.source(), qq.clone().into());
         assert_eq!(e_diagram.target(), qq.into());
+    }
+
+    /// Limits as right Kan extensions along `! : J → 1`, with the universal property as a schema
+    /// whose mediating cell depends on the cone although its type does not mention it.
+    mod limits {
+        use homotopy_core::{
+            signature::{Invertibility, Signature as _},
+            typecheck::{typecheck, Mode},
+            Boundary, Diagram, DiagramN, Generator, Height,
+        };
+
+        use crate::proof::{Signature, SignatureEdit, SignatureItemEdit};
+
+        pub(super) struct Limits {
+            pub sig: Signature,
+            pub d: Generator,
+            pub x: Generator,
+            pub alpha: Generator,
+            pub l: Generator,
+            pub u: Generator,
+            pub beta: Generator,
+            pub d0: DiagramN,
+            pub x0: DiagramN,
+            /// Two different cones `α₀, α₁ : X₀ ∘ ! ⇒ D₀`.
+            pub alphas: [DiagramN; 2],
+        }
+
+        fn g(d: &DiagramN) -> Generator {
+            d.max_generator().generator
+        }
+
+        fn edit(sig: &mut Signature, generator: Generator, edit: SignatureItemEdit) {
+            let node = sig.find_node(generator).unwrap();
+            sig.update(&SignatureEdit::Edit(node, edit)).unwrap();
+        }
+
+        pub(super) fn setup() -> Limits {
+            let mut sig = Signature::default();
+            let one: Diagram = sig.create_generator_zero("1").into();
+            let j: Diagram = sig.create_generator_zero("J").into();
+            let c: Diagram = sig.create_generator_zero("C").into();
+            let cell = |sig: &mut Signature, s: Diagram, t: Diagram, name: &str| {
+                sig.create_generator(s, t, name, Invertibility::Directed)
+                    .unwrap()
+            };
+
+            let bang = cell(&mut sig, j.clone(), one.clone(), "!");
+            let d = cell(&mut sig, j.clone(), c.clone(), "D");
+            let l = cell(&mut sig, one.clone(), c.clone(), "L");
+            let bang_l = bang.attach(&l, Boundary::Target, &[]).unwrap();
+            let pi = cell(&mut sig, bang_l.into(), d.clone().into(), "π");
+            let x = cell(&mut sig, one.clone(), c.clone(), "X");
+            let bang_x = bang.attach(&x, Boundary::Target, &[]).unwrap();
+            let alpha = cell(&mut sig, bang_x.clone().into(), d.clone().into(), "α");
+            let u = cell(&mut sig, x.clone().into(), l.clone().into(), "u");
+            // β : α ⇛ (u ▷ !) ≫ π
+            let factorisation = bang_x
+                .identity()
+                .attach(&u, Boundary::Target, &[1])
+                .unwrap()
+                .attach(&pi, Boundary::Target, &[0])
+                .unwrap();
+            let beta = cell(&mut sig, alpha.clone().into(), factorisation.into(), "β");
+
+            for placeholder in [g(&d), g(&x), g(&alpha)] {
+                edit(
+                    &mut sig,
+                    placeholder,
+                    SignatureItemEdit::MakePlaceholder(true),
+                );
+            }
+            edit(
+                &mut sig,
+                g(&l),
+                SignatureItemEdit::SetDependsOn(vec![g(&d)]),
+            );
+            edit(
+                &mut sig,
+                g(&u),
+                SignatureItemEdit::SetDependsOn(vec![g(&alpha)]),
+            );
+
+            // A concrete diagram and two cones over it.
+            let d0 = cell(&mut sig, j, c.clone(), "D₀");
+            let x0 = cell(&mut sig, one, c, "X₀");
+            let bang_x0 = bang.attach(&x0, Boundary::Target, &[]).unwrap();
+            let alpha0 = cell(&mut sig, bang_x0.clone().into(), d0.clone().into(), "α₀");
+            let alpha1 = cell(&mut sig, bang_x0.into(), d0.clone().into(), "α₁");
+
+            Limits {
+                sig,
+                d: g(&d),
+                x: g(&x),
+                alpha: g(&alpha),
+                l: g(&l),
+                u: g(&u),
+                beta: g(&beta),
+                d0,
+                x0,
+                alphas: [alpha0, alpha1],
+            }
+        }
+
+        fn instances_of(sig: &Signature, schema: Generator) -> Vec<Generator> {
+            sig.iter()
+                .filter(|info| info.instance.as_ref().is_some_and(|i| i.schema == schema))
+                .map(|info| info.generator)
+                .collect()
+        }
+
+        #[test]
+        fn mediating_cells_depend_on_the_cone() {
+            let Limits {
+                mut sig,
+                d,
+                x,
+                alpha,
+                l,
+                u,
+                beta,
+                d0,
+                x0,
+                alphas,
+            } = setup();
+            assert_eq!(sig.parameters(l), vec![d]);
+            assert_eq!(sig.parameters(u), vec![d, x, alpha]);
+            assert_eq!(sig.parameters(beta), vec![d, x, alpha]);
+
+            for alpha_i in &alphas {
+                let substitution = [
+                    (d, d0.clone().into()),
+                    (x, x0.clone().into()),
+                    (alpha, alpha_i.clone().into()),
+                ];
+                let instance = sig.instantiate(beta, &substitution).unwrap();
+                let diagram = sig.generator_info(instance).unwrap().diagram.clone();
+                assert!(typecheck(&diagram, &sig, Mode::default(), true).is_ok());
+            }
+
+            // One limit L[D₀], but a different mediating cell for each cone.
+            assert_eq!(instances_of(&sig, l).len(), 1);
+            assert_eq!(instances_of(&sig, u).len(), 2);
+            assert_eq!(instances_of(&sig, beta).len(), 2);
+        }
+
+        #[test]
+        fn factorisations_are_inferred_from_a_cone() {
+            let Limits {
+                mut sig,
+                d,
+                x,
+                alpha,
+                u,
+                beta,
+                d0,
+                x0,
+                alphas,
+                ..
+            } = setup();
+            let haystack: Diagram = alphas[0].clone().into();
+            let point = [Height::Singular(0), Height::Singular(0)];
+            let inferred = sig.infer_instances(beta, &haystack, Boundary::Target, &point);
+            let expected = vec![
+                (d, Diagram::from(d0)),
+                (x, x0.into()),
+                (alpha, alphas[0].clone().into()),
+            ];
+            let found = inferred
+                .into_iter()
+                .find(|inferred| inferred.substitution == expected)
+                .expect("the cone's own substitution is inferred");
+
+            // Attaching it creates the mediating cell for α₀ and factors α₀ through the limit.
+            let instance = sig.instantiate(beta, &found.substitution).unwrap();
+            let Diagram::DiagramN(diagram) = sig.generator_info(instance).unwrap().diagram.clone()
+            else {
+                unreachable!()
+            };
+            let DiagramN { .. } = alphas[0]
+                .clone()
+                .identity()
+                .attach(&diagram, Boundary::Target, &found.embedding)
+                .unwrap();
+            assert_eq!(instances_of(&sig, u).len(), 1);
+        }
     }
 }
