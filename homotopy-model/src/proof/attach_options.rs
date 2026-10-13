@@ -8,7 +8,10 @@ use homotopy_core::{
 };
 
 use super::{generators::GeneratorInfo, AttachOption, ProofState, Signature, Structure};
-use crate::job::{Job, Progress};
+use crate::{
+    job::{Job, Progress},
+    remote::Work,
+};
 
 /// Why there is nothing to attach to.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -35,6 +38,8 @@ pub struct AttachOptionsJob {
     point: Vec<Height>,
     weak_units: bool,
     matches: Vec<AttachOption>,
+    /// The point as it was asked for, relative to what the workspace shows.
+    asked_for: Vec<SliceIndex>,
 }
 
 impl AttachOptionsJob {
@@ -46,6 +51,7 @@ impl AttachOptionsJob {
         weak_units: bool,
     ) -> Result<Self, NoAttachment> {
         let workspace = proof.workspace.as_ref().ok_or(NoAttachment::NoWorkspace)?;
+        let asked_for = point.to_vec();
 
         let point = {
             let mut point_with_path: Vec<SliceIndex> = workspace.path.iter().copied().collect();
@@ -73,7 +79,27 @@ impl AttachOptionsJob {
             point,
             weak_units,
             matches: vec![],
+            asked_for,
         })
+    }
+
+    /// The work to do to do the search somewhere else (see [`remote`](crate::remote)), on the
+    /// proof it was made from. `None` if the search has begun.
+    #[must_use]
+    pub fn offer(&self) -> Option<Work> {
+        (self.next == 0 && self.matches.is_empty()).then(|| Work::AttachOptions {
+            point: self.asked_for.clone(),
+            weak_units: self.weak_units,
+        })
+    }
+
+    /// Whether there are schemas to infer instances of, which is what makes the search take long
+    /// (see [`Signature::infer_instances`]).
+    #[must_use]
+    pub fn has_schemas(&self) -> bool {
+        self.generators
+            .iter()
+            .any(|info| info.placeholder || !info.depends_on.is_empty())
     }
 
     /// Finds the ways to attach the generator.

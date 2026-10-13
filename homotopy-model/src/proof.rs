@@ -1,6 +1,6 @@
 use std::convert::{Into, TryFrom};
 
-pub use actions_job::{ActionsJob, ActionsOutcome};
+pub use actions_job::{ActionsJob, ActionsOutcome, REPLAYING};
 pub use attach_options::{AttachOptionsJob, NoAttachment};
 pub use drafts::{Draft, DraftEdit, Drafts};
 use homotopy::Homotopy;
@@ -361,6 +361,10 @@ pub enum ProofError {
     SignatureError(#[from] SignatureError),
     #[error(transparent)]
     InstantiationError(#[from] InstantiationError),
+    /// What went wrong in a job that was done somewhere else (see [`remote`](crate::remote)),
+    /// where the error itself did not make it across.
+    #[error("{0}")]
+    Remote(String),
 }
 
 impl ProofState {

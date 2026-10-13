@@ -4,11 +4,15 @@ use std::collections::VecDeque;
 
 use homotopy_core::contraction::MergeExchanges;
 
-use super::{Action, ProofError};
+use super::{Action, ProofError, ProofState};
 use crate::{
     history::Proof,
     job::{Job, Progress},
+    remote::Work,
 };
+
+/// What a job that performs recorded actions is called.
+pub const REPLAYING: &str = "Replaying actions";
 
 /// What a finished [`ActionsJob`] came to.
 #[derive(Debug)]
@@ -94,6 +98,28 @@ impl ActionsJob {
             && self.pending.front().is_some_and(|action| {
                 *action != Action::MergeExchanges && action.work_label().is_some()
             })
+    }
+
+    /// What it takes to do the job somewhere else (see [`remote`](crate::remote)): the proof it is
+    /// made from and the work to do on it. `None` if the job has begun, or is not one that can
+    /// be described like that.
+    #[must_use]
+    pub fn offer(&self) -> Option<(&ProofState, Work)> {
+        let replay = match self.title {
+            None => false,
+            Some(REPLAYING) => true,
+            Some(_) => return None,
+        };
+        let untouched = self.consumed == 0 && self.merging.is_none() && self.applied.is_empty();
+        (untouched && self.stop_at_noop != replay).then(|| {
+            (
+                &**self.proof,
+                Work::Actions {
+                    actions: self.pending.iter().cloned().collect(),
+                    replay,
+                },
+            )
+        })
     }
 
     fn outcome(&mut self) -> ActionsOutcome {

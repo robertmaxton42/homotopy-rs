@@ -420,6 +420,14 @@ impl Signature {
         Ok(())
     }
 
+    /// Whether the signatures are the same down to the numbering of the nodes of the tree, which
+    /// `==` does not look at. (Actions that refer to nodes mean something else in a signature that
+    /// is only equal to the one they were made for.)
+    #[must_use]
+    pub fn identical(&self, other: &Self) -> bool {
+        self.tree.identical(&other.tree) && self.symmetries == other.symmetries
+    }
+
     #[must_use]
     pub fn as_tree(&self) -> Tree<SignatureItem> {
         self.tree.clone()

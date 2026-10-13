@@ -408,7 +408,7 @@ impl State {
             }
             Action::SelectPoint(point, weak_units) => {
                 return match AttachOptionsJob::new(self.proof(), &point, weak_units) {
-                    Ok(job) => Ok(Started::Running(Task::AttachOptions(job))),
+                    Ok(job) => Ok(Started::Running(Task::AttachOptions(Box::new(job)))),
                     Err(NoAttachment::NoWorkspace) => Ok(Started::Done(true)),
                     Err(NoAttachment::NoBoundary) => Err(ModelError::NoAttachment),
                 };

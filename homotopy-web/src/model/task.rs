@@ -37,7 +37,7 @@ pub enum Task {
         /// even if the job itself changes nothing.
         redone: bool,
     },
-    AttachOptions(AttachOptionsJob),
+    AttachOptions(Box<AttachOptionsJob>),
     Export(ExportJob),
 }
 
