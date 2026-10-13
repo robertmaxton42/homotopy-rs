@@ -5,6 +5,7 @@ pub use Visibility::*;
 
 mod common;
 
+pub mod busy;
 pub mod delta;
 pub mod icon;
 pub mod modal;
