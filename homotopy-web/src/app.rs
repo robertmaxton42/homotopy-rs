@@ -231,19 +231,8 @@ impl App {
     fn dispatch(&mut self, ctx: &Context<Self>, action: model::Action) -> bool {
         tracing::info!("Received action: {:?}", action);
 
-        // Refuse rather than queue what would change the project while a job works on it: the
-        // person asking for it cannot have known what it would come on top of, and cancelling
-        // the job must not replay anything.
-        if let Some(job) = &self.job {
-            if !action.allowed_while_busy() {
-                tracing::info!(
-                    "Refused action while busy ({}): {:?}",
-                    job.task.label(),
-                    action
-                );
-                busy::refused();
-                return false;
-            }
+        if self.refuse_while_busy(&action) {
+            return false;
         }
 
         // Determine if the action is experimental and warn the user.
@@ -266,22 +255,44 @@ impl App {
 
         match result {
             Ok(model::Started::Done(changed)) => self.updated(Ok(changed), resets_panzoom),
-            Ok(model::Started::Running(task)) => {
-                self.next_job += 1;
-                let job = Running {
-                    id: self.next_job,
-                    task,
-                    finished: None,
-                    remote: None,
-                    resets_panzoom,
-                    started: Instant::now(),
-                    steps: 0,
-                    longest_step: Duration::ZERO,
-                };
-                self.begin(ctx, job)
-            }
+            Ok(model::Started::Running(task)) => self.start_job(ctx, task, resets_panzoom),
             Err(error) => self.updated(Err(error), resets_panzoom),
         }
+    }
+
+    /// Refuses rather than queues what would change the project while a job works on it: the
+    /// person asking for it cannot have known what it would come on top of, and cancelling the
+    /// job must not replay anything. Returns whether the action was refused.
+    fn refuse_while_busy(&self, action: &model::Action) -> bool {
+        let Some(job) = &self.job else {
+            return false;
+        };
+        if action.allowed_while_busy() {
+            return false;
+        }
+        tracing::info!(
+            "Refused action while busy ({}): {:?}",
+            job.task.label(),
+            action
+        );
+        busy::refused();
+        true
+    }
+
+    /// Starts the job for a task that an action began.
+    fn start_job(&mut self, ctx: &Context<Self>, task: model::Task, resets_panzoom: bool) -> bool {
+        self.next_job += 1;
+        let job = Running {
+            id: self.next_job,
+            task,
+            finished: None,
+            remote: None,
+            resets_panzoom,
+            started: Instant::now(),
+            steps: 0,
+            longest_step: Duration::ZERO,
+        };
+        self.begin(ctx, job)
     }
 
     /// What follows from the project having been updated, or not.
