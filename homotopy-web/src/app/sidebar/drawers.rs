@@ -148,6 +148,7 @@ declare_sidebar_drawers! {
                 signature={proof.signature.clone()}
                 dispatch={dispatch}
                 drawer_view_size={drawer_view_size}
+                workspace={proof.workspace.as_ref().map(|ws| ws.diagram.clone())}
             />
         },
         min_width: 250,

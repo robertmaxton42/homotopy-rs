@@ -3,6 +3,7 @@ use homotopy_graphics::style::{Color, GeneratorStyle, VertexShape};
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(clippy::struct_excessive_bools)] // Independent flags.
 pub struct GeneratorInfo {
     pub generator: Generator,
     pub oriented: bool,
@@ -12,6 +13,21 @@ pub struct GeneratorInfo {
     pub shape: VertexShape,
     pub diagram: Diagram,
     pub name: String,
+    /// Whether this generator is a placeholder, which generators mentioning it (axiom schemas)
+    /// can be instantiated at (see [`Signature::instantiate`](super::Signature::instantiate)).
+    pub placeholder: bool,
+    /// If this generator is an instance of an axiom schema, the schema and substitution.
+    pub instance: Option<Instance>,
+    /// Whether the instances of this generator are shown in the signature.
+    pub instances_open: bool,
+}
+
+/// An instance `A[σ]` of a generator `A` mentioning placeholders: the substitution `σ` maps each
+/// instantiated placeholder to the diagram it is replaced with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Instance {
+    pub schema: Generator,
+    pub substitution: Vec<(Generator, Diagram)>,
 }
 
 impl GeneratorStyle for GeneratorInfo {
@@ -27,6 +43,10 @@ impl GeneratorStyle for GeneratorInfo {
 
     fn color(&self) -> Color {
         self.color.clone()
+    }
+
+    fn is_placeholder(&self) -> bool {
+        self.placeholder
     }
 }
 

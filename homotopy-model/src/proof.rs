@@ -11,6 +11,8 @@ use homotopy_core::{
     Diagram, Diagram0, DiagramN,
 };
 use im::Vector;
+pub use inference::InferredInstance;
+pub use instances::InstantiationError;
 use serde::{Deserialize, Serialize};
 pub use signature::*;
 use thiserror::Error;
@@ -22,6 +24,8 @@ mod signature;
 
 pub mod generators;
 pub mod homotopy;
+mod inference;
+mod instances;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub struct View {
@@ -154,6 +158,9 @@ pub enum Action {
 
     Merge(Generator, Generator),
 
+    /// Instantiate a generator by replacing placeholders it mentions with diagrams.
+    Instantiate(Generator, Vec<(Generator, Diagram)>),
+
     ImportProof(SerializedData),
 
     EditSignature(SignatureEdit),
@@ -269,7 +276,7 @@ impl Action {
                 .as_ref()
                 .is_some_and(|ws| ws.diagram.dimension() > 0),
             Self::Suspend(_, _) | Self::SuspendSignature => proof.signature.has_generators(),
-            Self::Merge(_, _) => true,
+            Self::Merge(_, _) | Self::Instantiate(_, _) => true,
             Self::ImportProof(_) => true,
             Self::EditSignature(_) | Self::EditMetadata(_) => true, /* technically the edits could be trivial but do not worry about that for now */
             Self::FlipBoundary | Self::RecoverBoundary => proof.boundary.is_some(),
@@ -288,10 +295,11 @@ impl Action {
                 SignatureEdit::Edit(
                     _,
                     SignatureItemEdit::MakeOriented(true)
+                        | SignatureItemEdit::MakePlaceholder(true)
                         | SignatureItemEdit::MakeInvertible(Invertibility::Dualisable(_))
                 ) | SignatureEdit::AddSymmetry(_)
                     | SignatureEdit::RemoveSymmetry(_)
-            )
+            ) | Self::Instantiate(_, _)
         )
     }
 }
@@ -316,6 +324,8 @@ pub enum ProofError {
     Import,
     #[error(transparent)]
     SignatureError(#[from] SignatureError),
+    #[error(transparent)]
+    InstantiationError(#[from] InstantiationError),
 }
 
 impl ProofState {
@@ -366,6 +376,11 @@ impl ProofState {
             Action::SuspendSignature => self.suspend_signature(),
             Action::Suspend(s, t) => self.suspend(*s, *t),
             Action::Merge(from, to) => self.merge(*from, *to)?,
+            Action::Instantiate(schema, substitution) => {
+                let count = self.signature.iter().count();
+                self.signature.instantiate(*schema, substitution)?;
+                self.signature.iter().count() != count
+            }
             Action::EditSignature(edit) => self.edit_signature(edit)?,
             Action::FlipBoundary => self.flip_boundary(),
             Action::RecoverBoundary => self.recover_boundary(),
@@ -589,6 +604,19 @@ impl ProofState {
     ///
     /// Invalid if the workspace is empty or has dimension 0 (if the boundary path is not null).
     fn attach(&mut self, option: &AttachOption) -> Result<bool, ProofError> {
+        if self.workspace.is_none() {
+            return Ok(false);
+        }
+        let attached = match &option.substitution {
+            None => option.diagram.clone(),
+            Some(substitution) => {
+                let instance = self.signature.instantiate(option.generator, substitution)?;
+                match &self.signature.generator_info(instance).unwrap().diagram {
+                    Diagram::DiagramN(diagram) => diagram.clone(),
+                    Diagram::Diagram0(_) => return Ok(false),
+                }
+            }
+        };
         let Some(ws) = &mut self.workspace else {
             return Ok(false);
         };
@@ -600,12 +628,12 @@ impl ProofState {
             let Diagram::DiagramN(diagram) = diagram else {
                 return Ok(false);
             };
-            *diagram = diagram.attach(&option.diagram, bp.boundary(), &embedding)?;
+            *diagram = diagram.attach(&attached, bp.boundary(), &embedding)?;
         } else {
             *diagram = diagram
                 .clone()
                 .identity()
-                .attach(&option.diagram, Boundary::Target, &embedding)?
+                .attach(&attached, Boundary::Target, &embedding)?
                 .target();
         }
 
@@ -1189,6 +1217,10 @@ pub struct AttachOption {
     pub embedding: Vector<usize>,
     pub tag: Option<String>,
     pub diagram: DiagramN,
+    /// If set, `generator` is a schema to be instantiated with this substitution, and the
+    /// instance attached in place of `diagram` (which has the same shape).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substitution: Option<Vec<(Generator, Diagram)>>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -139,13 +139,17 @@ impl Renderer {
 
             if !AppSettings::get_mesh_hidden() {
                 for Component {
-                    vertices, albedo, ..
+                    vertices,
+                    albedo,
+                    placeholder,
+                    ..
                 } in &self.scene.cylinder_components
                 {
                     frame.draw(draw!(program, vertices, &[], {
                         mv: v,
                         p: p,
                         albedo: *albedo,
+                        placeholder: *placeholder,
                         t: t,
                     }));
                 }
@@ -160,7 +164,10 @@ impl Renderer {
 
             if !AppSettings::get_mesh_hidden() {
                 for Component {
-                    vertices, albedo, ..
+                    vertices,
+                    albedo,
+                    placeholder,
+                    ..
                 } in &self.scene.components
                 {
                     // Set color lightening amount based on how generator is viewed.
@@ -168,6 +175,7 @@ impl Renderer {
                         mv: v,
                         p: p,
                         albedo: *albedo,
+                        placeholder: *placeholder,
                         t: t,
                     }));
                 }
@@ -183,6 +191,7 @@ impl Renderer {
                                 mv: v * Mat4::from_translation(position.xyz()) * Mat4::from_scale(geometry_scale),
                                 p: p,
                                 albedo: animation_curve.albedo,
+                                placeholder: animation_curve.placeholder,
                                 t: t,
                             }));
                         }
@@ -204,6 +213,7 @@ impl Renderer {
                                     mv: v * Mat4::from_translation(point.xyz()) * Mat4::from_scale(scale),
                                     p: p,
                                     albedo: singularity.albedo,
+                                    placeholder: singularity.placeholder,
                                     t: t,
                                 }));
                             }

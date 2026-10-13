@@ -25,6 +25,7 @@ pub mod rewrite;
 pub mod scaffold;
 pub mod serialize;
 pub mod signature;
+pub mod substitution;
 pub mod typecheck;
 
 pub fn collect_garbage() {
