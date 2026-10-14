@@ -131,20 +131,49 @@ impl Action {
         }
     }
 
-    /// Whether the action may be performed while a task is running. Everything that changes the
-    /// project or reads it is refused, rather than put off until the task is done: the task is
-    /// working on the project as it was, and the person who asked for something else did so
-    /// without knowing that. What is allowed does not touch the project: highlighting what the
-    /// pointer is over, and housekeeping.
+    /// Whether the action may be performed while a task is running.
+    ///
+    /// What is refused is what updates the history (anything that changes the project, which the
+    /// task is working on a copy of: it would be committed over, or over it), and what is
+    /// expensive in itself (an inference, a search for attachments, an export that is a job, which
+    /// would have to wait or stack up): the person who asked for it did so without knowing that
+    /// something else is running. Everything else is allowed: it does not change the project and
+    /// costs next to nothing, so it neither cancels the task nor shakes the busy indicator.
+    /// That is highlighting what the pointer is over, opening and closing folders and the
+    /// instances of generators (see [`SignatureEdit::is_view_only`](proof::SignatureEdit::is_view_only)),
+    /// picking a generator to attach, clearing what is selected, listing the merges there are,
+    /// dumping the log of actions, remote metadata and help. (Exporting the project is refused: it serialises all of it on the page, which takes long for a large one, and it would be the project as it was before the task.)
+    ///
+    /// (Pure view changes that do not go through [`State::start`] at all, such as panning and
+    /// opening drawers, were never in question.) Listing every kind here, rather than a
+    /// fallthrough, makes whoever adds an action decide.
     #[must_use]
     pub const fn allowed_while_busy(&self) -> bool {
-        matches!(
-            self,
-            Self::HighlightAttachment(_)
-                | Self::HighlightSlice(_)
-                | Self::SetRemoteProjectMetadata(_)
-                | Self::Help
-        )
+        match self {
+            // The history (undo and redo move through it, and a proof action adds to it), but
+            // for the edits that only show.
+            Self::Proof(proof::Action::EditSignature(edit)) => edit.is_view_only(),
+            // Also: what picking an option goes on to (a proof action or an attachment), and
+            // what is expensive in itself (searches, inference, exports that are jobs of their
+            // own or serialise the project).
+            Self::Proof(_)
+            | Self::History(_)
+            | Self::ImportActions(_)
+            | Self::Select(_)
+            | Self::SelectPoint(..)
+            | Self::AttachGenerator(..)
+            | Self::Draft(_)
+            | Self::ExportImage(..)
+            | Self::ExportProof => false,
+            Self::ExportActions
+            | Self::ClearSelections
+            | Self::Merge(_)
+            | Self::Arm(_)
+            | Self::HighlightAttachment(_)
+            | Self::HighlightSlice(_)
+            | Self::SetRemoteProjectMetadata(_)
+            | Self::Help => true,
+        }
     }
 }
 
@@ -243,6 +272,15 @@ impl State {
     /// output [`finish`](Self::finish) then commits.
     pub fn start(&mut self, action: Action) -> Result<Started, ModelError> {
         match action {
+            // Opening or closing a folder (or the instances of a generator) is shown, not done to
+            // the project: no step of the history, and no job is in its way.
+            Action::Proof(proof::Action::EditSignature(edit)) if edit.is_view_only() => {
+                self.history.amend(|state| {
+                    // (There is nothing to say if the node is not there any more.)
+                    state.signature.update(&edit).ok();
+                });
+                return Ok(Started::Done(false));
+            }
             Action::Proof(action) => {
                 // Merging is its own history step (rather than being folded into the homotopy's)
                 // so that the recorded actions replay to the same proof when exported. It cannot

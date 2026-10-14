@@ -68,11 +68,23 @@ indicator: see "Laying out diagrams" below.
   re-render the app. Clicking it or pressing `Esc` (a capturing `keydown` listener in the app)
   cancels. In the page, a step that blocks it delays the `Esc` until it is over (the job is then
   cancelled instead of committed); in the worker, `Esc` is seen at once.
-- **Refusal**: while a job runs, `Action::allowed_while_busy` is false for everything but
-  highlighting, remote metadata and help: this includes undo/redo (keys and mouse buttons), as
-  the job works on the history as it was. Refused input shakes the pill (and shows it at once).
-  Pure view changes that do not go through `dispatch` (pan/zoom, opening drawers, settings)
-  still work.
+- **Refusal**: while a job runs, `Action::allowed_while_busy` (an exhaustive `match`: whoever adds an
+  action decides) refuses what updates the history, and what is expensive in itself, and allows the rest.
+  Refused: every `proof::Action` but the view-only signature edits below, undo/redo (keys and mouse
+  buttons), `ImportActions`, `Select`, `SelectPoint`/`AttachGenerator`, `Draft` (it runs inference),
+  `ExportImage` and `ExportProof` (it serialises the project on the page, and is the project as it was
+  before the job). Allowed: highlights, `Arm`, `ClearSelections`, `Merge` (listing the options),
+  `ExportActions`, remote metadata, help, and **opening and closing folders and the instances of a
+  generator** (`SignatureEdit::is_view_only`: `ToggleFolder`, `ToggleInstances`). Those used to be
+  history steps (each fold was an undo step, and refused while busy); now `State::start` applies them
+  in place to the current snapshot (`History::amend`) and returns `Done(false)`: no history step, no
+  undo of them, no unload warning, and the position (autosave's version) does not change. A job works
+  on a copy, so a toggle made while a long `ActionsJob` runs is lost when that commits (the open state
+  of that moment is the copy's): a known gap, harmless. Refused input shakes the pill (and shows it
+  at once); allowed input neither shakes it nor cancels the job. Pure view changes that do not go
+  through `dispatch` (pan/zoom, opening drawers, settings, opening a group of options or a list in a
+  notice: component state) still work. Test: `what_may_be_done_while_busy_does_not_touch_the_project`
+  in `homotopy-web/tests/tasks.rs`.
 - **What is heavy**: `Action::heavy_label` / `proof::Action::work_label` name the actions that
   can take long, from timings of the debug build (see the doc comment on `work_label`). Those
   whose next step cannot be split up (a homotopy, a theorem, importing a project) go to the
@@ -509,6 +521,34 @@ indicator: see "Laying out diagrams" below.
 
 New expensive work: write it as a job (or give an existing job another kind of step), label it,
 and check it with the debug hooks below.
+
+- **Attach options drawer: instances in groups** (`app/attach.rs`). The inferred instances of schemas
+  (`AttachOption::substitution` is `Some`) are not listed one by one: plain options stay ungrouped at the
+  top in their order, then one collapsible group per schema (in the order of its first instance), labelled
+  with the schema's name (KaTeX, one formula) and "N instances". Typesetting the formulas of a screenful of
+  instances was a couple of seconds of lag (user report), so **a closed group renders nothing under its
+  header** (`InstanceGroup` renders its options only when open: no KaTeX for hidden ones). Closed by
+  default; a group that was opened stays open for the rest of the session (`OPENED`, a thread-local set of
+  schemas, so that the next click that has instances of the same schema does not shut it). Hover
+  highlighting and clicking work as for any option (`view_option`). The keys 1 to 9 still index the flat
+  list in the order the search made it (`Action::Select(i)`), which is not the order shown. The signature
+  sidebar already keeps the instances of a schema as its children, closed by default and rendered only when
+  open (`GeneratorInfo::instances_open`, the "▸ N" toggle). `group_instances` is pure and tested.
+- **The notice about the search** (`components/inference_notice.rs`, lines are `NoticeLine::Text` or
+  `NoticeLine::Names { text, names }`): the lists of generators ("Gave up on 19 schemas after 5 s each ▸",
+  "Not tried: 14 generators ▸") show only a header with the count; opened, the names are rendered with
+  `TexSpan` (KaTeX, via `seal`), at most `MOST_SHOWN` = 50, then "and N more". Nothing of a closed list is
+  rendered, so the notice is cheap whatever the size; it scrolls (60vh) when a list is open.
+- **Placeholder stripes** (`homotopy_graphics::style::Color::stripes`, `Stripes`, `LIGHT_STRIPES_BELOW`):
+  a placeholder's stripes are drawn light when the relative luminance (WCAG) of its colour *as drawn*
+  (lightened for the dimension and orientation, `Color::lighten`) is below 0.05 (black, a grey of about
+  `#3f3f3f`; the palette's other colours, the darkest at 0.13, keep dark stripes), dark otherwise. 2D:
+  both hatch patterns are defined per diagram (`PLACEHOLDER_HATCH_ID`, `PLACEHOLDER_HATCH_LIGHT_ID`) and
+  each surface picks one (`DiagramSvg::stripes_of`); the signature rows too (CSS class
+  `signature__generator-placeholder-light`). 3D: stripes are gaps (screen-door transparency) on dark
+  stripes' colours and opaque white on a light-stripe one (`light_stripes` uniform, `frag.glsl`). Tests:
+  `style::tests`; browser: a black placeholder region in 2D shows white stripes, blue, white and orange keep
+  dark ones; the 3D view with black placeholders renders (software GL).
 
 ## Policy: heuristics
 
