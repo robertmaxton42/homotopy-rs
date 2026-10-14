@@ -8,7 +8,7 @@
 use homotopy_common::hash::FastHashMap;
 use homotopy_core::{signature::Signature as _, Diagram, Generator};
 
-use super::Signature;
+use super::{ReplacementError, Signature};
 
 /// The diagram replacing a placeholder in a [`Draft`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,7 +76,7 @@ impl Draft {
             .collect()
     }
 
-    /// Redoes the inference after a replacement was chosen or cleared. This can be slow: see
+    /// Redoes the inference after a replacement was chosen or cleared: see
     /// [`Signature::infer_replacements`].
     fn infer(&mut self, signature: &Signature, schema: Generator) {
         self.slots.retain(|slot| !slot.inferred);
@@ -119,7 +119,30 @@ impl Drafts {
         self.drafts.get(&schema).cloned().unwrap_or_default()
     }
 
-    /// Makes a change. Inferring the replacements that follow can be slow.
+    /// Whether a diagram can be chosen for a placeholder of a schema, given what has been chosen
+    /// for the others, going by the types alone: see [`Signature::check_replacement`]. This is
+    /// cheap, so a view can ask on every entry. Inferred replacements are not in the way, as
+    /// choosing a diagram for one overrides it.
+    ///
+    /// # Errors
+    ///
+    /// Why not: see [`ReplacementError`].
+    pub fn check(
+        &self,
+        signature: &Signature,
+        schema: Generator,
+        placeholder: Generator,
+        diagram: &Diagram,
+    ) -> Result<(), ReplacementError> {
+        let chosen = self
+            .drafts
+            .get(&schema)
+            .map_or_else(Vec::new, Draft::chosen);
+        signature.check_replacement(schema, &chosen, placeholder, diagram)
+    }
+
+    /// Makes a change. Inferring the replacements that follow is cheap if the types determine
+    /// them (see [`Signature::infer_replacements`]).
     pub fn apply(&mut self, signature: &Signature, edit: DraftEdit) {
         match edit {
             DraftEdit::Fill(schema, placeholder, diagram) => {

@@ -2,6 +2,7 @@ use std::convert::{Into, TryFrom};
 
 pub use actions_job::{ActionsJob, ActionsOutcome, REPLAYING};
 pub use attach_options::{AttachOptionsJob, NoAttachment};
+pub use completion::{Ambiguity, InferJob, Inference, ReplacementError, Status};
 pub use drafts::{Draft, DraftEdit, Drafts};
 use homotopy::Homotopy;
 use homotopy_core::{
@@ -28,6 +29,7 @@ mod signature;
 
 mod actions_job;
 mod attach_options;
+mod completion;
 mod describe;
 mod drafts;
 pub mod generators;

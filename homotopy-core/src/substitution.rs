@@ -132,11 +132,16 @@ fn attachment(
         return Ok(None);
     };
 
-    Ok(std::iter::once((0, generator.clone()))
-        .chain(generator.reflections().into_iter().map(|(directions, d)| {
+    // The reflections of the generator are only computed (there are `2ⁿ - 1` of them, each of
+    // which is a diagram to rebuild) if the generator itself does not fit, which is rare.
+    let reflections = std::iter::once(()).flat_map(|()| {
+        generator.reflections().into_iter().map(|(directions, d)| {
             let mask = directions.iter().fold(0, |mask, j| mask | 1 << (j - 1));
             (mask, d)
-        }))
+        })
+    });
+    Ok(std::iter::once((0, generator.clone()))
+        .chain(reflections)
         .filter(|(_, d)| d.max_generator().orientation == point.orientation)
         .find_map(|(mask, d)| {
             let embedding = regular

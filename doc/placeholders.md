@@ -84,12 +84,33 @@ possibility. Instantiating by hand from the signature still works in that case.
 
 When you choose a replacement, the panel looks for the other placeholders that it determines.
 Each replacement chosen has a type in terms of other placeholders (the type of `α` is `X ∘ ! ⇒ D`),
-so replacing `α` with `α₀` is only well typed for certain replacements of `X` and `D`. The panel
-tries replacements made of the cells that the chosen ones are built from (the same bounded search
-as when attaching: composites of up to three cells), and fills in a placeholder if every way that
-makes the chosen replacements well typed agrees on it. If there are several ways, or none, or the
-search has to stop early, nothing is filled in. The search is redone each time a replacement is
-chosen or cleared, so inferred replacements never go out of date.
+so replacing `α` with `α₀` is only well typed for certain replacements of `X` and `D`. These are
+found by matching the types, not by trying replacements:
+
+- a type that is a placeholder is matched with the diagram chosen (`η : F ⇒ G` replaced by
+  `p : T ⇒ U` makes `F` be `T` and `G` be `U`);
+- otherwise the boundaries are matched, down the dimensions (`h : μ ≫ η' ⇛ η ≫ ν`, replaced by
+  a cell from `p ≫ z` to `l ≫ l`, matches the boundaries of `μ ≫ η'` with those of `p ≫ z`,
+  so `F` and `G'` are the ends of `p ≫ z` and `l ≫ l`);
+- a composite of whole cells, like `μ ≫ η'`, is matched with the diagram cut at some heights. If
+  there is only one way to cut it the pieces replace `μ` and `η'`. Otherwise each way is tried:
+  a diagram `p ≫ z` can be `μ ≫ η'` in three ways (`μ` or `η'` may be an identity).
+
+A placeholder is filled in if every way that makes the chosen replacements well typed agrees on it.
+If there are several ways, or none, only what they agree on is filled in. The matching is
+bounded, and when it has to stop early only what it has forced so far is filled in. Placeholders
+that the types of the replacements chosen do not mention are left empty. The search is redone each
+time a replacement is chosen or cleared, so inferred replacements never go out of date.
+
+A replacement is also checked as it is chosen (`Drafts::check`), before anything is searched
+for: its dimension, and then its boundaries against what the other replacements chosen require,
+so that `Ḟ := p` for a cell `Ḟ` is refused for its dimension, and `Ḟ := G` is refused when the
+`η̇ := p` chosen needs `Ḟ` to be `T`.
+
+What the matching does not reach is still searched for, among the composites of up to three of the
+cells that the replacements chosen are made of (as when attaching), but only for the placeholders
+that the types mention. Types that mention generators that depend on placeholders are checked by
+substituting.
 
 The placeholders a cell can be instantiated at include those that the types of the placeholders it
 depends on mention, so a cell that depends on `α` is also instantiated at `X` and `D`.
