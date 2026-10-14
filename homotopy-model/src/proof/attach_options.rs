@@ -155,7 +155,21 @@ pub struct InferenceLimits {
     /// grows with the dimension (more placeholders, with more cells to choose from), and a
     /// diagram of a high dimension is the one that nobody can wait for.
     pub max_dimension: u32,
+    /// A heuristic, off unless asked for: when the point was given with sheets (coordinates
+    /// beyond those the view shows, see [`SHEET_REACH`]), the replacements of placeholders are
+    /// only made of cells that occur near the point. That can miss instances that use cells from
+    /// elsewhere in the diagram, but never offers one that is not valid: the instances are
+    /// checked as before, the pool they are chosen from is only smaller. The report says when
+    /// it was in effect ([`InferenceReport::narrowed`]).
+    #[serde(default)]
+    pub narrow_to_sheet: bool,
 }
+
+/// How far from the point a cell may be to be in the narrowed pool.
+///
+/// In heights of each coordinate, when [`InferenceLimits::narrow_to_sheet`] is in effect: the
+/// heights next to the point's are included, as the cells meeting at a point are the ones next to it.
+pub const SHEET_REACH: usize = 1;
 
 impl InferenceLimits {
     /// What the search is limited to unless it is said otherwise.
@@ -163,6 +177,7 @@ impl InferenceLimits {
         enabled: true,
         budget_ms: 20_000,
         max_dimension: 7,
+        narrow_to_sheet: false,
     };
 
     /// No limits at all: what the search did before there were any.
@@ -170,6 +185,7 @@ impl InferenceLimits {
         enabled: true,
         budget_ms: 0,
         max_dimension: u32::MAX,
+        narrow_to_sheet: false,
     };
 
     fn budget(self) -> Option<Duration> {
@@ -220,6 +236,19 @@ pub struct InferenceReport {
     /// the time limit is kept.
     #[serde(default)]
     pub longest_step_ms: u64,
+    /// If the replacements of placeholders were only looked for among the cells near the point
+    /// ([`InferenceLimits::narrow_to_sheet`]): how many of the diagram's generators those were,
+    /// and how many it has. Instances that need other cells are not found then.
+    #[serde(default)]
+    pub narrowed: Option<Narrowed>,
+}
+
+/// How much the pool of cells for the replacements of placeholders was narrowed to the cells
+/// near the point (see [`InferenceLimits::narrow_to_sheet`]).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Narrowed {
+    pub kept: u32,
+    pub of: u32,
 }
 
 impl InferenceReport {
@@ -386,7 +415,22 @@ impl AttachOptionsJob {
                     .ok_or(NoAttachment::UnknownGenerator)
             })
             .transpose()?;
-        let cells = Pool::new(&proof.signature, haystack.generators().into_keys()).cells();
+        // Coordinates of the point beyond the ones the view shows are a sheet (and what is inside
+        // it): all of the point is then what the cells for the replacements are to be near, if
+        // that is asked for.
+        let sheeted = asked_for.len() > usize::from(workspace.view.dimension());
+        let all_generators = haystack.generators();
+        let mut narrowed = None;
+        let cells = if limits.narrow_to_sheet && sheeted && !point.is_empty() {
+            let near = haystack.generators_near(&point, SHEET_REACH);
+            narrowed = Some(Narrowed {
+                kept: near.len() as u32,
+                of: all_generators.len() as u32,
+            });
+            Pool::new(&proof.signature, near).cells()
+        } else {
+            Pool::new(&proof.signature, all_generators.keys().copied()).cells()
+        };
         let dimension = haystack.dimension();
 
         let mut report = InferenceReport {
@@ -402,7 +446,7 @@ impl AttachOptionsJob {
         let mut job = Self {
             signature: proof.signature.clone(),
             generators,
-            present: haystack.generators(),
+            present: all_generators,
             haystack,
             boundary: boundary_path.map_or(Boundary::Target, BoundaryPath::boundary),
             boundary_path,
@@ -429,6 +473,8 @@ impl AttachOptionsJob {
         };
         job.to_reflect = job.reflecting().map(|(index, _)| index).collect();
         job.to_infer = job.inferring_for().map(|(index, _)| index).collect();
+        // Only said when there are instances that it could have made a difference to.
+        job.report.narrowed = narrowed.filter(|_| !job.to_infer.is_empty());
         // For one generator the pieces make up the steps, and are counted when they are made.
         job.planned = if only.is_some() {
             1 + job.to_reflect.len() + job.to_infer.len()

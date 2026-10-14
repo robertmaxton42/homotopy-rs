@@ -87,6 +87,41 @@ impl Diagram {
         gs
     }
 
+    /// The generators of the cells near a point: those of the slices along the point, taking
+    /// at each coordinate the heights within `reach` of the one the point is at (so `reach = 0`
+    /// is the slice at the point itself, and `1` also the heights next to it), and everything
+    /// in the slices that are left once the point is used up. Always among the
+    /// [`generators`](Self::generators) of the diagram, and all of them for an empty point.
+    #[must_use]
+    pub fn generators_near(&self, point: &[Height], reach: usize) -> FastHashSet<Generator> {
+        let mut found = FastHashSet::default();
+        self.add_generators_near(point, reach, &mut found);
+        found
+    }
+
+    fn add_generators_near(
+        &self,
+        point: &[Height],
+        reach: usize,
+        found: &mut FastHashSet<Generator>,
+    ) {
+        match (point.split_first(), self) {
+            (Some((height, rest)), Self::DiagramN(d)) => {
+                let height = usize::from(*height);
+                let first = height.saturating_sub(reach);
+                let last = height.saturating_add(reach).min(2 * d.size());
+                for slice in d
+                    .slices()
+                    .skip(first)
+                    .take((last + 1).saturating_sub(first))
+                {
+                    slice.add_generators_near(rest, reach, found);
+                }
+            }
+            _ => found.extend(self.generators().into_keys()),
+        }
+    }
+
     #[must_use]
     pub fn dimension(&self) -> usize {
         match self {
