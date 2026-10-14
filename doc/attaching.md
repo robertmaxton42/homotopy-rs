@@ -39,8 +39,13 @@ sheet you mean, and the search looks at everything that reaches the position. If
 sheet you mean, say so, and the search only looks at attachments that reach that sheet.
 
 Hold the pointer over a position that has several sheets and the tooltip lists them, with the
-cell at each (`z₃=0 c`, `z₃=1 𝒞`, ...) and which one the picture shows (*front*). Nothing changes
-unless you choose one:
+cell at each (`z₃=0 c`, `z₃=1 𝒞`, ...). Each also has a short name (`S1`, `S2`, ...) that is the
+same wherever that sheet is: a path that you follow along the diagram, over a vertex, a wire or a
+region, keeps its name, so you can see that two positions are the same sheet. The one marked
+*front* is the sheet that is in front along the whole of its length: it is not hidden by another
+sheet anywhere it overlaps one. (Where it is alone the picture shows it whether it is in front or
+not; the sheet that is behind elsewhere is then marked *drawn here*.) Sheets that meet at a point
+are not the same sheet. Nothing changes unless you choose one:
 
 - **Shift + wheel**, or **`]`** and **`[`**, move down and up the list (round the ends). The
   chosen sheet is highlighted, and the wires that are not on it are drawn dim.

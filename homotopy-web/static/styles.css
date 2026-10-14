@@ -439,6 +439,13 @@ button, .button {
   opacity: 0.6;
 }
 
+/* The name of a sheet (S2) is the same wherever the sheet is. */
+.hover-tooltip__tag--name {
+  text-transform: none;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
 .hover-tooltip__more,
 .hover-tooltip__hint {
   font-size: 11px;

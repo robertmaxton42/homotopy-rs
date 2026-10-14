@@ -7,7 +7,7 @@
 //! In order to avoid potentially costly recomputations and accidental quadratic complexity when a
 //! diagram is traversed again for every point, the analyses are performed for the entire diagram
 //! at once and the results are cached for efficient random-access retrieval.
-use std::cmp::Ordering;
+use std::{cell::OnceCell, cmp::Ordering};
 
 use homotopy_common::{
     hash::{FastHashMap, FastHasher},
@@ -26,6 +26,11 @@ use crate::{
     scaffold::{Explodable, Scaffold, ScaffoldNode},
     Boundary, Diagram, Diagram0, DiagramN, Direction, Height, Rewrite, RewriteN,
 };
+
+mod sheets;
+
+use self::sheets::SheetData;
+pub use self::sheets::{thickness_steps, SheetBoundary, SheetBoundaryKind, SheetId};
 
 type Coordinate<const N: usize> = [SliceIndex; N];
 
@@ -258,6 +263,8 @@ pub struct Depths<const N: usize> {
     node_depths: IdxVec<NodeIndex, Option<usize>>,
     edge_depths: IdxVec<EdgeIndex, Option<usize>>,
     coord_to_node: FastHashMap<Coordinate<N>, NodeIndex>,
+    /// The identity of sheets and where they end, made when first asked for (see [`sheets`]).
+    sheet_data: OnceCell<SheetData<N>>,
 }
 
 impl<const N: usize> Depths<N> {
@@ -307,7 +314,12 @@ impl<const N: usize> Depths<N> {
             node_depths,
             edge_depths,
             coord_to_node,
+            sheet_data: OnceCell::new(),
         })
+    }
+
+    fn sheet_data(&self) -> &SheetData<N> {
+        self.sheet_data.get_or_init(|| SheetData::build(self))
     }
 
     #[must_use]
@@ -360,20 +372,64 @@ impl<const N: usize> Depths<N> {
                 _ => return vec![],
             }
         }
-        let front = if within.is_empty() {
-            self.node_depth(coord)
-        } else {
-            None
-        };
+        let top = within.is_empty();
+        let front = if top { self.node_depth(coord) } else { None };
+        // The identity of sheets is for the first coordinate after the position's.
+        let node = top
+            .then(|| self.coord_to_node.get(&coord).copied())
+            .flatten();
+        let data = node.map(|_| self.sheet_data());
         fibre
             .singular_slices()
             .enumerate()
-            .map(|(z, slice)| Sheet {
-                z,
-                generator: slice.max_generator(),
-                front: front == Some(z),
+            .map(|(z, slice)| {
+                let id = node.zip(data).and_then(|(n, data)| data.id(n, z));
+                Sheet {
+                    z,
+                    generator: slice.max_generator(),
+                    front: front == Some(z),
+                    id,
+                    foremost: id.zip(data).is_some_and(|(id, data)| data.foremost(id)),
+                }
             })
             .collect()
+    }
+
+    /// The number of sheets there are in the diagram: the number of distinct [`SheetId`]s, which
+    /// are `0..sheet_count()`. A sheet that comes back to the same position (a U-turn in the
+    /// direction that the projection is along) is one sheet, at two heights.
+    #[must_use]
+    pub fn sheet_count(&self) -> usize {
+        self.sheet_data().count()
+    }
+
+    /// The places where a sheet begins or ends, or where sheets merge or split: the cones of the
+    /// rewrites along the edges of the scaffold that are not one height to one (see
+    /// [`SheetBoundary`]). Empty for a diagram that has only the dimensions of the projection.
+    #[must_use]
+    pub fn sheet_boundaries(&self) -> &[SheetBoundary<N>] {
+        self.sheet_data().boundaries()
+    }
+
+    /// The boundaries of sheets that end at the position `coord`: the sheets there that begin
+    /// or are merged out of several, as seen from its neighbours.
+    #[must_use]
+    pub fn sheet_boundaries_at(&self, coord: Coordinate<N>) -> Vec<&SheetBoundary<N>> {
+        match self.coord_to_node.get(&coord) {
+            Some(&n) => self.sheet_data().boundaries_to(n).collect(),
+            None => vec![],
+        }
+    }
+
+    /// How many sheets pass through the position `coord`, counted by their heights (a sheet
+    /// that passes twice counts twice): the thickness of the diagram there. 0 if there is no
+    /// such position or no more coordinates.
+    #[must_use]
+    pub fn thickness(&self, coord: Coordinate<N>) -> usize {
+        match self.fibre(coord) {
+            Some(Diagram::DiagramN(fibre)) => fibre.size(),
+            _ => 0,
+        }
     }
 
     #[must_use]
@@ -401,8 +457,17 @@ pub struct Sheet {
     pub z: usize,
     /// The cell of greatest dimension at that height.
     pub generator: Diagram0,
-    /// Whether this is the sheet that the projection shows at the position, the front-most.
+    /// Whether this is the sheet that the projection draws at the position, the front-most
+    /// there ([`Depths::node_depth`]). Which sheet that is can change along a wire.
     pub front: bool,
+    /// Which sheet this is, the same at every position it passes through (see [`SheetId`]).
+    /// `None` for the sheets *inside* a sheet (`within` of [`Depths::sheets`] not empty): only
+    /// the identity of the sheets of the first coordinate after the position's is followed.
+    pub id: Option<SheetId>,
+    /// Whether the sheet is in front along its whole length, which is not what [`front`](Self::front)
+    /// says: it is not hidden by another sheet, or is hidden at fewer of the positions that it
+    /// shares with others than it is the front-most at (see the `sheets` module).
+    pub foremost: bool,
 }
 
 fn min_defined<T>(a: Option<T>, b: Option<T>) -> Option<T>

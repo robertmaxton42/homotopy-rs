@@ -54,8 +54,14 @@ pub struct SheetRow {
     /// A label (see [`homotopy_common::tex`]).
     pub label: String,
     pub current: bool,
-    /// Whether this is the one the view draws.
+    /// Whether the sheet is in front along its whole length (see `homotopy_core::projection`):
+    /// not hidden by another sheet anywhere, or in front of the others where it is.
     pub front: bool,
+    /// Whether this is the sheet that the view draws here. Usually the one that is in front, but
+    /// not where the sheet that is, is absent: the view draws what is there.
+    pub drawn: bool,
+    /// A short name for the sheet, the same at every place it passes through (`S2`).
+    pub name: Option<String>,
     /// What kind of shape the sheet is of, when the stack has those of more than one.
     pub kind: Option<&'static str>,
 }
@@ -161,11 +167,16 @@ impl HoverTooltip {
                         >
                             <span class="hover-tooltip__z">{format!("{coordinate}={}", row.z)}</span>
                             <TexSpan class="hover-tooltip__sheet-label" raw_tex={row.label.clone()} />
+                            if let Some(name) = &row.name {
+                                <span class="hover-tooltip__tag hover-tooltip__tag--name">{name.clone()}</span>
+                            }
                             if let Some(kind) = row.kind {
                                 <span class="hover-tooltip__tag">{kind}</span>
                             }
                             if row.front {
                                 <span class="hover-tooltip__tag">{"front"}</span>
+                            } else if row.drawn {
+                                <span class="hover-tooltip__tag">{"drawn here"}</span>
                             }
                         </li>
                     }) }

@@ -476,12 +476,39 @@ indicator: see "Laying out diagrams" below.
     `hit_to_act_on`/`point_at` too, with the choice's shape outlined) or a click that comes back to the place
     uses it. During a native drag the browser passes no keys or wheel, so there is no choosing then.
   - **The tooltip** is the stack (`tooltip::SheetStack`: `z₃=k` rows with `describe_cell` names, the current
-    one highlighted, *front*, a breadcrumb `z₃=1 › z₄=0` when chosen, a hint for the keys), shown when there
+    one highlighted, the sheet's name `S2`, *front* (per sheet: `foremost`; *drawn here* if the drawn one is not that), a breadcrumb `z₃=1 › z₄=0` when chosen, a hint for the keys), shown when there
     are several sheets, one is chosen, or the sheet has sheets inside it. Wires whose edge depth (`z + 1` in
     `GraphicElement::Wire`, now on the element as `data-depth`) is not the first chosen `z` are dimmed by
     setting `data-dim` on the elements directly (`apply_dimming`, also after each render): choosing does not
     render the diagram again, which is much of the work of a large one. Surfaces cannot be dimmed per sheet
     (`Projection::generator` is the max over the whole fibre).
+  - **Identity of sheets** (`homotopy-core/src/projection/sheets.rs`; module doc has the definitions). `Sheet`
+    has `id: Option<SheetId>` (`S1`, `S2`, ... via `SheetId::label`; `None` for the sheets *inside* a sheet,
+    `within` not empty: only the first coordinate after the position's is followed), `front` (as before: the
+    one `node_depth` draws *at this position*; it can be another sheet at the next position) and `foremost`
+    (the per-sheet notion, which the tooltip's *front* tag uses). `Depths::sheet_count/sheet_boundaries/
+    sheet_boundaries_at/thickness` and `thickness_steps` (part C) are new. Everything is made lazily, on the
+    first question (`OnceCell` in `Depths`), so a diagram that nobody asks about pays nothing: one pass
+    over the edges of the scaffold (1 to 60 microseconds on the examples).
+    - *Identity*: a union-find over (position, singular height) pairs, joined along every edge of the
+      scaffold `Depths` keeps by the singular image of the rewrite (`cone_views`, `for_each_image`:
+      each height of the source goes to one of the target; a cone with several source heights takes them
+      all to one). **Not joined into a junction**: when three or more heights are carried into the same
+      (position, height) it stays a sheet of its own (a point), because otherwise all four lines that meet at
+      the 3-cell of the associator would be one sheet, and the user's case (a convex outer path and a concave
+      inner path are *different* sheets) would not come out. A sheet that comes back to the same position
+      (a cup, a U-turn along the projection) is one sheet at two heights.
+    - *Foremost*: the sheet is not hidden by another anywhere (`hidden == 0`), or is the drawn one at more of
+      the positions it shares with others than it is hidden at. A sheet alone everywhere is foremost; of two
+      strands that overlap on only a part of their length (`crossing`, `half_braid`) one is foremost along
+      the whole of its length and the other behind along the whole of its (it is `front` only where it is
+      alone, which is the old flipping). Positions with the sheets are counted, regions too.
+    - *Unit cones and the atomic filter*: `Depths` leaves out the regular slices of later coordinates
+      (`ExternalRewrite::is_atomic`) and with them the edges that carry unit cones from a regular slice. No
+      sheet information is lost: such an edge is a sparse identity then an edge of the last coordinate, which
+      is kept. Tested against the scaffold with every edge (`leaving_out_regular_slices_loses_no_unit_cone`).
+      Identity is checked on kept edges only: across the diagonals it differs where the way round passes a
+      junction, which cuts the sheet.
   - **The heuristic** (off by default; `InferenceLimits::narrow_to_sheet`, setting *Heuristic: infer instances
     only from cells near the chosen sheet*, kept with the inference settings): with a sheet chosen, the pool of
     cells for the replacements of placeholders (`Pool::new` in `AttachOptionsJob::new`) is the generators in
