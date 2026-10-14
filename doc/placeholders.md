@@ -99,7 +99,9 @@ found by matching the types, not by trying replacements:
   a diagram `p ≫ z` can be `μ ≫ η'` in three ways (`μ` or `η'` may be an identity);
 - a cell that depends on placeholders (the limit `L` of a diagram `D`), matched with an
   instance of it (`L[D₀]`), binds what the instance was made with (`D := D₀`). The inverse of
-  an invertible cell is matched like the cell.
+  an invertible cell is matched like the cell. If the cell is itself an instance made with
+  placeholders (`(Ẋη̇)₍₂₎`, see below), what it was made with is matched with what the instance of
+  the same schema was made with (`Ḟ ≫ Ẋ` with `T ≫ T`, and so on).
 
 A placeholder is filled in if every way that makes the chosen replacements well typed agrees on it.
 The matching is bounded, and when it has to stop early only what it has forced so far is filled
@@ -121,7 +123,11 @@ decides the cut, and then the others follow.
 chosen before it, on the types alone and without searching: its dimension first, and then its
 boundaries against what the others require. If it does not fit, it is kept, in red, with what is
 wrong and what it clashes with ("`Ḟ` conflicts with `η̇`: `η̇` needs `Ḟ` to be `T`, not `Ġ`"; "`η̇`
-conflicts with `ḣ`: `ḣ` needs `η̇ ≫ ν̇` to be `l ≫ Tp`, but `η̇` is `p`"). It is kept because it
+conflicts with `ḣ`: `ḣ := k`: its target is `l ≫ l`, but the type requires `p ≫ ν̇` (`η̇ ≫ ν̇` with
+`η̇ := p`) there"). A message names the replacement and says where in it the trouble is (its
+source, its target, the target of its source, ...) and what the type requires there, with the
+replacements chosen so far put in ("`ḣ := w`: its target is `D₀ ≫ t`, but the type of `ḣ` needs
+`D[a ≫ t]` (`(Ẋη̇)₍₂₎` with `Ẋ := t`, `η̇ := a`)"). It is kept because it
 is what you asked for, so you can see what is wrong with it and fix it or what it clashes with;
 it takes no part in the inference, and *Create instance* waits until it is fixed or cleared. Of
 two replacements that clash, the one chosen first counts.
@@ -133,6 +139,22 @@ so and offers to infer again.
 
 The placeholders a cell can be instantiated at include those that the types of the placeholders it
 depends on mention, so a cell that depends on `α` is also instantiated at `X` and `D`.
+
+## Instances that still depend on placeholders
+
+An instance can be made with replacements that are themselves made of placeholders, such as
+`(Ẋη̇)₍₂₎ = η̇₍₂₎[Ḟ ≫ Ẋ/Ḟ, Ġ ≫ Ẋ/Ġ, η̇ ▷ Ẋ/η̇]`: the cell `η̇₍₂₎` at the images of a cell `η̇` under
+a functor `Ẋ`. Its diagram mentions none of those placeholders, but it is still a different cell
+for every replacement of `Ẋ` and `η̇`, so it depends on the placeholders that the replacements it
+was made with mention (its [`parameters`](../homotopy-model/src/proof/instances.rs)). Replacing
+them gives the instance of the schema made with the replacements substituted: `(Ẋη̇)₍₂₎` at
+`Ẋ := T`, `η̇ := p` is `η̇₍₂₎[T ≫ T/Ḟ, T/Ġ, p ▷ T/η̇]`, which is `(Tp)₍₂₎` if that exists. Without
+this a schema whose placeholder has `(Ẋη̇)₍₂₎` in its type, like `ḣ : Ẋ(η̇₍₂₎) ≅ (Ẋη̇)₍₂₎`, would
+treat it as a fixed cell that no replacement could have in its boundary.
+
+The types of the placeholders are substituted in the same way: the generators in `ḣ`'s type
+(not only in the diagram of the schema) that depend on placeholders are instantiated along with
+them, and the replacement for `ḣ` must have exactly their instances in its boundary.
 
 ## Cells that depend on placeholders they don't mention
 

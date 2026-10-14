@@ -37,11 +37,29 @@ pub enum InstantiationError {
 impl Signature {
     /// The placeholders a generator can be instantiated at: those its diagram mentions, those
     /// it explicitly [depends on](GeneratorInfo::depends_on) and those that their types mention,
-    /// and those that the generators its diagram mentions depend on.
+    /// those that the generators its diagram mentions depend on, and, for an instance, those that
+    /// the replacements it was made with mention (see [`instance_parameters`](Self::instance_parameters)).
     #[must_use]
     pub fn parameters(&self, generator: Generator) -> Vec<Generator> {
         let mut parameters = vec![];
         self.collect_parameters(generator, &mut vec![], &mut parameters);
+        parameters.sort_by_key(|g| (g.dimension, g.id));
+        parameters.dedup();
+        parameters
+    }
+
+    /// The placeholders that an instance still depends on because the replacements it was made
+    /// with mention them, such as `(Ẋη̇)₍₂₎ = η̇₍₂₎[Ḟ ≫ Ẋ/Ḟ, Ġ ≫ Ẋ/Ġ, η̇ ▷ Ẋ/η̇]`, which is still
+    /// a different cell for every replacement of `Ẋ` and `η̇`, although its diagram mentions
+    /// neither. Instantiating it at those gives the instance of its schema with the replacements
+    /// substituted (see [`instantiate`](Self::instantiate)). Empty for a generator that is not an
+    /// instance, and for an instance made with diagrams that mention no placeholders.
+    #[must_use]
+    pub fn instance_parameters(&self, generator: Generator) -> Vec<Generator> {
+        let mut parameters = vec![];
+        if let Some(info) = self.generator_info(generator) {
+            self.collect_instance_parameters(info, &mut vec![generator], &mut parameters);
+        }
         parameters.sort_by_key(|g| (g.dimension, g.id));
         parameters.dedup();
         parameters
@@ -70,6 +88,7 @@ impl Signature {
                 self.collect_mentioned_parameters(p, visiting, parameters);
             }
         }
+        self.collect_instance_parameters(info, visiting, parameters);
         visiting.pop();
     }
 
@@ -83,16 +102,51 @@ impl Signature {
         let Some(info) = self.generator_info(generator) else {
             return;
         };
-        for g in info.diagram.generators().into_keys() {
+        self.collect_mentioned_in(generator, &info.diagram, visiting, parameters);
+    }
+
+    /// Adds the parameters of the generators of a diagram other than `generator`, which are the
+    /// placeholders in it and those that the generators in it depend on.
+    fn collect_mentioned_in(
+        &self,
+        generator: Generator,
+        diagram: &Diagram,
+        visiting: &mut Vec<Generator>,
+        parameters: &mut Vec<Generator>,
+    ) {
+        for g in diagram.generators().into_keys() {
             if g == generator {
                 continue;
             }
             match self.generator_info(g) {
                 Some(info) if info.placeholder => parameters.push(g),
-                Some(info) if !info.depends_on.is_empty() => {
+                Some(info) if !info.depends_on.is_empty() || info.instance.is_some() => {
                     self.collect_parameters(g, visiting, parameters);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// Adds the placeholders that the replacements an instance was made with mention.
+    fn collect_instance_parameters(
+        &self,
+        info: &GeneratorInfo,
+        visiting: &mut Vec<Generator>,
+        parameters: &mut Vec<Generator>,
+    ) {
+        let Some(made) = &info.instance else {
+            return;
+        };
+        for (_, replacement) in &made.substitution {
+            let before = parameters.len();
+            self.collect_mentioned_in(info.generator, replacement, visiting, parameters);
+            // The type of a replacement for a placeholder is in terms of the ones it mentions.
+            let found: Vec<Generator> = parameters[before..].to_vec();
+            for p in found {
+                if self.generator_info(p).is_some_and(|info| info.placeholder) {
+                    self.collect_mentioned_parameters(p, visiting, parameters);
+                }
             }
         }
     }
@@ -127,6 +181,21 @@ impl Signature {
                 ));
             }
         }
+
+        // An instance made with replacements that mention placeholders, instantiated at some of
+        // those, is the instance of its schema with the replacements substituted.
+        if let Some(made) = &info.instance {
+            if self.touches(made, &substitution) {
+                let mut composed = vec![];
+                for (placeholder, replacement) in &made.substitution {
+                    let replacement = self.substitute_in(replacement, &substitution)?;
+                    composed.push((*placeholder, replacement));
+                }
+                composed.extend(self.free_replacements(made, &substitution));
+                return self.instantiate(made.schema, &composed);
+            }
+        }
+
         let mut replacements = substitution.clone();
 
         // Instantiate the generators in the boundary that mention instantiated placeholders.
@@ -135,6 +204,25 @@ impl Signature {
             let diagram = self.generator_info(instance).unwrap().diagram.clone();
             replacements.push((b, diagram));
         }
+        // Each replacement must have the type of the placeholder after substitution. The type is
+        // in terms of generators that may mention placeholders themselves, which are instantiated
+        // as well.
+        for (p, replacement) in &substitution {
+            let own = self.generator_info(*p).unwrap().diagram.clone();
+            let well_typed = match (&own, replacement) {
+                (Diagram::Diagram0(_), Diagram::Diagram0(_)) => true,
+                (Diagram::DiagramN(p), Diagram::DiagramN(r)) => {
+                    p.dimension() == r.dimension()
+                        && self.substitute_in(&p.source(), &substitution)? == r.source()
+                        && self.substitute_in(&p.target(), &substitution)? == r.target()
+                }
+                _ => false,
+            };
+            if !well_typed {
+                return Err(InstantiationError::IllTyped(self.name_of(*p)));
+            }
+        }
+
         let substitute = |diagram: &Diagram| {
             substitute(diagram, self, &|g| {
                 replacements
@@ -143,22 +231,6 @@ impl Signature {
                     .map(|(_, d)| d.clone())
             })
         };
-
-        // Each replacement must have the type of the placeholder after substitution.
-        for (p, replacement) in &substitution {
-            let well_typed = match (&self.generator_info(*p).unwrap().diagram, replacement) {
-                (Diagram::Diagram0(_), Diagram::Diagram0(_)) => true,
-                (Diagram::DiagramN(p), Diagram::DiagramN(r)) => {
-                    p.dimension() == r.dimension()
-                        && substitute(&p.source())? == r.source()
-                        && substitute(&p.target())? == r.target()
-                }
-                _ => false,
-            };
-            if !well_typed {
-                return Err(InstantiationError::IllTyped(self.name_of(*p)));
-            }
-        }
 
         if let Some(existing) = self.find_instance(schema, &substitution) {
             return Ok(existing);
@@ -199,6 +271,58 @@ impl Signature {
         Ok(generator)
     }
 
+    /// Whether a (normalised) substitution replaces any of the placeholders that the replacements
+    /// an instance was made with mention.
+    pub(crate) fn touches(&self, made: &Instance, substitution: &[(Generator, Diagram)]) -> bool {
+        if substitution.is_empty() {
+            return false;
+        }
+        let mut parameters = vec![];
+        let mut visiting = vec![made.schema];
+        for (_, replacement) in &made.substitution {
+            self.collect_mentioned_in(made.schema, replacement, &mut visiting, &mut parameters);
+        }
+        parameters
+            .iter()
+            .any(|p| substitution.iter().any(|(q, _)| q == p))
+    }
+
+    /// The replacements for the placeholders of the schema of an instance that the instance leaves
+    /// alone, which a substitution replaces as it replaces the instance's own.
+    pub(crate) fn free_replacements(
+        &self,
+        made: &Instance,
+        substitution: &[(Generator, Diagram)],
+    ) -> Vec<(Generator, Diagram)> {
+        let own = self.parameters(made.schema);
+        substitution
+            .iter()
+            .filter(|(q, _)| own.contains(q) && !made.substitution.iter().any(|(r, _)| r == q))
+            .cloned()
+            .collect()
+    }
+
+    /// Applies a (normalised) substitution to a diagram that depends on placeholders, instantiating
+    /// the generators in it that mention them.
+    fn substitute_in(
+        &mut self,
+        diagram: &Diagram,
+        substitution: &[(Generator, Diagram)],
+    ) -> Result<Diagram, InstantiationError> {
+        let mut replacements = substitution.to_vec();
+        for (b, restricted) in self.dependents_in(diagram, None, substitution) {
+            let instance = self.instantiate(b, &restricted)?;
+            let replacement = self.generator_info(instance).unwrap().diagram.clone();
+            replacements.push((b, replacement));
+        }
+        Ok(substitute(diagram, self, &|g| {
+            replacements
+                .iter()
+                .find(|(h, _)| *h == g)
+                .map(|(_, d)| d.clone())
+        })?)
+    }
+
     /// Sorts a substitution and drops its trivial entries.
     pub(crate) fn normalise(
         &self,
@@ -227,12 +351,23 @@ impl Signature {
         let Some(info) = self.generator_info(schema) else {
             return vec![];
         };
-        let mut dependents: Vec<Generator> = info
-            .diagram
+        self.dependents_in(&info.diagram, Some(schema), substitution)
+    }
+
+    /// The generators of a diagram, other than `except` and placeholders, that mention a
+    /// placeholder replaced by a (normalised) substitution, each with the substitution
+    /// restricted to it.
+    pub(crate) fn dependents_in(
+        &self,
+        diagram: &Diagram,
+        except: Option<Generator>,
+        substitution: &[(Generator, Diagram)],
+    ) -> Vec<(Generator, Vec<(Generator, Diagram)>)> {
+        let mut dependents: Vec<Generator> = diagram
             .generators()
             .into_keys()
             .filter(|&g| {
-                g != schema
+                Some(g) != except
                     && self.generator_info(g).is_some_and(|info| !info.placeholder)
                     && self
                         .parameters(g)
