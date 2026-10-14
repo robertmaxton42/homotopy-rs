@@ -35,6 +35,8 @@ is itself a schema. To prove `∀P. φ(P)`, prove `φ(P)` with `P` a placeholder
 - **Replacement types.** A placeholder `P : S ⇒ T` may be replaced by any diagram `X : σ(S) ⇒
   σ(T)`, where `σ(S)` is `S` with the same substitution applied. So placeholders can depend on
   other placeholders, e.g. `P : Q ⇒ Q` with `Q` a placeholder too.
+- **Invertible and dualisable placeholders.** A replacement is as invertible as the placeholder
+  (see the next section).
 - **Dependent generators.** A generator in the schema's boundary that mentions a replaced
   placeholder is instantiated along with it. In the example above, `A[X/P]` is built from
   `e[X/P]`.
@@ -44,6 +46,52 @@ is itself a schema. To prove `∀P. φ(P)`, prove `φ(P)` with `P` a placeholder
 - **No retraction.** Nothing ever turns a diagram back into a placeholder. So instantiating
   never identifies two things that weren't already identified. This avoids the problem with
   the old workaround of an isomorphism `P ≅ X` for each `X`.
+
+## Invertible and dualisable placeholders
+
+A placeholder can be marked *invertible* or *dualisable* in its settings, like any generator
+(see [duals](duals.md)). For a placeholder this is a requirement on what replaces it: a schema
+that uses `P` as invertible (it attaches it reversed, or states that it is an isomorphism) is
+only true for replacements that are. This is how to say that an object exists only when some
+isomorphism or equivalence does.
+
+- **Invertible**: the replacement is an invertible diagram, that is, every cell it is made of
+  is invertible: a cell of an invertible generator, or the inverse of one. Identities and the
+  homotopies between cells (interchangers and the like) are invertible, so a composite of
+  invertible cells is.
+- **Dualisable (level `k`)**: every cell of the replacement is dualisable to at least level `k`,
+  or invertible. Composites of such cells are, as they are in the signature.
+- **Directed**: anything.
+
+A diagram's cells here are the occurrences of generators of the diagram's own dimension
+(`Diagram::weakest_cell` in `homotopy-core`), and the replacement is as invertible as its weakest
+cell. The boundary of the replacement does not count: it is the type of the placeholder, which
+the replacement's cells go between. One more kind of cell counts: a cup or a cap of a generator
+of one dimension less, which folds back on itself. It is the unit or counit of that generator,
+and one that is `k + 1` times dualisable has them `k` times dualisable (invertible ones are
+invertible), so the cup of a cell that is only dualisable does not replace an invertible
+placeholder. (Folds of generators of lower dimension are not counted: those in the boundary
+cannot be told from the new ones.) A placeholder of dimension 0 has no cells to be invertible.
+
+It is checked everywhere a replacement is taken:
+
+- the kernel (`Signature::instantiate`) refuses with "`P` must be invertible, but `X` is not
+  (`f` is directed)", naming the placeholder and the weakest cell, and makes nothing;
+- the Instantiate panel marks the replacement in red as soon as it is chosen, with the same
+  message. A replacement chosen for another placeholder can be what requires it ("`η̇` needs `F`
+  to be `f`, but `F` must be invertible (`f` is directed)": `η̇ : F ⇒ G` replaced by `f ⇒ g`
+  makes `F` be `f`). Matching reports it the same way, and what is inferred never binds such a
+  replacement: when the types leave several ways to cut a diagram, those that give an
+  invertible placeholder a directed cell are not among them, and if none is left the panel
+  says nothing fits;
+- the search for candidates (when attaching an instance, and for the placeholders that matching
+  does not reach) leaves out cells that are not invertible enough, which is also less to search;
+- an invertible placeholder cannot be made more invertible while an instance was made with a
+  replacement that is not as invertible.
+
+The instance of a schema has the invertibility of the schema, as before. That is right because
+what makes a schema invertible is its cells, and the placeholders among them are invertible when
+they are marked so, which their replacements now are.
 
 ## How substitution works, and its limits
 

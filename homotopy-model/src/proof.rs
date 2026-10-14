@@ -21,7 +21,7 @@ use homotopy_core::{
 };
 use im::Vector;
 pub use inference::InferredInstance;
-pub use instances::InstantiationError;
+pub use instances::{InstantiationError, Shortfall};
 use serde::{Deserialize, Serialize};
 pub use signature::*;
 pub use structure::Structure;
@@ -41,6 +41,8 @@ pub mod generators;
 pub mod homotopy;
 mod inference;
 mod instances;
+#[cfg(test)]
+mod invertibility;
 pub mod notation;
 mod structure;
 
