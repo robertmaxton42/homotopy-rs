@@ -1,7 +1,9 @@
 use std::convert::{Into, TryFrom};
 
 pub use actions_job::{ActionsJob, ActionsOutcome, REPLAYING};
-pub use attach_options::{AttachOptionsJob, NoAttachment};
+pub use attach_options::{
+    AttachOptionsJob, AttachOutcome, InferenceLimits, InferenceReport, NoAttachment,
+};
 pub use completion::{
     Ambiguity, InferJob, Inference, Mismatch, Part, ReplacementError, Status, Uncuttable,
 };

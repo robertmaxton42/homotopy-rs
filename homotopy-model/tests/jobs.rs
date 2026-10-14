@@ -5,7 +5,7 @@ use homotopy_core::{Boundary, SliceIndex};
 use homotopy_model::{
     history::Proof,
     job::{run_to_end, Job},
-    proof::{Action, ActionsJob, AttachOptionsJob, NoAttachment},
+    proof::{Action, ActionsJob, AttachOptionsJob, InferenceLimits, NoAttachment},
 };
 
 fn recorded_actions(json: &str) -> Vec<Action> {
@@ -129,7 +129,7 @@ fn an_error_keeps_what_was_done_before_it() {
 fn attach_options_need_a_workspace() {
     let proof = Proof::default();
     assert_eq!(
-        AttachOptionsJob::new(&proof, &[], false).err(),
+        AttachOptionsJob::new(&proof, &[], false, InferenceLimits::default()).err(),
         Some(NoAttachment::NoWorkspace)
     );
 }
@@ -151,20 +151,20 @@ fn attach_options_are_found_a_generator_at_a_time() {
     assert!(proof.workspace.is_some());
 
     let point = [SliceIndex::Boundary(Boundary::Target)];
-    let mut job = AttachOptionsJob::new(&proof, &point, true).unwrap();
+    let mut job = AttachOptionsJob::new(&proof, &point, true, InferenceLimits::default()).unwrap();
     let total = job.progress().unwrap().total;
-    assert_eq!(total, proof.signature.iter().count());
+    // At least a step for each generator.
+    assert!(total >= proof.signature.iter().count());
     let mut steps = 0;
     let options = loop {
         steps += 1;
         let progress = job.progress().unwrap();
         assert!(progress.done <= progress.total);
-        if let Some(options) = job.step() {
-            break options;
+        if let Some(outcome) = job.step() {
+            break outcome.options;
         }
     };
-    // A step for each generator.
-    assert_eq!(steps, total);
+    assert!(steps >= total);
     assert!(!options.is_empty());
 
     // Every option is a way that its generator can be attached.

@@ -6,6 +6,7 @@ use yew::prelude::*;
 
 use crate::{
     app::{
+        attach_inference,
         diagram_gl::DiagramGl,
         diagram_svg::{
             highlight::{highlight_attachment, highlight_slice},
@@ -135,9 +136,9 @@ fn view_diagram_svg<const N: usize>(
     diagram_ref: NodeRef,
     on_laid_out: Callback<()>,
 ) -> Html {
-    let on_select = props
-        .dispatch
-        .reform(|p| Action::SelectPoint(p, AppSettings::get_weak_units()));
+    let on_select = props.dispatch.reform(|p| {
+        Action::SelectPoint(p, AppSettings::get_weak_units(), attach_inference::limits())
+    });
     let on_homotopy = props
         .dispatch
         .reform(|homotopy| Action::Proof(proof::Action::Homotopy(homotopy)));

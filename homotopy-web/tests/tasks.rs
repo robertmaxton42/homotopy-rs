@@ -5,7 +5,7 @@ use homotopy_core::{signature::Invertibility, Boundary, Diagram, Generator, Slic
 use homotopy_model::{
     history::UndoState,
     job::{Job, Progress},
-    proof::{self, SerializedData},
+    proof::{self, InferenceLimits, SerializedData},
     remote::{Answer, Executor, Remote},
     serialize,
 };
@@ -185,7 +185,11 @@ fn finding_attachments_is_a_task_that_gives_the_options_when_done() {
     let mut state = state_before(&actions, first_attach);
     let before = summary(&state);
     let Started::Running(mut task) = state
-        .start(Action::SelectPoint(point.clone(), true))
+        .start(Action::SelectPoint(
+            point.clone(),
+            true,
+            InferenceLimits::default(),
+        ))
         .unwrap()
     else {
         panic!("finding what to attach is a task");
@@ -199,14 +203,16 @@ fn finding_attachments_is_a_task_that_gives_the_options_when_done() {
             break output;
         }
     };
-    assert_eq!(steps, total);
+    assert!(steps >= total);
     assert!(state.options.is_none());
     state.finish(output).unwrap();
     // Either the options to choose from, or the only one attached.
     assert!(state.options.is_some() || state.history.get_actions().len() == before.0.len() + 1);
 
     let mut straight = state_before(&actions, first_attach);
-    straight.update(Action::SelectPoint(point, true)).unwrap();
+    straight
+        .update(Action::SelectPoint(point, true, InferenceLimits::default()))
+        .unwrap();
     assert_eq!(state.options, straight.options);
     assert_eq!(summary(&state), summary(&straight));
 }
@@ -227,7 +233,7 @@ fn what_may_be_done_while_busy_does_not_touch_the_project() {
         Action::ExportProof,
         Action::ExportActions,
         Action::Select(0),
-        Action::SelectPoint(vec![], false),
+        Action::SelectPoint(vec![], false, InferenceLimits::default()),
         Action::ClearSelections,
         Action::Draft(proof::DraftEdit::Infer(Generator::new(0, 0))),
     ];
@@ -253,7 +259,11 @@ fn the_heavy_actions_are_labelled_and_the_light_ones_are_not() {
     assert!(Action::Proof(proof::Action::MergeExchanges)
         .heavy_label()
         .is_some());
-    assert!(Action::SelectPoint(vec![], false).heavy_label().is_some());
+    assert!(
+        Action::SelectPoint(vec![], false, InferenceLimits::default())
+            .heavy_label()
+            .is_some()
+    );
     assert!(Action::ImportActions(SerializedData(vec![]))
         .heavy_label()
         .is_some());

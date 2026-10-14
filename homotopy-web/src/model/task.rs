@@ -15,7 +15,7 @@ use homotopy_graphics::{manim, stl, tikz};
 use homotopy_model::{
     job::{Job, Progress},
     proof::{
-        ActionsJob, ActionsOutcome, AttachOption, AttachOptionsJob, InferJob, Inference,
+        ActionsJob, ActionsOutcome, AttachOptionsJob, AttachOutcome, InferJob, Inference,
         ProofState, Signature,
     },
     remote::{Output, Work},
@@ -59,7 +59,7 @@ pub enum TaskOutput {
         kind: ActionsKind,
         redone: bool,
     },
-    AttachOptions(Vec<AttachOption>),
+    AttachOptions(AttachOutcome),
     /// What was inferred for the schema.
     Infer(Generator, Inference),
     Export(ExportOutput),
@@ -106,9 +106,10 @@ impl Task {
                 };
                 worth_it.then_some((state, work))
             }
-            // The search takes long when there are schemas to infer instances of.
+            // The search takes long when there are schemas to infer instances of, or in high
+            // dimensions.
             Self::AttachOptions(job) => job
-                .has_schemas()
+                .may_take_long()
                 .then(|| job.offer())
                 .flatten()
                 .map(|work| (proof, work)),
@@ -128,8 +129,8 @@ impl Task {
                     redone: *redone,
                 })
             }
-            (Self::AttachOptions(_), Output::AttachOptions(options)) => {
-                Some(TaskOutput::AttachOptions(options))
+            (Self::AttachOptions(_), Output::AttachOptions(outcome)) => {
+                Some(TaskOutput::AttachOptions(outcome))
             }
             _ => None,
         }

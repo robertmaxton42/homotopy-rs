@@ -183,6 +183,76 @@ indicator: see "Laying out diagrams" below.
   layout, cells, curves) takes 10 to 50ms in the debug build for diagrams that weigh up to 300,
   with no clear relation to the weight, so the limit for it is lower (100).
 
+- **Attach options and the inference of instances** (`proof/attach_options.rs`, `proof/inference.rs`,
+  `app/attach_inference.rs`). A click in the workspace is `AttachOptionsJob`, and what made it take
+  half an hour on a project with schemas (the tangent categories project, a 5-dimensional workspace
+  and 64 generators, 15 placeholders) was not the plain matching of cells but `Signature::infer_instances`
+  for the dimension-6 schemas, which search the replacements of 5 to 9 placeholders each (numbers are
+  the release build, native; the debug wasm build is about 10 to 20 times slower):
+  - Generator 8 (`π_η̇ def`) took 61s and generator 12 (`∀η̇, ζ[η̇]η̇ = 1_G`) 57s, to find nothing; 16
+    (`ζ[η̇→η̇']`, 9 placeholders) and the other schemas with that many did not finish in ten minutes. The
+    busy pill shows the index of the last progress the worker posted (at most every 40ms), so "0" was
+    the run of cheap generators before 8 and "16" the first of the schemas that has no end to it.
+    Generator 0 (`Cat`, a 0-cell) is cheap: it is only tried with weak units.
+  - The search was a recursion that solved the placeholders from the lowest dimension up: the four
+    functors `Ḟ, Ġ, Ḟ', Ġ'` (15 candidates each) before the transformations between them, so the
+    product of what each pair has before anything is pruned; it found the candidates for a placeholder
+    by a breadth first search of composites of up to three cells from its source, once per pair
+    (85ms for each of the 225 pairs of gen. 8); it checked each complete substitution by
+    enumerating all embeddings of the needle in the haystack and only then filtering by the click
+    (10ms each, 282 of them). The click also did not prune the matching of the plain cells, whose
+    reflections (`2^n - 1` of them, a second for a 6-cell) were all made for every cell that had any
+    symmetry or invertible generator.
+  - What is done about it, none of it changing what is found (tests: `homotopy-model/tests/embeddings_through.rs`,
+    `inference::tests`, and the option lists of the examples (11,259 clicks) and the fixture (11) equal
+    to those of the code before): `Diagram::embeddings_through` (only the offsets the click can be in);
+    a cell is not looked for if one of its generators is not in the haystack (and a reflection not made
+    if the generators of neither end of the cell, with the orientation the reflection gives them,
+    are there: `DiagramN::reflections_where`); the composites of cells and the candidates for a
+    placeholder are kept for the job (`Cells`), as they only depend on where they start and on the
+    replacements of the placeholders the type is in terms of; the placeholders are solved as soon as the
+    placeholders their type is in terms of are (`InferSearch`, a machine that does a candidate list or a
+    check in each step, so that the page can stay responsive and the job can stop between steps), and
+    the instances are sorted back into the order of the old search. Plain matching and reflections
+    of all 64 generators: 5.4s → 0.7s (click on a vertex), 6.1s → 2.8s (the whole diagram, `[]`); generators 8 and 12: 61s → 6.6s
+    and 57s → 4.3s. The ones that do not finish are still far from finishing: the final placeholder
+    (dimension 6, no 6-cells to choose from) costs 5ms per node for the 2000 nodes of the search.
+  - The search is in three passes over the generators, the plain cells, the reflections and then the
+    instances, with the options sorted back into the order of the generators, so that what is cheap is
+    done before what has no bound, and a search that is stopped has found all the rest.
+  - **Limits** (`InferenceLimits`, settings in the drawer, kept in this browser in `localStorage`
+    `homotopy-inference-settings`: `app/attach_inference.js`; they go with the `SelectPoint` action and
+    into `Work::AttachOptions`, so the worker uses what the page has). *Infer instances of schemas when
+    attaching* (on); *Stop inferring after N s* (20, 0 for no limit; one schema gets a quarter of it,
+    at least a second, so that one that has no end does not use the time of the rest); *Infer instances up
+    to dimension N* (7, the dimension of the diagram being attached to; 12 for no limit). Plain cells and
+    their reflections are always offered. A search that went over its time offers what it found and says,
+    in a notice that stays until it is dismissed (`components/inference_notice.rs`), "Instance inference took
+    too long and was skipped for this search (N s). You can turn it off in Settings.", which schemas it
+    gave up on and which it did not get to. Two searches in a row that run out of time turn the inference
+    off for the rest of the session (`infer_suspended`, not kept, ended by toggling the setting): a search
+    that spends all its time on every click is worse than one with fewer options. A diagram above the
+    dimension limit says so once per session. Esc cancels the whole search as any job.
+  - Debug hooks: `__homotopy.dispatch` takes `{"SelectPoint": [point, weak_units]}` (limits from the
+    settings) and `{"SelectPointWith": [point, weak_units, {"enabled":..,"budget_ms":..,"max_dimension":..}]}`;
+    a point is a list of `{"Singular": n}`, `{"Regular": n}` or `{"Boundary": "Source"}`. Measured in
+    the browser (debug wasm, worker, the fixture, a 3s limit, click `[R3, R2]`): 11 options in 31s, the
+    notice naming the 2 schemas given up on and the 6 not tried (a step is not interrupted, so the
+    time overshoots by a step); with inference off or the dimension limit at 4, 25-28s, almost all of
+    it the plain cells and their reflections, which are 10 to 20 times slower in the debug build than the
+    1s they take natively (another reason for the dimension limit to be a setting, and not a
+    reason to expect the debug build to be quick).
+  - A latent crash found on the way: `DiagramN::reflections` (`Rewrite::reflect` → `RewriteN::new`)
+    panics with "Rewrite is malformed: [NotOrderedCorrectly]" for the reflections of some cells in
+    some states of the `equivalence_to_adjoint_equivalence` example (every click after its action 74,
+    898 of the 11,259 clicks tried), which the old search made unconditionally on every click. The search
+    now only makes reflections that could match, so those clicks work, but the panic is still there
+    for a reflection that does.
+  - Known gaps: the time is measured between steps, so a step that takes long (the first candidate
+    list of a new source, up to 1.6s) can go over; in the page (no worker yet) the search is stepped
+    in slices as the others; the searches that do not finish are cut, not made quick; the options a cut
+    schema would have had are not there (use the setting to give it more time).
+
 New expensive work: write it as a job (or give an existing job another kind of step), label it,
 and check it with the debug hooks below.
 
@@ -247,6 +317,31 @@ and check it with the debug hooks below.
   through wasm, which does not panic: Yew was left half way through its scheduler, so the app froze
   with no crash screen. **Never add a Firebase binding without `catch`** (a rejected promise from a
   non-`catch` async import is a panic).
+- **The Firebase project only accepts some sites.** The configuration in `static/firebase.js` is
+  upstream homotopy.io's own project, whose API key only accepts requests from homotopy.io (and the
+  hosts in its list of authorised domains, which has `localhost` but not `127.0.0.1`). A copy
+  served from anywhere else fails with `Firebase: Error (auth/requests-from-referer-<origin>-are-blocked.)`,
+  which no code here can fix (the user who found it served the app at `http://127.0.0.1:5000`).
+  So `firebase.js` has `homotopyCloudProbe()`, which the Account drawer calls once when it opens
+  (not at load: it is a request to Google): it asks `identitytoolkit.googleapis.com/v1/projects?key=`
+  what the SDK asks first, and is told either the API key is restricted
+  (`API_KEY_HTTP_REFERRER_BLOCKED`) or the list of authorised domains, and if this page is not
+  accepted Firebase is made unavailable with `homotopyCloud.rejected` set. The drawer then says,
+  plainly and without *Retry* (it is not a matter of scripts), "Cloud storage only works on
+  homotopy.io: this copy is served from <origin>, which the homotopy.io Firebase project doesn't
+  accept. To use cloud storage here, configure your own Firebase project". Errors from the SDK
+  that say the same (`requests-from-referer`, `unauthorized-domain`; `explainCloudError`, used by
+  `CloudError::from(JsValue)`) are explained in the same way wherever they turn up (opening
+  `/p/<tag>`, saving). A probe that cannot be answered (offline, slow, not understood) is not a
+  rejection. To use another project: `localStorage.setItem("homotopy-firebase-config",
+  JSON.stringify({apiKey, authDomain, projectId, storageBucket, appId, ...}))` and reload (the
+  rules, indexes and functions in the repository, `firebase.json`, are what that project needs).
+- **The emulators are opt-in.** Before, `firebase.js` pointed auth, firestore, storage and
+  functions at emulators on `127.0.0.1` whenever `location.hostname === "localhost"`, so anyone
+  running the app on localhost without the emulators had cloud storage that failed. Now they are
+  used only if the page is opened with `?emulators` or `localStorage["homotopy-firebase-emulators"]`
+  is `"1"`; and a connection failure while they are in use is reported as "the Firebase emulators
+  could not be reached ... remove ?emulators".
 - The Account drawer says that cloud storage is unavailable, with *Retry*. Retry
   (`window.homotopyCloudRetry`) inserts the missing scripts again (in order, `async = false`) and
   initialises Firebase, so that someone who allows gstatic.com does not have to reload and lose
@@ -389,7 +484,7 @@ assertions, on `homotopy-model/tests/examples` and a project with limits as sche
   for 38KB): there is no way around making the diagrams on the page. Chunking
   `Remote::response` by generator would make that interruptible. Replaying actions parses the
   recorded JSON in `State::start` (27ms for the 1MB file in the debug build).
-- Attach options without schemas, and everything while the worker is not ready (it is started
+- Attach options without schemas (and with the inference of instances off), and everything while the worker is not ready (it is started
   500ms after the app and ready ~1s later; ~180ms after a cancel or crash): done in the page
   in slices as before (the whole search is 1-5ms typically).
 - Diagram layout is done in the layout worker (see "Laying out diagrams" above), which took the

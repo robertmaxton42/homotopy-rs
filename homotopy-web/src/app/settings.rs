@@ -1,6 +1,7 @@
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
+use super::attach_inference;
 use crate::{components::delta::CallbackIdx, declare_settings};
 
 declare_settings! {
@@ -12,6 +13,12 @@ declare_settings! {
         contraction_step: u32 = 1,
         merge_exchanges: bool = false,
         autosave: bool = true,
+        infer_instances: bool = true,
+        // Seconds; 0 for no limit.
+        infer_budget: u32 = 20,
+        infer_max_dimension: u32 = 7,
+        // Set for the session after searches ran out of time, not part of the kept settings.
+        infer_suspended: bool = false,
 
         cubical_subdivision: bool = true,
         dpr_scale: bool = true,
@@ -108,6 +115,32 @@ impl Component for SettingsView {
                         )
                     }
                     <div class="settings__note">{Self::autosave_status()}</div>
+                    {
+                        Self::view_checkbox(
+                            "Infer instances of schemas when attaching",
+                            AppSettings::get_infer_instances(),
+                            attach_inference::set_enabled,
+                        )
+                    }
+                    <div class="settings__note">{Self::inference_status()}</div>
+                    {
+                        Self::view_slider(
+                            &format!("Stop inferring after {}", Self::seconds(AppSettings::get_infer_budget())),
+                            AppSettings::get_infer_budget(),
+                            AppSettings::set_infer_budget,
+                            0,
+                            120,
+                        )
+                    }
+                    {
+                        Self::view_slider(
+                            &format!("Infer instances up to dimension {}", Self::dimension_limit(AppSettings::get_infer_max_dimension())),
+                            AppSettings::get_infer_max_dimension(),
+                            AppSettings::set_infer_max_dimension,
+                            2,
+                            attach_inference::NO_DIMENSION_LIMIT,
+                        )
+                    }
                     {
                         Self::view_slider(
                             "Contraction step",
@@ -258,6 +291,33 @@ impl Component for SettingsView {
 }
 
 impl SettingsView {
+    fn seconds(seconds: u32) -> String {
+        if seconds == 0 {
+            "never (no limit)".to_owned()
+        } else {
+            format!("{seconds} s")
+        }
+    }
+
+    fn dimension_limit(dimension: u32) -> String {
+        if dimension >= attach_inference::NO_DIMENSION_LIMIT {
+            "any".to_owned()
+        } else {
+            dimension.to_string()
+        }
+    }
+
+    /// What there is to say about inferring instances.
+    fn inference_status() -> &'static str {
+        if AppSettings::get_infer_suspended() {
+            "Turned off for this session because searches ran out of time: turn it off and on again to start again."
+        } else if AppSettings::get_infer_instances() {
+            "Looking for what to attach also looks for the replacements of placeholders that make a schema attach, which can take long in high dimensions and for many placeholders: it stops after the time below, and is skipped for diagrams above the dimension below."
+        } else {
+            "Schemas are not offered when attaching, only the cells that do not need their placeholders replaced."
+        }
+    }
+
     /// What there is to say about the backups.
     fn autosave_status() -> String {
         let status = crate::autosave::status();

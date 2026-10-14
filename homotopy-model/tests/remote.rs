@@ -12,7 +12,10 @@ use homotopy_model::{
     autosave::Packer,
     history::{proof_from_state, Proof},
     job::{run_to_end, Progress},
-    proof::{Action, ActionsJob, ActionsOutcome, AttachOptionsJob, ProofState, REPLAYING},
+    proof::{
+        Action, ActionsJob, ActionsOutcome, AttachOptionsJob, InferenceLimits, ProofState,
+        REPLAYING,
+    },
     remote::{Answer, Executor, Output, Remote, Step, Work},
 };
 
@@ -299,11 +302,15 @@ fn attach_options_elsewhere_are_attach_options_here() {
         }
         let point = vec![SliceIndex::Boundary(Boundary::Target)];
         for weak_units in [false, true] {
-            let here = run_to_end(AttachOptionsJob::new(&proof, &point, weak_units).unwrap());
+            let here = run_to_end(
+                AttachOptionsJob::new(&proof, &point, weak_units, InferenceLimits::default())
+                    .unwrap(),
+            );
             let mut remote = Remote::default();
             let work = Work::AttachOptions {
                 point: point.clone(),
                 weak_units,
+                limits: InferenceLimits::default(),
             };
             let (output, _) = elsewhere.work(&mut remote, &proof, &work);
             let Output::AttachOptions(there) = output else {
