@@ -131,6 +131,28 @@ impl Diagram {
         }
     }
 
+    /// The embeddings of `needle` that [contain the point](Self::contains_point), which are
+    /// those of [`embeddings`](Self::embeddings) that `needle.contains_point(point, ..)` holds
+    /// for, in the same order: but when `needle` has as many dimensions as this diagram, only the
+    /// places the point can be in are looked at, a few for each coordinate of the point and not
+    /// all the places there are.
+    #[must_use]
+    pub fn embeddings_through(&self, needle: &Self, point: &[Height]) -> Embeddings {
+        if point.is_empty() {
+            return self.embeddings(needle);
+        }
+        if self.dimension() == needle.dimension() {
+            let found = embeddings_through(self, needle, needle, point);
+            return Embeddings(Box::new(found.into_iter()));
+        }
+        let needle = needle.clone();
+        let point = point.to_vec();
+        Embeddings(Box::new(
+            self.embeddings(&needle)
+                .filter(move |embedding| needle.contains_point(&point, embedding)),
+        ))
+    }
+
     pub(crate) fn rewrite_forward(self, rewrite: &Rewrite) -> Result<Self, RewritingError> {
         match (self, rewrite) {
             (Self::Diagram0(d), Rewrite::Rewrite0(r)) => d.rewrite_forward(r).map(Into::into),
@@ -719,15 +741,35 @@ impl DiagramN {
     ///
     /// The reflections need not be well-typed: whether they are depends on the signature.
     #[must_use]
+    pub fn reflections(&self) -> Vec<(Vec<usize>, Self)> {
+        self.reflections_where(|_| true)
+    }
+
+    /// The [reflections](Self::reflections) in the directions that `wanted` says yes to, which is
+    /// given the directions from the outermost, as [`reflect`](Self::reflect) takes them. The
+    /// other reflections are not made at all, which is the work of the reflections (they take
+    /// time that grows with the diagram, and there are `2^n - 1` of them).
+    ///
+    /// A reflection is only taken to be the same as an earlier one if that was asked for as
+    /// well, so `wanted` is to say the same of reflections that are the same diagram, or at
+    /// least to say yes to the first of them whenever it says yes to another.
+    #[must_use]
     // `Diagram` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
     #[allow(clippy::mutable_key_type)]
-    pub fn reflections(&self) -> Vec<(Vec<usize>, Self)> {
+    pub fn reflections_where(
+        &self,
+        mut wanted: impl FnMut(&[Direction]) -> bool,
+    ) -> Vec<(Vec<usize>, Self)> {
         let n = self.dimension();
         let mut seen = FastHashSet::default();
         seen.insert(self.clone());
         (1..1_u64 << n)
             .filter_map(|mask| {
-                let reflected = self.reflect(&Direction::from_mask(mask, n), 0);
+                let directions = Direction::from_mask(mask, n);
+                if !wanted(&directions) {
+                    return None;
+                }
+                let reflected = self.reflect(&directions, 0);
                 seen.insert(reflected.clone()).then(|| {
                     let reflected_directions = (1..=n).filter(|j| mask & (1 << (j - 1)) != 0);
                     (reflected_directions.collect(), reflected)
@@ -979,6 +1021,73 @@ impl ExactSizeIterator for Slices {
 }
 
 impl std::iter::FusedIterator for Slices {}
+
+/// The embeddings of `needle` in `haystack` through a point, for diagrams of the same dimension:
+/// see [`Diagram::embeddings_through`]. `pointed` is the slice of the needle (at the heights of the
+/// point so far) that the rest of the point is in.
+fn embeddings_through(
+    haystack: &Diagram,
+    needle: &Diagram,
+    pointed: &Diagram,
+    point: &[Height],
+) -> Vec<Vec<RegularHeight>> {
+    let (Diagram::DiagramN(haystack), Diagram::DiagramN(needle)) = (haystack, needle) else {
+        // Points: only if there is nothing left of the point to be in.
+        return match (haystack, needle) {
+            (Diagram::Diagram0(a), Diagram::Diagram0(b)) if a == b && point.is_empty() => {
+                vec![vec![]]
+            }
+            _ => vec![],
+        };
+    };
+    let Some(spare) = haystack.size().checked_sub(needle.size()) else {
+        return vec![];
+    };
+    // The offsets that the point is in the needle at, if there is any of it left.
+    let (first, last) = match (point.first(), pointed) {
+        (None, _) => (0, spare),
+        (Some(height), Diagram::DiagramN(pointed)) => {
+            let height = usize::from(*height);
+            (
+                height.saturating_sub(2 * pointed.size()).div_ceil(2),
+                (height / 2).min(spare),
+            )
+        }
+        (Some(_), Diagram::Diagram0(_)) => return vec![],
+    };
+    if first > last {
+        return vec![];
+    }
+
+    let source = needle.source();
+    let mut found = vec![];
+    for (offset, slice) in haystack
+        .regular_slices()
+        .enumerate()
+        .skip(first)
+        .take(last + 1 - first)
+    {
+        let (pointed, point) = match (point.split_first(), pointed) {
+            (Some((height, rest)), Diagram::DiagramN(pointed)) => {
+                let relative = usize::from(*height) - 2 * offset;
+                match pointed.slice(Height::from(relative)) {
+                    Some(slice) => (slice, rest),
+                    None => continue,
+                }
+            }
+            _ => (source.clone(), &point[..0]),
+        };
+        for rest in embeddings_through(&slice, &source, &pointed, point) {
+            let padded: Vec<_> = needle.cospans().iter().map(|c| c.pad(&rest)).collect();
+            if haystack.cospans().get(offset..offset + needle.size()) == Some(&*padded) {
+                let mut embedding = vec![offset];
+                embedding.extend(rest);
+                found.push(embedding);
+            }
+        }
+    }
+    found
+}
 
 pub struct Embeddings(Box<dyn Iterator<Item = Vec<RegularHeight>>>);
 
