@@ -6,7 +6,7 @@
 //! [`MAX_CELLS`] of its cells of the placeholder's dimension, between the placeholder's source and
 //! target. A substitution is kept if the instantiated schema then attaches at the given point.
 
-use std::rc::Rc;
+use std::{cell::OnceCell, rc::Rc};
 
 use homotopy_common::hash::FastHashSet;
 use homotopy_core::{
@@ -46,9 +46,21 @@ pub(super) struct Pool<'a> {
     cells: Rc<Cells>,
 }
 
-/// What a [`Pool`] is made of, which can be kept for another pool of the same signature.
-#[derive(Default)]
+/// What a [`Pool`] is made of, which can be kept for another pool of the same signature. The
+/// cells are only made when they are wanted, which is not always.
 pub(super) struct Cells {
+    from: From,
+    made: OnceCell<Made>,
+}
+
+enum From {
+    Generators(Vec<Generator>),
+    /// The generators that the diagrams are made of.
+    Diagrams(Vec<Diagram>),
+}
+
+#[derive(Default)]
+struct Made {
     /// The diagrams of the cells (and their inverses where invertible).
     cells: Vec<DiagramN>,
     zero_cells: Vec<Diagram>,
@@ -72,26 +84,23 @@ impl<'a> Pool<'a> {
         signature: &'a Signature,
         generators: impl IntoIterator<Item = Generator>,
     ) -> Self {
-        let mut cells = vec![];
-        let mut zero_cells = vec![];
-        for g in generators {
-            match signature
-                .generator_info(g)
-                .map(|info| (&info.diagram, info.invertibility))
-            {
-                Some((Diagram::Diagram0(d), _)) => zero_cells.push((*d).into()),
-                Some((Diagram::DiagramN(d), invertibility)) => {
-                    cells.push(d.clone());
-                    if invertibility != Invertibility::Directed {
-                        cells.push(d.inverse());
-                    }
-                }
-                None => {}
-            }
-        }
         Self {
             signature,
-            cells: Rc::new(Cells { cells, zero_cells }),
+            cells: Rc::new(Cells {
+                from: From::Generators(generators.into_iter().collect()),
+                made: OnceCell::new(),
+            }),
+        }
+    }
+
+    /// The pool of the cells that the diagrams are made of.
+    pub(super) fn of_diagrams(signature: &'a Signature, diagrams: Vec<Diagram>) -> Self {
+        Self {
+            signature,
+            cells: Rc::new(Cells {
+                from: From::Diagrams(diagrams),
+                made: OnceCell::new(),
+            }),
         }
     }
 
@@ -103,6 +112,36 @@ impl<'a> Pool<'a> {
     /// What the pool is made of.
     pub(super) fn cells(&self) -> Rc<Cells> {
         Rc::clone(&self.cells)
+    }
+
+    fn made(&self) -> &Made {
+        self.cells.made.get_or_init(|| {
+            let generators: Vec<Generator> = match &self.cells.from {
+                From::Generators(generators) => generators.clone(),
+                From::Diagrams(diagrams) => diagrams
+                    .iter()
+                    .flat_map(|d| d.generators().into_keys())
+                    .collect(),
+            };
+            let mut made = Made::default();
+            for g in generators {
+                match self
+                    .signature
+                    .generator_info(g)
+                    .map(|info| (&info.diagram, info.invertibility))
+                {
+                    Some((Diagram::Diagram0(d), _)) => made.zero_cells.push((*d).into()),
+                    Some((Diagram::DiagramN(d), invertibility)) => {
+                        made.cells.push(d.clone());
+                        if invertibility != Invertibility::Directed {
+                            made.cells.push(d.inverse());
+                        }
+                    }
+                    None => {}
+                }
+            }
+            made
+        })
     }
 
     /// Applies a partial substitution to a diagram mentioned by `generator`, using the existing
@@ -168,7 +207,7 @@ impl<'a> Pool<'a> {
         };
         let Diagram::DiagramN(own_n) = &own else {
             return self
-                .cells
+                .made()
                 .zero_cells
                 .iter()
                 .filter(|&d| *d != own)
@@ -185,7 +224,7 @@ impl<'a> Pool<'a> {
 
         let k = own_n.dimension();
         let cells: Vec<&DiagramN> = self
-            .cells
+            .made()
             .cells
             .iter()
             .filter(|c| c.dimension() == k)

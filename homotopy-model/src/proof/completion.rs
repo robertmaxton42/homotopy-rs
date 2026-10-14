@@ -20,13 +20,25 @@
 //! matched exactly (in particular, those mentioning other generators that depend on placeholders)
 //! check out under substitution.
 //!
-//! Every placeholder is determined if all the solutions agree on it. The search is bounded:
-//! when it has to stop early, only what matching has forced (before any split was tried) is
-//! returned, because that holds in every solution.
+//! - A cell that is not a placeholder but depends on some, matched with one of its instances,
+//!   binds the placeholders that the instance was made with.
+//!
+//! A placeholder that is bound has a type of its own, which is matched in turn with the boundary
+//! of its replacement, so what a replacement determines is followed down to the bottom (a chain of
+//! any length) before anything is tried.
+//!
+//! Every placeholder is determined if all the solutions agree on it. The solutions themselves are
+//! kept: when there are several, they are the candidates that the person can pick one of (the
+//! one with the fewest identities among the cells that were cut comes first, which is only an
+//! order: nothing is picked). The search is bounded: when it has to stop early, only what matching
+//! has forced (before any split was tried) is determined, because that holds in every solution.
+//!
+//! The search is a [`Machine`] with a stack of its own, so that it can be done a step at a time
+//! as a [`Job`] ([`InferJob`]): a step is one way of cutting or one candidate.
 
 use std::rc::Rc;
 
-use homotopy_common::tex::seal;
+use homotopy_common::{hash::FastHashMap, tex::seal};
 use homotopy_core::{
     signature::{Invertibility, Signature as _},
     Diagram, DiagramN, Generator, Orientation,
@@ -103,6 +115,9 @@ struct Atom {
     generator: Generator,
     /// Whether it is the inverse of the cell of the generator.
     reflected: bool,
+    /// Whether the generator is not replaced, as it neither is nor depends on a placeholder: its
+    /// replacement is the cell itself.
+    plain: bool,
 }
 
 /// A requirement that a vertical composite of whole cells is the composite of the replacements
@@ -249,6 +264,7 @@ impl Matcher<'_> {
     fn atoms(&self, diagram: &DiagramN) -> Option<Vec<Atom>> {
         let slices: Vec<Diagram> = diagram.slices().collect();
         let mut atoms = Vec::with_capacity(diagram.size());
+        let mut plain_generators = FastHashMap::default();
         for (i, cospan) in diagram.cospans().iter().enumerate() {
             let generator = slices[2 * i + 1].max_generator().generator;
             if generator.dimension != diagram.dimension() {
@@ -266,9 +282,14 @@ impl Matcher<'_> {
             } else {
                 return None;
             };
+            let plain = self.index(generator).is_none()
+                && *plain_generators
+                    .entry(generator)
+                    .or_insert_with(|| self.signature.parameters(generator).is_empty());
             atoms.push(Atom {
                 generator,
                 reflected,
+                plain,
             });
         }
         Some(atoms)
@@ -398,11 +419,21 @@ impl Matcher<'_> {
                         if v.size() != 1 {
                             return Err(mismatch());
                         }
-                        Self::mark(state, owner);
-                        self.match_instance(state, &atoms[0], v, root);
+                        if atoms[0].plain {
+                            // And it is the cell itself.
+                            if s != v {
+                                return Err(mismatch());
+                            }
+                        } else {
+                            Self::mark(state, owner);
+                            self.match_instance(state, &atoms[0], v, root);
+                        }
                     }
                     Some(atoms) => {
-                        if atoms.iter().any(|a| self.index(a.generator).is_none()) {
+                        if atoms
+                            .iter()
+                            .any(|a| self.index(a.generator).is_none() && !a.plain)
+                        {
                             Self::mark(state, owner);
                         }
                         state.splits.push(Split {
@@ -428,7 +459,11 @@ impl Matcher<'_> {
         let mut wants = Vec::with_capacity(split.atoms.len());
         for atom in &split.atoms {
             wants.push(match self.index(atom.generator) {
-                None => Want::Size(1),
+                None => match self.own(atom.generator).filter(|_| atom.plain) {
+                    // The cell itself.
+                    Some(own) => Want::Piece(if atom.reflected { own.inverse() } else { own }),
+                    None => Want::Size(1),
+                },
                 Some(i) => match &state.bound[i] {
                     None => Want::Free,
                     Some((Diagram::DiagramN(d), _)) => Want::Piece(if atom.reflected {
@@ -631,6 +666,9 @@ struct Machine {
     /// What matching forced before anything was tried.
     forced: Replacements,
     ambiguities: Vec<Ambiguity>,
+    /// For each placeholder, the positions of the placeholders its type mentions, once they are
+    /// needed.
+    mentions: Option<Vec<Vec<usize>>>,
     /// The answer, when it was known at the start.
     done: Option<Inference>,
 }
@@ -648,6 +686,7 @@ impl Machine {
             cut_short: false,
             forced: vec![],
             ambiguities: vec![],
+            mentions: None,
             done: nothing_to_do.then(Inference::default),
         };
         if nothing_to_do {
@@ -715,14 +754,6 @@ impl Machine {
             .collect();
         machine.enter(ctx, state);
         machine
-    }
-
-    /// How many replacements have been tried, and the most that are.
-    const fn progress(&self) -> Progress {
-        Progress {
-            done: self.nodes,
-            total: MAX_COMPLETION_NODES,
-        }
     }
 
     /// Does a bit of the work. Returns the answer when it is all done.
@@ -814,7 +845,18 @@ impl Machine {
     fn complete(&mut self, ctx: &Context, state: State) {
         let parameters = ctx.matcher.parameters;
         let signature = ctx.matcher.signature;
-        let position = |q: Generator| parameters.iter().position(|&p| p == q);
+        let mentions = self.mentions.get_or_insert_with(|| {
+            parameters
+                .iter()
+                .map(|&p| {
+                    signature
+                        .parameters(p)
+                        .into_iter()
+                        .filter_map(|q| parameters.iter().position(|&r| r == q))
+                        .collect()
+                })
+                .collect()
+        });
 
         // The placeholders that matter: those bound and those that their types mention.
         let mut needed: Vec<bool> = state.bound.iter().map(Option::is_some).collect();
@@ -822,12 +864,10 @@ impl Machine {
             let mut changed = false;
             for i in 0..parameters.len() {
                 if needed[i] {
-                    for q in signature.parameters(parameters[i]) {
-                        if let Some(j) = position(q) {
-                            if !needed[j] {
-                                needed[j] = true;
-                                changed = true;
-                            }
+                    for &j in &mentions[i] {
+                        if !needed[j] {
+                            needed[j] = true;
+                            changed = true;
                         }
                     }
                 }
@@ -841,13 +881,7 @@ impl Machine {
         let mut checks: Vec<Vec<usize>> = vec![vec![]; parameters.len() + 1];
         for (i, &p) in parameters.iter().enumerate() {
             if state.bound[i].is_some() && (state.inexact.contains(&p)) {
-                let when = signature
-                    .parameters(p)
-                    .into_iter()
-                    .filter_map(position)
-                    .map(|j| j + 1)
-                    .max()
-                    .unwrap_or(0);
+                let when = mentions[i].iter().map(|j| j + 1).max().unwrap_or(0);
                 checks[when].push(i);
             }
         }
@@ -1027,11 +1061,8 @@ impl InferJob {
             .filter(|(p, _)| parameters.contains(p))
             .cloned()
             .collect();
-        let cells = Pool::new(
-            &signature,
-            chosen.iter().flat_map(|(_, d)| d.generators().into_keys()),
-        )
-        .cells();
+        let cells =
+            Pool::of_diagrams(&signature, chosen.iter().map(|(_, d)| d.clone()).collect()).cells();
         let machine = {
             let ctx = Context::of(&signature, &parameters, &cells);
             Machine::new(&ctx, &chosen)
@@ -1071,8 +1102,10 @@ impl Job for InferJob {
         "Inferring replacements"
     }
 
+    /// How far along it is is not known: the replacements tried (`nodes`) are only bounded by
+    /// [`MAX_COMPLETION_NODES`], which most searches end far short of.
     fn progress(&self) -> Option<Progress> {
-        (self.machine.nodes > 0).then(|| self.machine.progress())
+        None
     }
 
     fn step(&mut self) -> Option<Inference> {
@@ -1385,7 +1418,7 @@ impl Signature {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::proof) mod tests {
     use homotopy_core::{
         signature::{Invertibility, Signature as _},
         Boundary, Diagram, DiagramN, Generator,
@@ -1401,33 +1434,35 @@ mod tests {
     /// `η : F ⇒ G`, `η' : F' ⇒ G'`, `μ : F ⇒ F'`, `ν : G ⇒ G'` and `h : μ ≫ η' ⇛ η ≫ ν`; the cells
     /// `T, U : x → x`, `p : T ⇒ U`, `z : U ⇒ T`, `l : T ⇒ T` and `k : p ≫ z ⇛ l ≫ l`; and a
     /// schema `s : x → x` that depends on `h`.
-    struct Square {
-        sig: Signature,
-        schema: Generator,
-        f: Generator,
-        g: Generator,
-        f2: Generator,
-        g2: Generator,
-        eta: Generator,
-        eta2: Generator,
-        mu: Generator,
-        nu: Generator,
-        h: Generator,
-        t: Diagram,
-        u: Diagram,
-        p: Diagram,
-        z: Diagram,
-        l: Diagram,
-        k: Diagram,
+    pub(in crate::proof) struct Square {
+        pub(in crate::proof) sig: Signature,
+        pub(in crate::proof) schema: Generator,
+        pub(in crate::proof) f: Generator,
+        pub(in crate::proof) g: Generator,
+        pub(in crate::proof) f2: Generator,
+        pub(in crate::proof) g2: Generator,
+        pub(in crate::proof) eta: Generator,
+        pub(in crate::proof) eta2: Generator,
+        pub(in crate::proof) mu: Generator,
+        pub(in crate::proof) nu: Generator,
+        pub(in crate::proof) h: Generator,
+        pub(in crate::proof) t: Diagram,
+        pub(in crate::proof) u: Diagram,
+        pub(in crate::proof) p: Diagram,
+        pub(in crate::proof) z: Diagram,
+        pub(in crate::proof) l: Diagram,
+        pub(in crate::proof) k: Diagram,
         /// The inverse of `k`.
-        ki: Diagram,
+        pub(in crate::proof) ki: Diagram,
+        /// `m : p ≫ z ⇛ p ≫ z`, which fits the square when `η := p` and `η' := z`.
+        pub(in crate::proof) m: Diagram,
     }
 
     fn generator(d: &DiagramN) -> Generator {
         d.max_generator().generator
     }
 
-    fn square() -> Square {
+    pub(in crate::proof) fn square() -> Square {
         let mut sig = Signature::default();
         let x: Diagram = sig.create_generator_zero("x").into();
         let cell = |sig: &mut Signature, s: Diagram, t: Diagram, name: &str| {
@@ -1449,6 +1484,7 @@ mod tests {
         let l = cell(&mut sig, t.clone().into(), t.clone().into(), "l");
         let pz = p.attach(&z, Boundary::Target, &[]).unwrap();
         let ll = l.attach(&l, Boundary::Target, &[]).unwrap();
+        let m = cell(&mut sig, pz.clone().into(), pz.clone().into(), "m");
         let k = sig
             .create_generator(pz.into(), ll.into(), "k", Invertibility::Invertible)
             .unwrap();
@@ -1489,6 +1525,7 @@ mod tests {
             z: z.into(),
             l: l.into(),
             ki: k.inverse().into(),
+            m: m.into(),
             k: k.into(),
         }
     }
