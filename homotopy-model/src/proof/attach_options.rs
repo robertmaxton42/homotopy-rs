@@ -135,22 +135,29 @@ pub fn can_attach(
     }
 }
 
-/// How much to spend on inferring the instances of schemas that can be attached.
+/// How much to spend on one generator when looking for what can be attached, and on inferring
+/// the instances of schemas.
 ///
-/// That (see [`Signature::infer_instances`]) is the part of the search that can take minutes
-/// where everything else takes milliseconds: the search for the replacements of placeholders
-/// grows with every placeholder a schema has, and the cells there are to replace them with.
+/// The searches that take long are the inference of instances (see
+/// [`Signature::infer_instances`]), which grows with every placeholder a schema has and with the
+/// cells there are to replace them with, and the matching of cells and their reflections in high
+/// dimensions. Both are done a generator at a time, and the limit is on what *one generator* may
+/// take, not on the whole search: a search that has more generators to look at takes longer, which
+/// is understood, but a generator that has no end to it must not make the rest wait. There is no
+/// limit on the whole search; `Esc` ends it as any job.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferenceLimits {
     /// Whether to infer instances at all. If not, schemas are not offered for attaching, but
     /// everything else is.
     pub enabled: bool,
-    /// The most time, in milliseconds, that all of the inference of one search takes, after
-    /// which the schemas that are left are not looked at (and the one being looked at is left
-    /// as it is: what it had found is offered). `0` for no limit. A single schema gets a
-    /// quarter of it, but at least a second, so that one schema that has no end to it does
-    /// not use up the time of the rest.
-    pub budget_ms: u32,
+    /// The most time, in milliseconds, that one generator may take before it is given up on and
+    /// the search goes on to the next: the matching of the generator, its inverse and the cells
+    /// raised from it, its reflections, and (for a schema) the inference of its instances, all
+    /// together. What was found for it by then is offered (it is valid, and among what the
+    /// whole search finds for it, in the same order), and the report says which generators were
+    /// given up on ([`InferenceReport::cut_short`] for schemas, [`PlainReport::cut_short`]
+    /// for the others). `0` for no limit.
+    pub generator_ms: u32,
     /// Diagrams with more dimensions than this are not inferred instances for. The search
     /// grows with the dimension (more placeholders, with more cells to choose from), and a
     /// diagram of a high dimension is the one that nobody can wait for.
@@ -163,28 +170,17 @@ pub struct InferenceLimits {
     /// it was in effect ([`InferenceReport::narrowed`]).
     #[serde(default)]
     pub narrow_to_sheet: bool,
-    /// The most time, in milliseconds, that the plain passes of one search take: the cells of
-    /// the signature, their inverses, the cells raised from them (bubbles, weak identities), and
-    /// their reflections, all of which are found by matching and not inferred. After it the
-    /// generators that are left are not looked at, and the one being looked at is cut short
-    /// with what it had found (which is valid, and among what the whole search finds, in the
-    /// same order). `0` for no limit. One generator gets a quarter of it, at least a second, as for the inference, and
-    /// the generators are looked at cheapest first so that what is cheap is done before what is
-    /// not. The report says what was cut ([`InferenceReport::plain`]).
-    #[serde(default = "default_plain_budget_ms")]
-    pub plain_budget_ms: u32,
 }
 
-/// The time the plain passes are given unless it is said otherwise: ten seconds.
+/// The time one generator is given unless it is said otherwise: five seconds.
 ///
-/// That is more than the whole of the plain passes take in the optimised build on the largest
-/// project there is a fixture of (a click: 3 s natively, in the page about 3 to 6 s), and well
-/// under the minute or more that the debug build needs.
-pub const DEFAULT_PLAIN_BUDGET_MS: u32 = 10_000;
-
-const fn default_plain_budget_ms() -> u32 {
-    DEFAULT_PLAIN_BUDGET_MS
-}
+/// That is more than the matching of any one cell and its reflections takes in the optimised
+/// build on the largest project there is a fixture of (the costliest, a reflection that does not
+/// typecheck, 2.5 s natively), and what a schema got in practice when the time was for the whole
+/// inference (20 s, a quarter of it for each of several schemas): the schemas that finish with
+/// nothing to find take 4 to 7 s natively there, and the ones that do not finish never would. The
+/// debug build, which is ten to twenty times slower, gives up on more.
+pub const DEFAULT_GENERATOR_MS: u32 = 5_000;
 
 /// How far from the point a cell may be to be in the narrowed pool.
 ///
@@ -196,57 +192,23 @@ impl InferenceLimits {
     /// What the search is limited to unless it is said otherwise.
     pub const DEFAULT: Self = Self {
         enabled: true,
-        budget_ms: 20_000,
+        generator_ms: DEFAULT_GENERATOR_MS,
         max_dimension: 7,
         narrow_to_sheet: false,
-        plain_budget_ms: DEFAULT_PLAIN_BUDGET_MS,
     };
 
     /// No limits at all: what the search did before there were any.
     pub const UNLIMITED: Self = Self {
         enabled: true,
-        budget_ms: 0,
+        generator_ms: 0,
         max_dimension: u32::MAX,
         narrow_to_sheet: false,
-        plain_budget_ms: 0,
     };
 
-    fn budget(self) -> Option<Duration> {
-        (self.budget_ms > 0).then(|| Duration::from_millis(u64::from(self.budget_ms)))
-    }
-
-    fn plain_budget(self) -> Option<Duration> {
-        (self.plain_budget_ms > 0).then(|| Duration::from_millis(u64::from(self.plain_budget_ms)))
-    }
-
-    /// How long the plain search for one generator may take when there are `generators` of them
-    /// to look at: half of the time, but at least a second (a few generators are far costlier
-    /// than the rest, and one of them should not use up the time of those that come after, but
-    /// a quarter, as for the inference, cuts off ones that need a little under half).
-    fn plain_each(self, generators: usize) -> Option<Duration> {
-        self.plain_budget().map(|total| {
-            if generators <= 1 {
-                total
-            } else {
-                (total / 2).max(total.min(Duration::from_secs(1)))
-            }
-        })
-    }
-
-    /// How long one schema may take, when there are `schemas` of them to infer instances of: a
-    /// quarter of the budget, but at least a second, so that one schema that has no end to it
-    /// does not use up the time of the rest. A schema that is the only one has all of it.
-    pub(super) fn budget_each(self, schemas: usize) -> Option<Duration> {
-        self.budget().map(|total| share(total, schemas))
-    }
-}
-
-/// A quarter of the time, but at least a second, for one of several; all of it for the only one.
-fn share(total: Duration, parts: usize) -> Duration {
-    if parts <= 1 {
-        total
-    } else {
-        (total / 4).max(total.min(Duration::from_secs(1)))
+    /// How long one generator may take, if there is a limit.
+    #[must_use]
+    pub fn generator(self) -> Option<Duration> {
+        (self.generator_ms > 0).then(|| Duration::from_millis(u64::from(self.generator_ms)))
     }
 }
 
@@ -263,17 +225,26 @@ pub struct InferenceReport {
     /// The dimension of the diagram, if instances were not inferred because it is more than the
     /// limit ([`InferenceLimits::max_dimension`]) allows.
     pub too_high: Option<u32>,
-    /// The names of the schemas that the inference gave up on because it took too long. What it
-    /// found before that is among the options.
+    /// The names of the schemas that the inference gave up on because one took longer than the
+    /// limit for a generator ([`InferenceLimits::generator_ms`]). What it found before that is
+    /// among the options.
     pub cut_short: Vec<String>,
-    /// The names of the schemas that were not looked at because the time was used up.
+    /// The names of the schemas that were not looked at because the search was ended from
+    /// outside before it got to them (see [`forced`](Self::forced)).
     pub not_tried: Vec<String>,
-    /// How long the inference took, and how long it was allowed to.
+    /// How many schemas the inference went through to the end (the others are in `cut_short`).
+    #[serde(default)]
+    pub inferred: u32,
+    /// Whether the search was for one generator, asked for by name (dropped on the diagram or
+    /// picked), and not the search for everything at a point.
+    #[serde(default)]
+    pub targeted: bool,
+    /// How long the inference took in all, and how long one generator was allowed to take.
     pub spent_ms: u64,
     pub budget_ms: u32,
-    /// Whether the search did not stop when the time was up and had to be ended from outside
-    /// (see [`Job::checkpoint`]): what is offered is what it had before the
-    /// schema it was in the middle of.
+    /// Whether the search did not stop when the time for a generator was up and had to be ended
+    /// from outside (see [`Job::checkpoint`]): what is offered is what it had before the
+    /// generator it was in the middle of.
     #[serde(default)]
     pub forced: bool,
     /// The longest a single step of the inference took, in milliseconds, for judging how well
@@ -290,16 +261,17 @@ pub struct InferenceReport {
     pub plain: PlainReport,
 }
 
-/// What came of the time limit on the plain passes of a search (see
-/// [`InferenceLimits::plain_budget_ms`]).
+/// What came of the time limit for a generator in the plain passes of a search (see
+/// [`InferenceLimits::generator_ms`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlainReport {
     /// The names of the generators whose search was cut short: what it found is among the
     /// options, and is among what the whole search finds for the generator, in the same order.
     pub cut_short: Vec<String>,
-    /// The names of the generators that were not looked at because the time was used up.
+    /// The names of the generators that were not looked at because the search was ended from
+    /// outside before it got to them.
     pub not_tried: Vec<String>,
-    /// How long the plain passes took, and how long they were allowed to.
+    /// How long the plain passes took in all, and how long one generator was allowed to take.
     pub spent_ms: u64,
     pub budget_ms: u32,
 }
@@ -404,10 +376,13 @@ pub struct AttachOptionsJob {
     /// The cells that placeholders are replaced with, which the searches share the composites of.
     cells: Rc<Cells>,
     inferring: Option<Inferring>,
-    /// The time spent inferring, and whether it is all used.
+    /// The time spent inferring in all, for the report.
     spent: Duration,
-    /// The time spent in the plain passes (see [`InferenceLimits::plain_budget_ms`]).
+    /// The time spent in the plain passes in all, for the report.
     plain_spent: Duration,
+    /// The time spent on each generator (by index) in the plain passes, their reflections and
+    /// the inference together, which is what [`InferenceLimits::generator_ms`] limits.
+    by_generator: Vec<Duration>,
     report: InferenceReport,
     started: bool,
     /// Whether the options so far have changed since the last [`checkpoint`](Job::checkpoint)
@@ -442,7 +417,6 @@ struct ReflectionCandidate {
 struct Inferring {
     generator: usize,
     search: InferSearch,
-    spent: Duration,
 }
 
 impl AttachOptionsJob {
@@ -507,7 +481,8 @@ impl AttachOptionsJob {
         let dimension = haystack.dimension();
 
         let mut report = InferenceReport {
-            budget_ms: limits.budget_ms,
+            budget_ms: limits.generator_ms,
+            targeted: only.is_some(),
             ..InferenceReport::default()
         };
         let mut limits = limits;
@@ -540,6 +515,7 @@ impl AttachOptionsJob {
             inferring: None,
             spent: Duration::ZERO,
             plain_spent: Duration::ZERO,
+            by_generator: vec![],
             plain_order: vec![],
             report,
             started: false,
@@ -551,10 +527,11 @@ impl AttachOptionsJob {
             let reflecting = job.reflecting().map(|(index, _)| index).collect();
             job.cheapest_first(reflecting)
         };
-        job.report.plain.budget_ms = limits.plain_budget_ms;
-        // The first checkpoint, before anything is done, lets whoever runs this somewhere that
-        // it can be ended know that there is a limit to keep (see `checkpoint`).
-        job.checkpoint_due = limits.plain_budget().is_some();
+        job.by_generator = vec![Duration::ZERO; job.generators.len()];
+        job.report.plain.budget_ms = limits.generator_ms;
+        // The first checkpoint, before anything is done, gives whoever runs this somewhere that
+        // it can be ended something to fall back on from the start (see `checkpoint`).
+        job.checkpoint_due = limits.generator().is_some();
         job.to_infer = job.inferring_for().map(|(index, _)| index).collect();
         // Only said when there are instances that it could have made a difference to.
         job.report.narrowed = narrowed.filter(|_| !job.to_infer.is_empty());
@@ -627,66 +604,55 @@ impl AttachOptionsJob {
     /// How long the plain passes took, in milliseconds, if they have a limit to say it against
     /// (without one it is not said, so that the same search always has the same report).
     fn plain_spent_ms(&self) -> u64 {
-        if self.limits.plain_budget().is_some() {
+        if self.limits.generator().is_some() {
             self.plain_spent.as_millis() as u64
         } else {
             0
         }
     }
 
-    /// How long a plain step for one generator may take, and whether the time for all of them is
-    /// already used: `None` if there is no limit.
-    fn plain_allowance(&self) -> Option<(Duration, bool)> {
-        let total = self.limits.plain_budget()?;
-        let each = if self.only.is_some() {
-            total
-        } else {
-            self.limits
-                .plain_each(self.plain_order.len().max(self.to_reflect.len()))
-                .unwrap_or(total)
-        };
-        let left = total.saturating_sub(self.plain_spent);
-        Some((each.min(left), self.plain_spent >= total))
+    /// How much of its time a generator has left: `None` if there is no limit.
+    fn time_left(&self, index: usize) -> Option<Duration> {
+        let each = self.limits.generator()?;
+        Some(each.saturating_sub(self.by_generator[index]))
     }
 
-    /// Does a plain step for a generator within the time that the plain passes have: `None` if it
-    /// was not done, because they are used up (and the generator is said not to have been
-    /// looked at); otherwise what `work` came to, after a note that the generator was cut short
-    /// if the time ran out in the middle of it.
+    /// Does a plain step for a generator within the time that it has: `None` if it was not done,
+    /// because it has none left (the passes before used it up, and the generator is said to have
+    /// been given up on); otherwise what `work` came to, after a note that the generator was cut
+    /// short if the time ran out in the middle of it.
     fn plain_step<R>(&mut self, index: usize, work: impl FnOnce(&mut Self) -> R) -> Option<R> {
-        let allowance = self.plain_allowance();
-        if allowance.is_some_and(|(_, used_up)| used_up) {
-            self.note_plain(index, false);
+        let left = self.time_left(index);
+        if left.is_some_and(|left| left.is_zero()) {
+            self.note_plain(index);
             return None;
         }
         let started = Instant::now();
-        let limit = allowance.map(|(left, _)| deadline::until(started + left));
+        let limit = left.map(|left| deadline::until(started + left));
         let found = work(self);
         let cut = limit.as_ref().is_some_and(deadline::Limit::expired);
         drop(limit);
-        self.plain_spent += started.elapsed();
+        let took = started.elapsed();
+        self.plain_spent += took;
+        self.by_generator[index] += took;
         if cut {
-            self.note_plain(index, true);
-            // A search for one generator has all of the time, so what it was cut at is the end
-            // of it (though the clock may say there is a little left).
-            if let Some(total) = self.limits.plain_budget().filter(|_| self.only.is_some()) {
-                self.plain_spent = self.plain_spent.max(total);
+            self.note_plain(index);
+            // What it was cut at is the end of its time (though the clock may say there is a
+            // little left).
+            if let Some(each) = self.limits.generator() {
+                self.by_generator[index] = self.by_generator[index].max(each);
             }
         }
-        self.checkpoint_due = self.limits.plain_budget().is_some();
+        self.checkpoint_due = self.limits.generator().is_some();
         Some(found)
     }
 
-    /// Records that the plain search for a generator was cut short, or not done at all.
-    fn note_plain(&mut self, index: usize, cut_short: bool) {
+    /// Records that the plain search for a generator was cut short.
+    fn note_plain(&mut self, index: usize) {
         let name = self.generators[index].name.clone();
         let plain = &mut self.report.plain;
-        if cut_short {
-            if !plain.cut_short.contains(&name) {
-                plain.cut_short.push(name);
-            }
-        } else if !plain.not_tried.contains(&name) && !plain.cut_short.contains(&name) {
-            plain.not_tried.push(name);
+        if !plain.cut_short.contains(&name) {
+            plain.cut_short.push(name);
         }
     }
 
@@ -928,31 +894,29 @@ impl AttachOptionsJob {
     /// Does a little of the inference of instances of schemas: the next candidate of the search
     /// that is going, or the start of the next one. `true` when it is over.
     ///
-    /// A step does not run past the time that is left: the search looks at the clock as it goes
-    /// (see [`deadline`]), so that one candidate list or one check that would take long is cut
-    /// short, and the schema is given up on with what it had found.
+    /// A step does not run past the time that the schema has left: the search looks at the clock
+    /// as it goes (see [`deadline`]), so that one candidate list or one check that would take
+    /// long is cut short, and the schema is given up on with what it had found. The time is the
+    /// schema's own (see [`InferenceLimits::generator_ms`]): one that has no end to it does not
+    /// use the time of those after it.
     fn infer(&mut self) -> bool {
-        let limit = self.limits.budget();
-        let limit_each = self.limits.budget_each(self.to_infer.len());
         let started = Instant::now();
 
         if self.inferring.is_none() {
             let Some(&index) = self.to_infer.get(self.next) else {
                 return true;
             };
-            let (name, generator) = {
-                let info = &self.generators[index];
-                (info.name.clone(), info.generator)
-            };
+            let generator = self.generators[index].generator;
             self.next += 1;
-            if limit.is_some_and(|limit| self.spent >= limit) {
-                self.report.not_tried.push(name);
+            let left = self.time_left(index);
+            if left.is_some_and(|left| left.is_zero()) {
+                // The matching of the schema used up its time (and said so): there is none for
+                // its instances.
                 self.done += 1;
                 self.checkpoint_due = true;
                 return false;
             }
-            let time_up = limit.map(|limit| started + limit.saturating_sub(self.spent));
-            let _limit = time_up.map(deadline::until);
+            let _limit = left.map(|left| deadline::until(started + left));
             self.inferring = InferSearch::new(
                 &self.signature,
                 Rc::clone(&self.cells),
@@ -964,46 +928,40 @@ impl AttachOptionsJob {
             .map(|search| Inferring {
                 generator: index,
                 search,
-                spent: Duration::ZERO,
             });
             if self.inferring.is_none() {
                 self.done += 1;
                 self.checkpoint_due = true;
             }
-            self.spent += started.elapsed();
+            let took = started.elapsed();
+            self.spent += took;
+            self.by_generator[index] += took;
             return false;
         }
 
-        let inferring = self.inferring.as_mut().unwrap();
-        // The most this step may take: what is left of the time for the schema and for all.
-        let left = [
-            limit_each.map(|each| each.saturating_sub(inferring.spent)),
-            limit.map(|limit| limit.saturating_sub(self.spent)),
-        ]
-        .into_iter()
-        .flatten()
-        .min();
+        let index = self.inferring.as_ref().unwrap().generator;
+        // The most this step may take: what is left of the time for the schema.
+        let each = self.limits.generator();
+        let left = self.time_left(index);
         let limit_now = left.map(|left| deadline::until(started + left));
-        let over = inferring.search.step();
+        let over = self.inferring.as_mut().unwrap().search.step();
         let out_of_time = limit_now.as_ref().is_some_and(deadline::Limit::expired);
         drop(limit_now);
         let took = started.elapsed();
-        inferring.spent += took;
         self.spent += took;
+        self.by_generator[index] += took;
         self.longest_step = self.longest_step.max(took);
         // A search that was cut short by the clock is not over, whatever it says: it ran out of
         // what it was looking at.
-        let cut = out_of_time
-            || (!over
-                && (limit_each.is_some_and(|limit| inferring.spent >= limit)
-                    || limit.is_some_and(|limit| self.spent >= limit)));
+        let cut =
+            out_of_time || (!over && each.is_some_and(|each| self.by_generator[index] >= each));
         if over || cut {
-            let Inferring {
-                generator, search, ..
-            } = self.inferring.take().unwrap();
+            let Inferring { generator, search } = self.inferring.take().unwrap();
             let info = self.generators[generator].clone();
             if cut {
                 self.report.cut_short.push(info.name.clone());
+            } else {
+                self.report.inferred += 1;
             }
             for inferred in search.finish() {
                 self.matches.push((
@@ -1028,27 +986,6 @@ impl AttachOptionsJob {
             self.checkpoint_due = true;
         }
         false
-    }
-
-    /// The most time that the search can take if it keeps its limits, if it has them all: the time
-    /// for the plain passes (if there is a limit on them) and the time for the inference of
-    /// instances (if there are schemas to infer, and a limit on that). For whoever runs the
-    /// search somewhere that it can be ended from outside (see [`checkpoint`](Job::checkpoint))
-    /// to know when to, from when the first checkpoint is made: without a limit on the plain
-    /// passes that is the start of the inference, which is when the first is made, and its
-    /// time alone.
-    #[must_use]
-    pub fn time_allowed(&self) -> Option<Duration> {
-        let inference = if self.to_infer.is_empty() {
-            Some(Duration::ZERO)
-        } else {
-            self.limits.budget()
-        };
-        match (self.limits.plain_budget(), inference) {
-            (Some(plain), Some(inference)) => Some(plain + inference),
-            (None, Some(inference)) if !inference.is_zero() => Some(inference),
-            _ => None,
-        }
     }
 
     /// Goes on to the inference of instances.
@@ -1087,6 +1024,14 @@ impl Job for AttachOptionsJob {
             done: self.done,
             total: self.planned,
         })
+    }
+
+    /// The time for one generator: a step is within one generator, and if it keeps its limits
+    /// (the search looks at the clock as it goes, see [`deadline`]) it takes no more. For whoever
+    /// runs the search somewhere that it can be ended from outside (a worker) to know when
+    /// something that the search cannot see is holding it up.
+    fn step_limit(&self) -> Option<Duration> {
+        self.limits.generator()
     }
 
     /// What the search would come to if it were ended now, if that is different from the last
@@ -1344,4 +1289,86 @@ fn reflection_options(
             substitution: None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use homotopy_common::deadline;
+
+    use super::*;
+    use crate::{
+        history::Proof,
+        job::{run_to_end, Job},
+        proof::Action,
+    };
+
+    /// The state of an example with a workspace and the most generators.
+    fn state() -> Proof {
+        let json = include_str!("../../tests/examples/equivalence_to_adjoint_equivalence.json");
+        let (_safe, actions): (bool, Vec<Action>) = serde_json::from_str(json).unwrap();
+        let mut proof = Proof::default();
+        let mut best: Option<Proof> = None;
+        for action in actions {
+            if proof.update(&action).is_err() {
+                continue;
+            }
+            if proof.workspace.is_some()
+                && best
+                    .as_ref()
+                    .is_none_or(|b| b.signature.iter().count() < proof.signature.iter().count())
+            {
+                best = Some(proof.clone());
+            }
+        }
+        best.unwrap()
+    }
+
+    /// The time is each generator's own: one that uses all of its time is given up on, and
+    /// the others still have all of theirs; there is no total to run out.
+    #[test]
+    fn a_generator_that_uses_its_time_does_not_use_the_time_of_the_next() {
+        let state = state();
+        let limits = InferenceLimits {
+            generator_ms: 300,
+            ..InferenceLimits::UNLIMITED
+        };
+        let mut job = AttachOptionsJob::new(&state, &[], true, limits, None).unwrap();
+        assert!(job.generators.len() > 2);
+        let (first, second) = (job.plain_order[0], job.plain_order[1]);
+        let each = Duration::from_millis(300);
+        assert_eq!(job.time_left(first), Some(each));
+
+        // The first generator's search takes longer than its time, and the search sees the clock.
+        let result = job.plain_step(first, |_| {
+            std::thread::sleep(Duration::from_millis(350));
+            (0..8).any(|_| deadline::expired())
+        });
+        assert_eq!(result, Some(true));
+        assert_eq!(job.time_left(first), Some(Duration::ZERO));
+        assert_eq!(job.time_left(second), Some(each));
+        let name = job.generators[first].name.clone();
+        let job_name = name.clone();
+        assert_eq!(job.report.plain.cut_short, vec![name]);
+        // It has no time for its reflections either, and is not done again.
+        assert!(job.plain_step(first, |_| ()).is_none());
+
+        // The rest of the search still looks at every other generator.
+        let outcome = run_to_end(job);
+        assert!(outcome.inference.plain.not_tried.is_empty());
+        assert!(outcome.inference.plain.cut_short.contains(&job_name));
+    }
+
+    /// Without a limit a generator has all the time there is, and nothing is cut.
+    #[test]
+    fn without_a_limit_there_is_no_time_to_run_out_of() {
+        let state = state();
+        let mut job =
+            AttachOptionsJob::new(&state, &[], true, InferenceLimits::UNLIMITED, None).unwrap();
+        assert_eq!(job.time_left(0), None);
+        assert_eq!(job.step_limit(), None);
+        assert!(job.plain_step(0, |_| ()).is_some());
+        assert!(!run_to_end(job).inference.plain.timed_out());
+    }
 }

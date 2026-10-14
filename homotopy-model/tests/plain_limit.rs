@@ -1,6 +1,6 @@
-//! The time limit on the plain passes of the search for what to attach (the cells of the
-//! signature, their variants and reflections: `InferenceLimits::plain_budget_ms`): a search that
-//! is cut short finds some of what the whole search finds, in the same order, and all of it is
+//! The time limit for one generator in the plain passes of the search for what to attach (the
+//! cells of the signature, their variants and reflections: `InferenceLimits::generator_ms`): a
+//! search that is cut short finds some of what the whole search finds, in the same order, and all of it is
 //! valid; without a limit nothing changes; the checkpoints that a worker makes along the way
 //! say what was not done.
 
@@ -60,7 +60,7 @@ const FAR: u32 = 3_600_000;
 
 fn limited() -> InferenceLimits {
     InferenceLimits {
-        plain_budget_ms: FAR,
+        generator_ms: FAR,
         ..InferenceLimits::UNLIMITED
     }
 }
@@ -229,7 +229,7 @@ fn checkpoints_in_the_plain_passes_say_what_was_not_done() {
         .unwrap();
     let mut job = AttachOptionsJob::new(&state, &[], true, limited(), None).unwrap();
     assert_eq!(
-        job.time_allowed(),
+        job.step_limit(),
         Some(std::time::Duration::from_millis(u64::from(FAR)))
     );
     let mut checkpoints = vec![];
@@ -259,5 +259,8 @@ fn checkpoints_in_the_plain_passes_say_what_was_not_done() {
     // As it goes there is less that was not tried.
     let left = |c: &AttachOutcome| c.inference.plain.not_tried.len();
     assert!(left(&checkpoints[0]) >= left(checkpoints.last().unwrap()));
+    // Only a search that is ended from outside leaves generators not tried: otherwise every one
+    // has its own time.
+    assert!(outcome.inference.plain.not_tried.is_empty());
     assert!(!outcome.inference.plain.timed_out() && !outcome.inference.forced);
 }

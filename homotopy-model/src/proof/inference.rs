@@ -1057,9 +1057,7 @@ mod tests {
         }
     }
 
-    /// The search for the schema alone gives what the whole search gives for it, in pieces, and
-    /// with all of the time that inferring is given: a quarter of it is for a schema that has
-    /// others to share the time with.
+    /// The search for the schema alone gives what the whole search gives for it, in pieces.
     #[test]
     fn a_schema_searched_for_alone_is_what_the_whole_search_finds_for_it() {
         for big in [false, true] {
@@ -1193,29 +1191,28 @@ mod tests {
         assert!(found > 0, "instances are found");
     }
 
-    /// With a time limit the schema that is searched for alone has all of it, not a quarter.
+    /// The limit is for one generator and nothing else: it is the same whether the schema is
+    /// searched for alone or with others, and without one there is none.
     #[test]
-    fn a_schema_searched_for_alone_has_all_the_time() {
+    fn the_time_limit_is_for_a_generator_and_is_the_same_for_all() {
         let limits = InferenceLimits {
-            budget_ms: 4000,
+            generator_ms: 4000,
             ..InferenceLimits::UNLIMITED
         };
         assert_eq!(
-            limits.budget_each(1),
+            limits.generator(),
             Some(std::time::Duration::from_millis(4000))
         );
-        assert_eq!(
-            limits.budget_each(5),
-            Some(std::time::Duration::from_millis(1000))
-        );
-        let short = InferenceLimits {
-            budget_ms: 800,
-            ..limits
-        };
-        assert_eq!(
-            short.budget_each(5),
-            Some(std::time::Duration::from_millis(800))
-        );
+        assert_eq!(InferenceLimits::UNLIMITED.generator(), None);
+        let proof = schema_proof(false);
+        for only in [None, Some(proof.signature.iter().last().unwrap().generator)] {
+            let job = AttachOptionsJob::new(&proof, &[], false, limits, only).unwrap();
+            assert_eq!(job.step_limit(), limits.generator());
+            let Some(crate::remote::Work::AttachOptions { limits: asked, .. }) = job.offer() else {
+                panic!("the search can be offered");
+            };
+            assert_eq!(asked.generator_ms, 4000);
+        }
     }
 
     #[test]
@@ -1281,16 +1278,20 @@ mod tests {
             .iter()
             .any(|option| option.substitution.is_some()));
 
-        // A millisecond is used up by the search for the first schema.
+        // A millisecond is used up by the search for the schema.
         let limited = run_to_end(attach_job(
             true,
             InferenceLimits {
-                budget_ms: 1,
+                generator_ms: 1,
                 ..InferenceLimits::UNLIMITED
             },
         ));
         assert!(limited.inference.timed_out(), "{:?}", limited.inference);
         assert_eq!(limited.inference.budget_ms, 1);
+        // Every schema is gone through (given up on or not), as the time is each one's own: none
+        // is left for lack of time.
+        assert!(limited.inference.not_tried.is_empty());
+        assert!(!limited.inference.targeted);
         // What it found is among what there is, and the options that are not instances are all
         // there.
         assert!(limited.options.len() < all.options.len());
@@ -1306,7 +1307,10 @@ mod tests {
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        assert_eq!(plain(&limited), plain(&all));
+        // (The plain passes have the same millisecond, which they almost always keep.)
+        if !limited.inference.plain.timed_out() {
+            assert_eq!(plain(&limited), plain(&all));
+        }
     }
 
     /// A search whose time runs out in the middle of a step finds some of the instances, and no

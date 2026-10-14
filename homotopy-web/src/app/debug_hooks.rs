@@ -17,9 +17,9 @@
 //! - `fillWithGenerator("[schema, placeholder, generator]")` chooses the diagram of a generator
 //!   for a placeholder in the Instantiate panel of a schema (each as `[id, dimension]`).
 //! - `profile(json)` replays recorded actions and times each kind (in milliseconds).
-//! - `window.__homotopy_infer_grace_ms` sets how long past its time the worker is given to
-//!   finish inferring instances before it is ended (to see it keep its time by itself, set it
-//!   high).
+//! - `window.__homotopy_infer_grace_ms` sets how long past the time for a step (for a search for
+//!   attachments, the time for one generator) the worker may be silent before it is ended (to
+//!   see it keep its time by itself, set it high).
 //! - `window.__homotopy_step_delay_ms`, if set, makes every step of a job take at least that long,
 //!   to make jobs slow enough to test with (also those done in the worker, which is told when
 //!   it is given the job); `window.__homotopy_step_delay_label` limits that to steps whose label
@@ -198,8 +198,8 @@ pub fn step_delay_label() -> String {
         .unwrap_or_default()
 }
 
-/// What `window.__homotopy_infer_grace_ms` says, if it is set: how long past the time for
-/// inferring instances the worker is given to answer before it is ended (in milliseconds).
+/// What `window.__homotopy_infer_grace_ms` says, if it is set: how long past the time for a
+/// step the worker is given to say anything before it is ended (in milliseconds).
 pub fn infer_grace_ms() -> Option<u32> {
     web_sys::window()
         .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_infer_grace_ms".into()).ok())

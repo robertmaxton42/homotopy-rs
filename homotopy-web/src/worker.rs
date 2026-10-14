@@ -14,7 +14,9 @@
 //!   copied; and `{kind: "preload", bytes}`, diagrams for the next job to find (see
 //!   [`homotopy_model::remote::Remote::preload`]), which has no answer;
 //! - worker to page: `{kind: "ready"}` (said by `static/worker.js`) once the module is running,
-//!   then for each job any number of `{kind: "progress", job, label, done, total}`, for some jobs
+//!   then for each job any number of `{kind: "progress", job, label, done, total, limit_ms}`
+//!   (`limit_ms`: the most that the step about to be done may take if the job keeps its limits,
+//!   `0` for no limit: the page ends a worker that is silent for longer than that and a grace), for some jobs
 //!   `{kind: "partial", job, bytes}` (an answer that will do if the job has to be ended: see
 //!   [`homotopy_model::job::Job::checkpoint`]), and finally `{kind: "done", job, bytes}`, or
 //!   `{kind: "panic", job, message}` if the worker crashed (after which it is of no use, and the
@@ -62,6 +64,9 @@ pub enum Event {
         job: u64,
         label: String,
         progress: Option<Progress>,
+        /// The most that the step that follows may take if the job keeps its limits, in
+        /// milliseconds, or `0` if it has none (see [`homotopy_model::job::Job::step_limit`]).
+        limit_ms: u32,
     },
     /// What the job would come to if it were ended now: the answer for the page to use if it has
     /// to end the job because it takes too long.
@@ -307,6 +312,7 @@ fn parse_event(data: &JsValue) -> Option<Event> {
         "progress" => Event::Progress {
             job: job()?,
             label: get(data, "label").as_string()?,
+            limit_ms: get(data, "limit_ms").as_f64().map_or(0, |ms| ms as u32),
             progress: get(data, "total").as_f64().map(|total| Progress {
                 done: get(data, "done").as_f64().unwrap_or(0.0) as usize,
                 total: total as usize,
@@ -407,17 +413,20 @@ pub fn worker_message(data: &JsValue) {
     } else {
         let mut last_report: Option<Instant> = None;
         let mut last_label: Option<&'static str> = None;
+        let mut last_limit: u32 = 0;
         EXECUTOR.with(|executor| {
             executor.borrow_mut().run_with_checkpoints(
                 &bytes.to_vec(),
                 &mut |step: Step| {
-                    // A change of what the job is doing is said at once, as the next report
-                    // may be a long step away.
+                    // A change of what the job is doing, or of how long a step may take, is
+                    // said at once, as the next report may be a long step away.
                     if last_label != Some(step.label)
+                        || last_limit != step.limit_ms
                         || last_report.is_none_or(|at| at.elapsed() >= PROGRESS_INTERVAL)
                     {
                         last_report = Some(Instant::now());
                         last_label = Some(step.label);
+                        last_limit = step.limit_ms;
                         report(job, step);
                     }
                     spin(step.delay_ms);
@@ -445,6 +454,7 @@ fn report(job: u64, step: Step) {
     let reply = message("progress");
     Reflect::set(&reply, &"job".into(), &(job as f64).into()).unwrap();
     Reflect::set(&reply, &"label".into(), &step.label.into()).unwrap();
+    Reflect::set(&reply, &"limit_ms".into(), &f64::from(step.limit_ms).into()).unwrap();
     if let Some(Progress { done, total }) = step.progress {
         Reflect::set(&reply, &"done".into(), &(done as f64).into()).unwrap();
         Reflect::set(&reply, &"total".into(), &(total as f64).into()).unwrap();
