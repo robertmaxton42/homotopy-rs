@@ -39,6 +39,12 @@ pub enum TypeError {
 
     #[error("dualisable generator exhibits illegal non-manifold behaviour")]
     Dualisable,
+
+    /// The time limit set for the thread (see [`homotopy_common::deadline`]) was reached before
+    /// the diagram was checked. It says nothing about whether the diagram is well typed, only
+    /// that this was not found out: whoever sets a limit takes it as "not known to be".
+    #[error("the time limit was reached while typechecking")]
+    TimedOut,
 }
 
 thread_local! {
@@ -110,6 +116,9 @@ fn typecheck_worker(
             .map(|(point, target)| (Embedding::from_point(&point), target));
 
         for (target_embedding, target) in target_embeddings {
+            if homotopy_common::deadline::expired() {
+                return Err(TypeError::TimedOut);
+            }
             if mode.generator.is_some_and(|g| target.generator != g) {
                 continue;
             }
@@ -143,15 +152,24 @@ fn typecheck_worker(
                 }
             }
 
-            if mode.simplices
-                && collapse_simplicies(restricted.clone(), false)
-                    != collapse_simplicies(info.diagram().clone(), false)
-            {
-                return Err(TypeError::IllTyped);
+            if mode.simplices {
+                // (Each collapse is not interrupted, but there is a look at the clock between.)
+                let observed = collapse_simplicies(restricted.clone(), false);
+                if homotopy_common::deadline::expired() {
+                    return Err(TypeError::TimedOut);
+                }
+                if observed != collapse_simplicies(info.diagram().clone(), false) {
+                    return Err(TypeError::IllTyped);
+                }
             }
 
             if symmetric && !is_allowed_reflection(restricted, target.generator, info, signature) {
-                return Err(TypeError::Directed);
+                // (It says no when it runs out of time, which is not that it is not allowed.)
+                return Err(if homotopy_common::deadline::expired() {
+                    TypeError::TimedOut
+                } else {
+                    TypeError::Directed
+                });
             }
         }
     }
@@ -462,6 +480,10 @@ fn is_allowed_reflection(
     allowed_reflections(generator, diagram, signature)
         .into_iter()
         .any(|mask| {
+            // Each of these can take long, and there are many (see `deadline`): out of time is no.
+            if homotopy_common::deadline::expired() {
+                return false;
+            }
             let reflected = diagram.reflect(&Direction::from_mask(mask, diagram.dimension()), 0);
             collapse_simplicies(reflected, true) == observed
         })

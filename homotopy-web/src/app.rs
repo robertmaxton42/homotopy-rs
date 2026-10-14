@@ -214,6 +214,8 @@ impl Component for App {
                 AppSettingsKey::infer_instances,
                 AppSettingsKey::infer_budget,
                 AppSettingsKey::infer_max_dimension,
+                AppSettingsKey::infer_narrow_to_sheet,
+                AppSettingsKey::plain_budget,
             ],
             Callback::from(|_: AppSettingsMsg| attach_inference::store()),
         );
@@ -259,6 +261,8 @@ impl Component for App {
                 AppSettingsKey::infer_instances,
                 AppSettingsKey::infer_budget,
                 AppSettingsKey::infer_max_dimension,
+                AppSettingsKey::infer_narrow_to_sheet,
+                AppSettingsKey::plain_budget,
             ],
             &self.inference_setting,
         );
@@ -561,7 +565,7 @@ impl App {
         if remote.deadline_since.is_some() {
             return;
         }
-        let Some(budget) = running.task.inference_budget() else {
+        let Some(budget) = running.task.time_allowed() else {
             return;
         };
         remote.deadline_since = Some(Instant::now());
@@ -620,6 +624,10 @@ impl App {
         let output = output.map(|mut output| {
             if let model::TaskOutput::AttachOptions(outcome) = &mut output {
                 outcome.inference.spent_ms = waited.as_millis() as u64;
+                // If it was not the inference that was running, it was the plain passes.
+                if outcome.inference.cut_short.is_empty() {
+                    outcome.inference.plain.spent_ms = waited.as_millis() as u64;
+                }
             }
             output
         });

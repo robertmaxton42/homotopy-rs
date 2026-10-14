@@ -122,9 +122,9 @@ impl Task {
     /// that has a limit, and the worker is to be ended if it goes on past that (and the grace it
     /// is given): see [`Job::checkpoint`].
     #[must_use]
-    pub fn inference_budget(&self) -> Option<std::time::Duration> {
+    pub fn time_allowed(&self) -> Option<std::time::Duration> {
         match self {
-            Self::AttachOptions(job) => job.inference_budget(),
+            Self::AttachOptions(job) => job.time_allowed(),
             _ => None,
         }
     }

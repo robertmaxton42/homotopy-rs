@@ -303,14 +303,26 @@ fn attach_options_elsewhere_are_attach_options_here() {
         let point = vec![SliceIndex::Boundary(Boundary::Target)];
         for weak_units in [false, true] {
             let here = run_to_end(
-                AttachOptionsJob::new(&proof, &point, weak_units, InferenceLimits::default(), None)
-                    .unwrap(),
+                AttachOptionsJob::new(
+                    &proof,
+                    &point,
+                    weak_units,
+                    InferenceLimits {
+                        plain_budget_ms: 0,
+                        ..InferenceLimits::default()
+                    },
+                    None,
+                )
+                .unwrap(),
             );
             let mut remote = Remote::default();
             let work = Work::AttachOptions {
                 point: point.clone(),
                 weak_units,
-                limits: InferenceLimits::default(),
+                limits: InferenceLimits {
+                    plain_budget_ms: 0,
+                    ..InferenceLimits::default()
+                },
                 only: None,
             };
             let (output, _) = elsewhere.work(&mut remote, &proof, &work);

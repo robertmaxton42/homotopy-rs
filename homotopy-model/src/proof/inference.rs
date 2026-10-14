@@ -1082,6 +1082,95 @@ mod tests {
         }
     }
 
+    /// The heuristic of narrowing the pool of cells for the replacements of placeholders to
+    /// those near a sheet: all that it finds attaches, it says that it was in effect, only the
+    /// instances are narrowed, and without a sheet it does nothing.
+    ///
+    /// (What it finds is not always among what the search of the whole pool finds: that search
+    /// stops at [`MAX_SUBSTITUTIONS`] tried, and a smaller pool has fewer substitutions to try
+    /// before that and can reach ones that the whole pool does not. The guarantee is that it is
+    /// valid, and not that it is a subset.)
+    #[test]
+    fn narrowing_to_a_sheet_only_finds_valid_instances() {
+        use homotopy_core::SliceIndex;
+
+        use crate::proof::{Action, Narrowed};
+
+        let (mut sig, _, q, u) = independent();
+        let w = sig
+            .create_generator(
+                q.clone().into(),
+                q.clone().into(),
+                "w",
+                Invertibility::Directed,
+            )
+            .unwrap();
+        let mut haystack = q.clone().identity();
+        for cell in [&u, &w] {
+            haystack = haystack.attach(cell, Boundary::Target, &[]).unwrap();
+        }
+        let size = haystack.size();
+        let mut proof = ProofState {
+            signature: sig,
+            workspace: Some(Workspace::new(haystack.into())),
+            ..ProofState::default()
+        };
+        // A view of one dimension: the second coordinate of a point is then a sheet.
+        proof.workspace.as_mut().unwrap().view.dimension = 1;
+
+        let search = |point: &[SliceIndex], narrow_to_sheet: bool| {
+            let limits = InferenceLimits {
+                narrow_to_sheet,
+                ..InferenceLimits::UNLIMITED
+            };
+            run_to_end(AttachOptionsJob::new(&proof, point, false, limits, None).unwrap())
+        };
+        let others = |outcome: &AttachOutcome| {
+            outcome
+                .options
+                .iter()
+                .filter(|option| option.substitution.is_none())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+
+        let (mut narrower, mut found) = (0, 0);
+        for height in 0..=2 * size {
+            let click = [SliceIndex::Interior(Height::from(height))];
+            let sheet = [click[0], SliceIndex::Interior(Height::Singular(0))];
+            let whole = search(&sheet, false);
+            let near = search(&sheet, true);
+            assert_eq!(whole.inference.narrowed, None);
+            let Some(Narrowed { kept, of }) = near.inference.narrowed else {
+                panic!("{height}: not narrowed");
+            };
+            assert!(kept <= of && kept > 0, "{kept} of {of}");
+            narrower += usize::from(kept < of);
+            for option in near.options.iter().filter(|o| o.substitution.is_some()) {
+                assert!(
+                    proof
+                        .clone()
+                        .update(&Action::Attach(option.clone()))
+                        .is_ok(),
+                    "{height}: does not attach"
+                );
+                found += 1;
+            }
+            // Only the instances are narrowed: everything else is as it was.
+            assert_eq!(others(&near), others(&whole), "{height}");
+
+            // Without a sheet the setting does nothing.
+            let (plain, setting) = (search(&click, false), search(&click, true));
+            assert_eq!(setting.inference.narrowed, None);
+            assert_eq!(setting.options, plain.options);
+        }
+        assert!(
+            narrower > 0,
+            "the pool is smaller where the cells are elsewhere"
+        );
+        assert!(found > 0, "instances are found");
+    }
+
     /// With a time limit the schema that is searched for alone has all of it, not a quarter.
     #[test]
     fn a_schema_searched_for_alone_has_all_the_time() {

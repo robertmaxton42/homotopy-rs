@@ -226,7 +226,7 @@ indicator: see "Laying out diagrams" below.
     attaching* (on); *Stop inferring after N s* (20, 0 for no limit; one schema gets a quarter of it,
     at least a second, so that one that has no end does not use the time of the rest); *Infer instances up
     to dimension N* (7, the dimension of the diagram being attached to; 12 for no limit). Plain cells and
-    their reflections are always offered. A search that went over its time offers what it found and says,
+    their reflections are always offered (within their own time limit, see "A time limit on the plain passes"). A search that went over its time offers what it found and says,
     in a notice that stays until it is dismissed (`components/inference_notice.rs`), "Instance inference took
     too long and was skipped for this search (N s). You can turn it off in Settings.", which schemas it
     gave up on and which it did not get to. Two searches in a row that run out of time turn the inference
@@ -274,8 +274,8 @@ indicator: see "Laying out diagrams" below.
       checkpoint (1.75s asked for: the page's timers are late while it renders the 3D view) and
       9 options and the notice were committed. `window.__homotopy_infer_grace_ms` sets the grace
       (high, to see the search keep its time by itself).
-    - The limit is for the inference. The plain cells and their reflections are not limited
-      (they are always offered): on the full workspace of the fixture they are most of the time of
+    - The limit is for the inference. The plain cells and their reflections are not limited by it
+      (they have a limit of their own, see "A time limit on the plain passes", added after these measurements): on the full workspace of the fixture they are most of the time of
       a search in the debug wasm build (about 31s of 35s for a click at `[R3, R2]` with a 3s
       limit; 12 to 14s on the workspace `start`).
   - Debug hooks: `__homotopy.dispatch` takes `{"SelectPoint": [point, weak_units]}` (limits from the
@@ -300,6 +300,48 @@ indicator: see "Laying out diagrams" below.
     clock stops it, but the page does not respond meanwhile) and the search is stepped in slices as
     the others; the searches that do not finish are cut, not made quick; the options a cut schema
     would have had are not there (use the setting to give it more time).
+
+- **A time limit on the plain passes** (`InferenceLimits::plain_budget_ms`, `PlainReport` in the
+  `InferenceReport`, setting *Stop searching for plain attachments after N s*, kept with the inference settings in
+  `localStorage`, `0` for no limit, default `DEFAULT_PLAIN_BUDGET_MS` = 10 s; `homotopy-model/tests/plain_limit.rs`).
+  The plain passes are the cells of the signature, their inverses, the cells raised from them (weak units,
+  bubbles) and their reflections: found by matching, never inferred, and not covered by the inference limit. In the
+  debug wasm build a click at a vertex of the fixture took 74.5 s, nearly all of it these passes (native release: 3.1 s
+  of 8.1 s; the whole diagram `[]` 5.9 s), which is why the default is 10 s: over what the optimised build needs on the
+  largest project there is a fixture of, well under what the debug build does.
+  - The time is for the plain and reflection passes together; one generator gets half of it, at least a second
+    (`plain_each`; all of it for a search for one generator, `only`, whose pieces are the steps). A step is run
+    under `deadline::until` (`plain_step`); when the clock runs out in the middle of one the generator is
+    *cut short* (what it found stays: valid, and among what the whole search finds, in the same order), and
+    when the time is used up before a generator's turn it is *not tried*. Both are in `PlainReport` and the notice
+    ("Plain search stopped after N s: not tried: ...; cut short: ...", with the suggestion to drag the generator
+    onto the diagram, pick it, or choose a sheet). The schemas that the inference would have looked at, when the
+    plain passes ended the search, are in `not_tried` of the plain report and not the inference's, so that
+    they do not count towards turning the inference off.
+  - **Order**: the generators are looked at cheapest first (`cheapest_first`: those with no end that can be in the
+    diagram first, then by `layout::weight` of their diagram, which costs the same whatever the size), for the plain
+    pass and for the reflections. The options are put back in the order of the generators by `outcome`, so the list is
+    as before (tested: no limit and a far one give the same options, and the whole-vs-`only` equivalence tests).
+  - **Hard limit**: as for the inference. The clock is looked at in `embeddings`/`embeddings_through` and between the
+    variants and the reflection candidates, and in `typecheck` (`TypeError::TimedOut`, which the reflections'
+    typecheck gets: it is the one stretch that took long, 2.5 s natively for one reflection of `lc=l` that is
+    ill typed anyway, spent in `is_allowed_reflection`, up to `2^n` collapses of 180 ms each; it is checked between
+    them and between the two collapses of `typecheck_worker`, which are not interrupted). A timed-out typecheck
+    says the reflection is not known to be well typed, so it is not offered. Measured native release,
+    `only` `lc=l` with a 100/300/1000 ms limit: 122/1190/1240 ms (2.5 s without), the click at `[S1,S2]` with 500/2000
+    ms: 0.56/1.86 s (2.8 s without). The debug wasm build is 20 times slower in the stretches that are not
+    checked, so it does not keep the limit by itself: the **backstop** (`Job::checkpoint`, `time_allowed`) takes
+    over. The first checkpoint is made before the first step, with nothing found and everything listed as cut short
+    or not tried, so that the page starts its timer (`time_allowed` = the plain time plus the inference time, when
+    both are limited; the plain time alone when there are no schemas; the inference time alone when the plain
+    passes have no limit); later ones are as for the inference. Measured in the debug wasm, the fixture, the worker:
+    a click at `[S1,S2]` 74.5 s -> 20 s with a 10 s limit (cut by the search itself, 5 s inference after); with `z=1`
+    chosen the worker was ended by the backstop at 18 s and what it had was committed; a drop of `lc=l` ended by the
+    backstop at 11.5 s (the match it had found at 1 s was offered, applied), and with `__homotopy_step_delay_ms = 4000`
+    (steps that spin and cannot be interrupted) at 5 s for a 3 s limit.
+  - Gaps: the collapses in `typecheck` and the construction of the variants (inverses, bubbles) are not
+    interrupted, so the limit is exceeded by one of them (180 ms natively, several seconds in the debug wasm);
+    `Proof` generators with no name show as "Proof N" in the notice.
 
 - **Attaching one generator** (`AttachOptionsJob::new(.., only)`, `can_attach`, `Action::AttachGenerator`
   and `Action::Arm`, `app/attach_target.rs`, `app/armed_chip.rs`; user-facing text in
@@ -379,6 +421,86 @@ indicator: see "Laying out diagrams" below.
     runs the (usually quick) search and then says "no attachment found"; the busy pill does not
     name the generator; touch devices have the button only (no hover: it is shown all the time there).
 
+- **Sheets** (`Depths::fibre/sheets` in `homotopy-core/src/projection.rs`, `homotopy_model::sheets`,
+  `homotopy-web/src/app/diagram_svg/sheets.rs`; user-facing text in `doc/attaching.md`). The 2D view of a
+  diagram of more dimensions shows at each position the front-most (`Depths::node_depth`, smaller z is nearer)
+  cell of what the position carries; the rest is behind it. The position's *fibre* is the diagram its
+  scaffold node holds (the diagram with the first `N` coordinates fixed), and its *sheets* are the singular
+  heights `z` of the fibre in the next coordinate, each a `Sheet { z, generator, front }` (`front`: it is
+  the one `node_depth` picks); `Depths::sheets(coord, within)` nests (`within = [z0, z1]` gives the sheets
+  of the slice at `z0` then `z1`, for the coordinates further in). It costs one pass over the fibre's singular
+  slices. Tests: `homotopy-core/tests/sheets.rs` (against slicing the diagram, at every position of the
+  3 and 4 dimensional examples, in 1D and 2D views).
+  - **The query**: choosing a sheet adds `Interior(Singular(z))` (and one more for each coordinate drilled) to
+    the point of a click, a drop or an armed click, after the `N` coordinates of the position: the point is
+    then longer than the view's dimension, which is all the model needs to know (`asked_for.len() >
+    workspace.view.dimension()`). `AttachOptionsJob` searches it through `embeddings_through` as any point:
+    it has always been a prefix of the coordinates, so the search fixes one more and the rest is free.
+    `BoundaryPath::split` takes it as a point inside the boundary when the position has a boundary coordinate
+    (the coordinates after the last boundary one are the interior path), so no change was needed. What is
+    offered is exactly the options of the point without it whose embedding contains the sheet, in the same
+    order (`homotopy-model/tests/sheets.rs`, on the example corpus, with and without weak units and at
+    boundaries): morphisms that span several sheets qualify if their extent covers `z` (a reduction, not an
+    exclusion). Nothing changes for a click with no sheet chosen.
+  - **Choosing** (`homotopy_model::sheets`: `Choice { position, path }`, `Stack`; pure, tested natively): the
+    stack under the pointer is the sheets of the position of each shape of the kind that is on top (wires that
+    overlap each give theirs, tagged; regions under a wire are not listed), default the front sheet and *not*
+    part of the point; `step` goes to the next, round; `drill` first fixes the default and then pushes the
+    first sheet inside the chosen one (never silently: it is a key press), `undrilled` pops. A choice that is
+    not of a position under the pointer is no choice. `DiagramSvg` (`sheets` property, set by the workspace)
+    keeps `choice`, `hits` (`hits_at`: all shapes under the pointer, top first, which `simplex_at` is the
+    first of; only the first is looked for when `sheets` is off), and a `keydown` listener on the window
+    (`gloo`, non-passive) that only takes `[`, `]`, `Tab` and `Shift+Tab` while the pointer is over a stack
+    worth listing (`Keys::wanted`, a shared flag: several diagrams can exist, and Tab is not ours otherwise;
+    not from text fields). `Shift+wheel` is an `onwheel` on the svg that stops the event before the pan/zoom
+    component turns it into `SwitchSlice` (browsers give Shift+wheel as `deltaX`: both are read). Moving to
+    another shape forgets the choice; leaving keeps it, so that a drop (`OnDragOver`/`OnDrop` use
+    `hit_to_act_on`/`point_at` too, with the choice's shape outlined) or a click that comes back to the place
+    uses it. During a native drag the browser passes no keys or wheel, so there is no choosing then.
+  - **The tooltip** is the stack (`tooltip::SheetStack`: `z₃=k` rows with `describe_cell` names, the current
+    one highlighted, *front*, a breadcrumb `z₃=1 › z₄=0` when chosen, a hint for the keys), shown when there
+    are several sheets, one is chosen, or the sheet has sheets inside it. Wires whose edge depth (`z + 1` in
+    `GraphicElement::Wire`, now on the element as `data-depth`) is not the first chosen `z` are dimmed by
+    setting `data-dim` on the elements directly (`apply_dimming`, also after each render): choosing does not
+    render the diagram again, which is much of the work of a large one. Surfaces cannot be dimmed per sheet
+    (`Projection::generator` is the max over the whole fibre).
+  - **The heuristic** (off by default; `InferenceLimits::narrow_to_sheet`, setting *Heuristic: infer instances
+    only from cells near the chosen sheet*, kept with the inference settings): with a sheet chosen, the pool of
+    cells for the replacements of placeholders (`Pool::new` in `AttachOptionsJob::new`) is the generators in
+    the slices of the haystack within `SHEET_REACH` (1) heights of the point's, per coordinate
+    (`Diagram::generators_near`), and not all of the diagram's generators. It can miss instances that use
+    cells from elsewhere; every instance is checked as before, so none is invalid (test: every option attaches).
+    It is not always a subset of what the whole pool finds: that search stops at `MAX_SUBSTITUTIONS` tried, and
+    a smaller pool reaches substitutions that the whole one never gets to (on the fixture the whole pool found
+    none in 5 s where the narrowed pool found 17). `InferenceReport::narrowed` says it was in effect and the
+    notice says so and how many of the diagram's cells it looked at.
+  - **Measured** (the fixture's workspace at the vertex `[S1,S2]`, whose fibre has two sheets `z₃=0` (the cell
+    `l`, front) and `z₃=1` (`𝒞`); inference limit 5 s; the worker). Native release: a click 8.1 s (5.0 s of it
+    inference), with `z=0` 8.0 s and 2 options, with `z=1` 5.6 s and 1 option, `z=1,0` and `z=1,0,0` the same;
+    with the heuristic and `z=1` 0.62 s (inference 36 ms), and with `z=0` 5.9 s but 19 options, 17 of them
+    instances that the whole pool did not reach. Debug wasm: click 74.5 s, `z=0` 68.7 s (2 options), `z=1`
+    27.6 s (1 option, applied), `z=1,0` 27.1 s, `z=1,0,0` 26.7 s, `z=1` with the heuristic 22.5 s (inference
+    0.8 s). Drops of `lc=l` (a plain 6-cell that attaches at `z=0`): native 2.15 s, `z=0` 2.3 s, `z=1` 60 ms;
+    debug wasm 51 s, 46 s, 1.8 s. `c²=1`: 80 ms natively and 2.5 to 3.9 s in the debug wasm whatever the sheet.
+    Schemas (5 s limit): the time is the limit, 5.0 to 5.9 s, with or without a sheet, except where
+    the heuristic is on and `z=1`: 37 ms inference (1.4 s in the debug wasm). So choosing a sheet where nothing
+    attaches saves the whole of the work, and choosing the sheet where something does attach saves little: the
+    time is in matching the cell, which fixing more coordinates does not help (`z=0,0,0` is as slow as `z=0`).
+    In the browser: a real click with `z=1` chosen applied the one option (46 s, the 20 s default inference
+    limit), an armed click and a synthetic drop with `z=1` chosen said "no attachment found" in 2.9 s and 3.3 s
+    where the plain ones attach in 46 s.
+  - **Debug hooks**: `__homotopy.sheet(json)` (`{"hover": [x, y]}` puts the pointer somewhere in the window
+    as a mouse move does, `{"step": n}`, `"drill"`, `"undrill"`, `"clear"`, `{"set": [z, ..]}` chooses at
+    the position under the pointer; done a moment later) and `__homotopy.sheets()` (JSON: what is under the
+    pointer, the entries of the stack with their positions and `z`, the current one, whether it was chosen,
+    the point chosen, how many wires are dimmed). Real mouse moves, `page.keyboard.press("]")`,
+    `Tab`, and `keyboard.down("Shift")` with `mouse.wheel` work in Playwright. The 5.3MB fixture takes ~40 s to
+    import in the debug build; set `DecreaseView` once to get the 2D view (it opens in 3D).
+  - Gaps: homotopies by dragging still use the front sheet (`Depths::node_depth`); only the first chosen
+    `z` dims wires; surfaces and vertices are not dimmed; the 3D view has no sheets; the native drag gives no
+    keys, so a drop uses a choice made before the drag (only when the pointer comes back to the same shape);
+    `Stack` lists the sheets of the shapes of one kind (the regions behind a wire cannot be chosen).
+
 New expensive work: write it as a job (or give an existing job another kind of step), label it,
 and check it with the debug hooks below.
 
@@ -391,6 +513,9 @@ and make them switchable (a setting, as for inferring instances of schemas). Any
 cuts a search short (a time limit, a bound on candidates) must leave behind only results that are
 valid by themselves, and nothing remembered as if it were complete. The tests for this are of the
 form "what it found is among what the whole search finds" (see `a_search_cut_by_the_clock_is_incomplete_not_wrong`).
+Where the whole search is itself bounded (the inference stops at `MAX_SUBSTITUTIONS`), a heuristic that
+changes what is searched can reach what the whole search does not, so the test is that all it found is
+valid (`narrowing_to_a_sheet_only_finds_valid_instances`, for the sheet heuristic).
 
 ## Development
 
@@ -423,7 +548,8 @@ form "what it found is among what the whole search finds" (see `a_search_cut_by_
   edit (a textual replacement of `window.` by `self.` in `post.js`, which goes through the Closure
   compiler as an extern; `self` is a standard extern there) has since been built by CI's nix build,
   and the 3D view was confirmed to work on a nix build of it.
-- Debug builds expose `window.__homotopy` (`app/debug_hooks.rs`): `dispatch(json)` for an action
+- Debug builds expose `window.__homotopy` (`app/debug_hooks.rs`): `sheet(json)` and `sheets()` for choosing
+  a sheet over the diagram (see "Sheets"), `dispatch(json)` for an action
   (`{"Proof": ...}`, `{"SelectPoint": [[...], false]}`, `{"Select": 0}`, `"Undo"`, ...),
   `importActions(bytes)`, `importProof(bytes)`, `cancel()`, `state()` (busy label, history
   length, a hash of the serialized project, crash log size), `profile(json)` (replays recorded

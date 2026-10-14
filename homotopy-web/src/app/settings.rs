@@ -17,6 +17,10 @@ declare_settings! {
         // Seconds; 0 for no limit.
         infer_budget: u32 = 20,
         infer_max_dimension: u32 = 7,
+        // Seconds; 0 for no limit.
+        plain_budget: u32 = 10,
+        // A heuristic: only look for instances among the cells near the chosen sheet.
+        infer_narrow_to_sheet: bool = false,
         // Set for the session after searches ran out of time, not part of the kept settings.
         infer_suspended: bool = false,
 
@@ -141,6 +145,24 @@ impl Component for SettingsView {
                             attach_inference::NO_DIMENSION_LIMIT,
                         )
                     }
+                    {
+                        Self::view_slider(
+                            &format!("Stop searching for plain attachments after {}", Self::seconds(AppSettings::get_plain_budget())),
+                            AppSettings::get_plain_budget(),
+                            AppSettings::set_plain_budget,
+                            0,
+                            120,
+                        )
+                    }
+                    <div class="settings__note">{"The cells of the signature, their inverses and what is raised from them, and their reflections, are found by matching them against the diagram, which takes long in high dimensions. After this time the generators that are left are not looked at and the one being looked at is cut short, with what it had found. The cheapest generators are looked at first, and the notice that follows says which were left; drag one of them onto the diagram, or choose a sheet, to search for just that."}</div>
+                    {
+                        Self::view_checkbox(
+                            "Heuristic: infer instances only from cells near the chosen sheet",
+                            AppSettings::get_infer_narrow_to_sheet(),
+                            AppSettings::set_infer_narrow_to_sheet,
+                        )
+                    }
+                    <div class="settings__note">{"When a sheet is chosen on the diagram (Shift+wheel or [ ] over it), the replacements of placeholders are only made of cells that occur near that sheet. This is quicker but can miss instances that use cells from elsewhere; it never offers one that is not valid, and a notice says when it was used."}</div>
                     {
                         Self::view_slider(
                             "Contraction step",

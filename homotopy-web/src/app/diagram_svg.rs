@@ -27,11 +27,15 @@ use homotopy_graphics::{
         PLACEHOLDER_HATCH_ID,
     },
 };
+use homotopy_model::sheets::Choice;
 use wasm_bindgen::JsCast;
 use web_sys::Element;
 use yew::prelude::*;
 
-use self::highlight::{HighlightKind, HighlightSvg};
+use self::{
+    highlight::{HighlightKind, HighlightSvg},
+    sheets::SheetCommand,
+};
 use super::{attach_target, tooltip};
 use crate::{
     app::settings::AppSettings,
@@ -44,6 +48,9 @@ use crate::{
 };
 
 pub mod highlight;
+mod sheets;
+
+pub use self::sheets::{debug_command, debug_summary};
 
 pub struct DiagramSvg<const N: usize> {
     /// What is shown. While the layout of the diagram of the properties is being made (`pending`)
@@ -60,6 +67,17 @@ pub struct DiagramSvg<const N: usize> {
     hovered: Option<Simplex<N>>,
     /// The part of the diagram that a generator being dragged over it would be attached at.
     drop_target: Option<Simplex<N>>,
+    /// Everything that is under the pointer, the one on top first (`hovered` is the first). Only
+    /// kept for a diagram that has sheets to choose between (`sheets` of the properties).
+    hits: Vec<Simplex<N>>,
+    /// The sheet chosen for the place the pointer is over, if one was.
+    choice: Option<Choice<N>>,
+    /// Where the pointer is, in the window, for the tooltip.
+    pointer: (f64, f64),
+    /// Whether the pointer is over the diagram (or a generator being dragged is).
+    hovering: bool,
+    /// The keys that choose a sheet.
+    keys: sheets::Keys,
 }
 
 #[derive(Clone, PartialEq, Properties)]
@@ -91,6 +109,11 @@ pub struct DiagramSvgProps<const N: usize> {
     pub accepts_drops: bool,
     #[prop_or_default]
     pub on_attach: Callback<(Generator, Vec<SliceIndex>)>,
+    /// Whether the cells behind a position of the view (its sheets) can be chosen between, with
+    /// Shift+wheel or `[` and `]` over the diagram, so that what is clicked or dropped is at the
+    /// sheet (see `homotopy_model::sheets`).
+    #[prop_or_default]
+    pub sheets: bool,
 }
 
 #[allow(clippy::enum_variant_names)]
@@ -108,6 +131,8 @@ pub enum DiagramSvgMessage<const N: usize> {
     OnDragLeave,
     /// A generator was dropped on the diagram, with the pointer at this place.
     OnDrop(Generator, Point2D<f32>),
+    /// Something to do about the sheets: a key, the wheel, or a debug hook.
+    Sheet(SheetCommand<N>),
 }
 
 /// The computed properties of a diagram that are potentially expensive to compute but can be
@@ -216,7 +241,13 @@ impl<const N: usize> Component for DiagramSvg<N> {
             drag_start: Default::default(),
             hovered: None,
             drop_target: None,
+            hits: vec![],
+            choice: None,
+            pointer: (0.0, 0.0),
+            hovering: false,
+            keys: sheets::Keys::default(),
         };
+        this.install_sheets(ctx);
         this.prepare(ctx);
         this
     }
@@ -234,11 +265,15 @@ impl<const N: usize> Component for DiagramSvg<N> {
                     self.update_tooltip(ctx, point);
                 }
             }
+            DiagramSvgMessage::Sheet(command) => {
+                self.sheet_command(ctx, command);
+            }
             DiagramSvgMessage::OnMouseUp => {
                 self.pointer_stop(ctx);
             }
             DiagramSvgMessage::OnMouseLeave => {
                 self.hide_tooltip();
+                self.leave(ctx);
             }
             DiagramSvgMessage::OnTouchUpdate(touches) => {
                 if self.drag_start.is_none() && touches.len() == 1 {
@@ -254,8 +289,9 @@ impl<const N: usize> Component for DiagramSvg<N> {
             }
             DiagramSvgMessage::OnDragOver(point) => {
                 // Only the part under the pointer is looked up: nothing is searched for before
-                // the drop.
-                let target = self.simplex_at(ctx, point);
+                // the drop. The sheet that was chosen for it is where it would be dropped.
+                self.update_tooltip(ctx, point);
+                let target = self.hit_to_act_on(&self.hits_at(ctx, point));
                 if target == self.drop_target {
                     return false;
                 }
@@ -263,13 +299,16 @@ impl<const N: usize> Component for DiagramSvg<N> {
                 return true;
             }
             DiagramSvgMessage::OnDragLeave => {
+                self.hide_tooltip();
+                self.leave(ctx);
                 return self.drop_target.take().is_some();
             }
             DiagramSvgMessage::OnDrop(generator, point) => {
                 self.drop_target = None;
+                self.hide_tooltip();
                 // (Not while the diagram waits for its layout: there is nothing to drop on.)
-                if let Some(simplex) = self.simplex_at(ctx, point) {
-                    ctx.props().on_attach.emit((generator, simplex[0].to_vec()));
+                if let Some(point) = self.point_at(ctx, point) {
+                    ctx.props().on_attach.emit((generator, point));
                 }
                 return true;
             }
@@ -282,6 +321,8 @@ impl<const N: usize> Component for DiagramSvg<N> {
                 self.announce = true;
                 self.drop_target = None;
                 self.hide_tooltip();
+                self.choice = None;
+                self.hits.clear();
                 self.prepared = Some(PreparedDiagram::new(
                     &ctx.props().diagram,
                     layout,
@@ -299,6 +340,8 @@ impl<const N: usize> Component for DiagramSvg<N> {
             // What the tooltip said may no longer be there.
             self.hide_tooltip();
             self.drop_target = None;
+            self.choice = None;
+            self.hits.clear();
             // re-layout
             self.prepare(ctx);
         } else if old_props.style != ctx.props().style {
@@ -318,6 +361,8 @@ impl<const N: usize> Component for DiagramSvg<N> {
     }
 
     fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
+        // (What the view drew again is not dimmed, whatever is chosen.)
+        self.apply_dimming(ctx);
         if std::mem::take(&mut self.announce) {
             ctx.props().on_laid_out.emit(());
         }
@@ -325,6 +370,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
         self.hide_tooltip();
+        self.keys.remove();
         if let Some(ticket) = self.pending.take() {
             layout::cancel(ticket);
         }
@@ -472,6 +518,33 @@ impl<const N: usize> Component for DiagramSvg<N> {
             Default::default()
         };
 
+        // Shift+wheel chooses a sheet, where there are some, and is not a change of slice.
+        let on_wheel = if ctx.props().sheets {
+            let link = ctx.link().clone();
+            let wanted = self.keys.wanted();
+            Callback::from(move |e: WheelEvent| {
+                if !e.shift_key() || !wanted.get() {
+                    return;
+                }
+                // (Browsers turn the wheel into a horizontal one with Shift held.)
+                let delta = if e.delta_y() == 0.0 {
+                    e.delta_x()
+                } else {
+                    e.delta_y()
+                };
+                if delta == 0.0 {
+                    return;
+                }
+                e.prevent_default();
+                e.stop_propagation();
+                link.send_message(DiagramSvgMessage::Sheet(SheetCommand::Step(
+                    if delta > 0.0 { 1 } else { -1 },
+                )));
+            })
+        } else {
+            Callback::noop()
+        };
+
         // TODO: Do not redraw diagram when highlight changes!
         // TODO: Do not redraw diagram for drags.
 
@@ -495,6 +568,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
                 ondragover={on_drag_over}
                 ondragleave={on_drag_leave}
                 ondrop={on_drop}
+                onwheel={on_wheel}
                 ref={ctx.props().diagram_ref.clone()}
             >
                 {Self::view_placeholder_hatch(ctx, prepared)}
@@ -631,14 +705,17 @@ impl<const N: usize> DiagramSvg<N> {
                     }
                 }
             }
-            GraphicElement::Wire(_, _, path, mask) => {
+            GraphicElement::Wire(_, depth, path, mask) => {
                 let path = path_to_svg(&path.clone().transformed(&prepared.transform));
+                // Which sheet the wire is on, for dimming those that are not the one chosen.
+                let depth = depth.to_string();
 
                 if mask.is_empty() {
                     html! {
                         <path
                             d={path}
                             class={class}
+                            data-depth={depth}
                             stroke-width={ctx.props().style.wire_thickness.to_string()}
                         />
                     }
@@ -671,6 +748,7 @@ impl<const N: usize> DiagramSvg<N> {
                             <path
                                 d={path}
                                 class={class}
+                                data-depth={depth}
                                 stroke-width={ctx.props().style.wire_thickness.to_string()}
                                 mask={format!("url(#{mask_id})")}
                             />
@@ -809,13 +887,48 @@ impl<const N: usize> DiagramSvg<N> {
     /// The part of the diagram at the point of the screen, if there is one and the diagram is
     /// ready to be acted on (not while it is waiting for its layout).
     fn simplex_at(&self, ctx: &Context<Self>, point: Point2D<f32>) -> Option<Simplex<N>> {
-        let prepared = self.current()?;
+        self.hits_at(ctx, point).first().copied()
+    }
+
+    /// Everything at the point of the screen, the part on top first: wires and vertices over
+    /// regions. Only the first when the diagram has no sheets to choose between, and nothing
+    /// but the first is looked for then.
+    fn hits_at(&self, ctx: &Context<Self>, point: Point2D<f32>) -> Vec<Simplex<N>> {
+        let Some(prepared) = self.current() else {
+            return vec![];
+        };
         let point = Self::transform_screen_to_image(prepared, ctx).transform_point(point);
-        prepared
+        let mut hits = prepared
             .actions
             .iter()
-            .find(|(_, shape)| shape.contains_point(point, 0.01))
-            .map(|(simplex, _)| *simplex)
+            .filter(|(_, shape)| shape.contains_point(point, 0.01))
+            .map(|(simplex, _)| *simplex);
+        if ctx.props().sheets {
+            hits.collect()
+        } else {
+            hits.next().into_iter().collect()
+        }
+    }
+
+    /// Which of the things at a place a click or a drop is for: the one that the sheet chosen is
+    /// of, if it is there, and else the one on top.
+    fn hit_to_act_on(&self, hits: &[Simplex<N>]) -> Option<Simplex<N>> {
+        self.choice
+            .as_ref()
+            .and_then(|choice| hits.iter().find(|hit| hit[0] == choice.position))
+            .or_else(|| hits.first())
+            .copied()
+    }
+
+    /// The point of the diagram that a click or a drop at this point of the screen is at: the
+    /// position of the part there, and if a sheet was chosen for it the sheet (and what is
+    /// chosen inside it) as further coordinates.
+    fn point_at(&self, ctx: &Context<Self>, point: Point2D<f32>) -> Option<Vec<SliceIndex>> {
+        let hit = self.hit_to_act_on(&self.hits_at(ctx, point))?;
+        Some(match &self.choice {
+            Some(choice) if choice.position == hit[0] => choice.point(),
+            _ => hit[0].to_vec(),
+        })
     }
 
     fn pointer_move(&mut self, ctx: &Context<Self>, point: Point2D<f32>, shift_key: bool) {
@@ -858,8 +971,8 @@ impl<const N: usize> DiagramSvg<N> {
         // a separate onclick handler since drags aren't interpreted as clicks anymore.
         if let Some(point) = self.drag_start {
             self.drag_start = None;
-            if let Some(simplex) = self.simplex_at(ctx, point) {
-                ctx.props().on_select.emit(simplex[0].to_vec());
+            if let Some(point) = self.point_at(ctx, point) {
+                ctx.props().on_select.emit(point);
             }
         }
     }
@@ -868,32 +981,57 @@ impl<const N: usize> DiagramSvg<N> {
     /// has not changed.
     fn update_tooltip(&mut self, ctx: &Context<Self>, point: Point2D<f32>) {
         let pointer = (f64::from(point.x), f64::from(point.y));
-        let simplex = self.simplex_at(ctx, point);
+        self.pointer = pointer;
+        self.hovering = true;
+        let hits = self.hits_at(ctx, point);
+        let simplex = hits.first().copied();
         // (There is none while the diagram is waiting for its layout.)
-        if simplex.is_some() && simplex == self.hovered {
+        if simplex.is_some() && simplex == self.hovered && hits == self.hits {
             tooltip::move_to(pointer);
             return;
         }
+        // A sheet that was chosen stays while the place it was chosen for is under the pointer.
+        if self
+            .choice
+            .as_ref()
+            .is_some_and(|choice| !hits.iter().any(|hit| hit[0] == choice.position))
+        {
+            self.choice = None;
+        }
         self.hovered = simplex;
-        let content = simplex
+        self.hits = hits;
+        self.refresh(ctx);
+    }
+
+    /// Shows what the pointer is over again, with the sheets as they are now.
+    fn refresh(&self, ctx: &Context<Self>) {
+        let content = self
+            .hovered
             .zip(self.current())
-            .map(|(simplex, prepared)| Self::hover_content(ctx, prepared, &simplex));
+            .map(|(simplex, prepared)| self.hover_content(ctx, prepared, &simplex));
+        self.keys
+            .set_wanted(content.as_ref().is_some_and(|c| c.sheets.is_some()));
         match content {
-            Some(content) => tooltip::show(content, pointer),
+            Some(content) => tooltip::show(content, self.pointer),
             None => tooltip::hide(),
         }
+        self.apply_dimming(ctx);
+        self.publish_summary(ctx);
     }
 
     fn hide_tooltip(&mut self) {
         if self.hovered.take().is_some() {
             tooltip::hide();
         }
+        self.hits.clear();
+        self.keys.set_wanted(false);
     }
 
     /// What the tooltip says about a part of the diagram: the label of the cell there (a
     /// formula, so that the names of generators that are formulas are shown as such), and where
-    /// in the diagram it is.
+    /// in the diagram it is, and the sheets behind it if there are several.
     fn hover_content(
+        &self,
         ctx: &Context<Self>,
         prepared: &PreparedDiagram<N>,
         simplex: &Simplex<N>,
@@ -913,6 +1051,7 @@ impl<const N: usize> DiagramSvg<N> {
         tooltip::Content {
             label,
             detail: format!("@ {}", p.map(|si| si.to_string()).join(", ")),
+            sheets: self.sheet_stack(ctx, prepared),
         }
     }
 }

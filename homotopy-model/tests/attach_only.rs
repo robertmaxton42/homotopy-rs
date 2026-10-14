@@ -85,7 +85,10 @@ fn one_generator_is_what_the_whole_search_finds_for_it() {
             for weak_units in [false, true] {
                 let mut with_options = FastHashSet::default();
                 for point in points(&diagram) {
-                    let limits = InferenceLimits::default();
+                    let limits = InferenceLimits {
+                        plain_budget_ms: 0,
+                        ..InferenceLimits::default()
+                    };
                     let Ok(whole) = AttachOptionsJob::new(state, &point, weak_units, limits, None)
                     else {
                         assert!(matches!(
@@ -134,7 +137,10 @@ fn one_generator_is_what_the_whole_search_finds_for_it() {
                         Some(&diagram),
                         generator,
                         weak_units,
-                        InferenceLimits::default(),
+                        InferenceLimits {
+                            plain_budget_ms: 0,
+                            ..InferenceLimits::default()
+                        },
                     );
                     if with_options.contains(&generator) {
                         assert_eq!(verdict, Ok(()), "{generator:?} (weak units: {weak_units})");
@@ -170,7 +176,10 @@ fn a_generator_that_is_not_there_is_not_searched_for() {
             &proof,
             &[],
             false,
-            InferenceLimits::default(),
+            InferenceLimits {
+                plain_budget_ms: 0,
+                ..InferenceLimits::default()
+            },
             Some(stranger)
         )
         .err(),
