@@ -16,14 +16,14 @@ impl Shaders {
                 "glsl/vert_3d.glsl",
                 "glsl/frag.glsl",
                 { position, normal },
-                { mv, p, albedo, placeholder, t },
+                { mv, p, albedo, placeholder, light_stripes, t },
             )?,
             geometry_4d: program!(
                 ctx,
                 "glsl/vert_4d.glsl",
                 "glsl/frag.glsl",
                 { position_start, position_end, normal_start, normal_end },
-                { mv, p, albedo, placeholder, t },
+                { mv, p, albedo, placeholder, light_stripes, t },
             )?,
             wireframe: program!(
                 ctx,

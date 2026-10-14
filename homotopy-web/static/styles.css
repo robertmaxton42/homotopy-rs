@@ -962,6 +962,13 @@ input.signature__item-name {
   );
 }
 
+/* A dark colour is hatched in light stripes, as in diagrams. */
+.signature__generator-placeholder.signature__generator-placeholder-light {
+  background-image: repeating-linear-gradient(
+    45deg, transparent 0 4px, rgba(255, 255, 255, 0.6) 4px 6px
+  );
+}
+
 /* The disclosure control for the instances of a generator. */
 .signature__instances-toggle {
   flex: 0 0 auto;
@@ -2076,4 +2083,54 @@ input[type="color"]::-webkit-color-swatch {
 .signature__item-attach--armed {
   outline: 2px solid #66aeeb;
   border-radius: 50%;
+}
+
+/* The instances of a schema in the list of attachments: a group that is closed until opened. */
+.attach__group {
+  align-items: center;
+}
+
+.attach__group-toggle {
+  padding-left: var(--space-1);
+}
+
+.attach__group-count {
+  padding: var(--space-1);
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--drawer-foreground-dimmed-text);
+}
+
+.attach__option--grouped .attach__option-name {
+  padding-left: calc(var(--space-1) * 3);
+}
+
+/* The lists in the notice about the search: shut until opened. */
+.inference-notice {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.inference-notice__names {
+  margin: 0 0 var(--space-0);
+}
+
+.inference-notice__toggle {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.inference-notice__toggle:hover,
+.inference-notice__toggle:focus-visible {
+  text-decoration: underline;
+}
+
+.inference-notice__list {
+  margin: var(--space-0) 0 0;
+  padding-left: var(--space-2);
 }

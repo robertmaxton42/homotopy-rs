@@ -308,7 +308,7 @@ fn attach_options_elsewhere_are_attach_options_here() {
                     &point,
                     weak_units,
                     InferenceLimits {
-                        plain_budget_ms: 0,
+                        generator_ms: 0,
                         ..InferenceLimits::default()
                     },
                     None,
@@ -320,7 +320,7 @@ fn attach_options_elsewhere_are_attach_options_here() {
                 point: point.clone(),
                 weak_units,
                 limits: InferenceLimits {
-                    plain_budget_ms: 0,
+                    generator_ms: 0,
                     ..InferenceLimits::default()
                 },
                 only: None,

@@ -86,7 +86,7 @@ fn one_generator_is_what_the_whole_search_finds_for_it() {
                 let mut with_options = FastHashSet::default();
                 for point in points(&diagram) {
                     let limits = InferenceLimits {
-                        plain_budget_ms: 0,
+                        generator_ms: 0,
                         ..InferenceLimits::default()
                     };
                     let Ok(whole) = AttachOptionsJob::new(state, &point, weak_units, limits, None)
@@ -138,7 +138,7 @@ fn one_generator_is_what_the_whole_search_finds_for_it() {
                         generator,
                         weak_units,
                         InferenceLimits {
-                            plain_budget_ms: 0,
+                            generator_ms: 0,
                             ..InferenceLimits::default()
                         },
                     );
@@ -177,7 +177,7 @@ fn a_generator_that_is_not_there_is_not_searched_for() {
             &[],
             false,
             InferenceLimits {
-                plain_budget_ms: 0,
+                generator_ms: 0,
                 ..InferenceLimits::default()
             },
             Some(stranger)

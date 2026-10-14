@@ -75,26 +75,40 @@ that is not valid, because each is checked as before and only the pool of cells 
 from is smaller. The notice that follows the search says that it was in effect and how many of
 the diagram's cells it looked at.
 
-## The plain search has a time limit too
+## Each generator has a time limit
 
 Finding where the cells of the signature (and their inverses, identities, bubbles and
 reflections) attach is a matching of each against the diagram, which in high dimensions takes
-long enough to wait for. After *Stop searching for plain attachments after N s* (Settings, 10 s
-unless you change it, 0 for no limit) the search stops: the cheapest generators are looked at
-first, those that are left are not looked at at all, and the one that was being looked at is cut
-short with what it had found. What is offered is always valid, but may be missing some, and a
-notice says which generators were not tried or were cut short ("Plain search stopped after 10 s:
-not tried: ...; cut short: ..."). To look for just those, drag the generator onto the diagram
-or pick it with the pointing hand (the search for one generator has all of the time), or choose
-a sheet, which narrows the search to the cells that reach it.
+long enough to wait for; for a schema it is also a search for the replacements of its
+placeholders, which can have no end. So *any one generator* is given a time (Settings, *Give up
+on a generator after N s*, 5 s unless you change it, 0 for no limit) for all of that: after it
+the search gives up on that generator, keeps what it had found for it, and goes on to the next.
+There is no limit on the search as a whole, only on each generator: a diagram where more generators
+could attach takes longer, but a generator that takes long does not make the others wait. (`Esc`
+ends the search, and the project is as it was.)
+
+What is offered is always valid, but may be missing some of what a generator would have had, and
+a notice says which generators were given up on ("Gave up on 2 generators after 5 s each: ...";
+"Instance inference gave up on a schema after 5 s: ..."). To look for just those, drag the
+generator onto the diagram or pick it with the pointing hand (the search for one generator has
+the same time, so raise the limit if you want to wait longer for it), or choose a sheet, which
+narrows the search to the cells that reach it. The cheapest generators are looked at first.
+
+If a step of the search does not look at the clock and runs on past the time (this should not
+happen, but the page does not rely on it), the page ends the background worker after the time for
+a generator and a short grace and offers what the worker had found before the generator it was in
+the middle of; that generator is given up on, the ones after it are listed as not tried, and
+the notice says the search was ended.
 
 ## Instances of schemas are a heuristic
 
 Finding the instances of a schema that attach at a point is a search over replacements of its
-placeholders. It can miss instances that exist, and it stops when its time is up (Settings:
-*Infer instances of schemas when attaching*, *Stop inferring after N s*, *Infer instances up to
-dimension N*, see [placeholders](placeholders.md)); the instances it does offer are always
-valid. When it gives up, a notice says so and says which schemas it gave up on, and you can
-give it more time, or turn it off.
+placeholders. It can miss instances that exist, and it gives up on a schema when its time is
+up (Settings: *Infer instances of schemas when attaching*, *Give up on a generator after N s*,
+*Infer instances up to dimension N*, see [placeholders](placeholders.md)); the instances it does
+offer are always valid. When it gives up, a notice says so and says which schemas it gave up on,
+and you can give it more time, or turn it off. If two searches in a row give up on every schema
+they look at, instances are no longer inferred for the rest of the session (turn the setting off
+and on to start again).
 
 This is available in the 2D views (and the 1D and 0D ones); the 3D view does not take drops yet.

@@ -118,17 +118,6 @@ impl Task {
         }
     }
 
-    /// How long the task may spend on the part of it that has no end to it, if it has one and
-    /// that has a limit, and the worker is to be ended if it goes on past that (and the grace it
-    /// is given): see [`Job::checkpoint`].
-    #[must_use]
-    pub fn time_allowed(&self) -> Option<std::time::Duration> {
-        match self {
-            Self::AttachOptions(job) => job.time_allowed(),
-            _ => None,
-        }
-    }
-
     /// What the task came to, given what the worker answered.
     #[must_use]
     pub fn output_of(&self, output: Output) -> Option<TaskOutput> {

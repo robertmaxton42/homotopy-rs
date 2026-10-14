@@ -28,7 +28,7 @@ use homotopy_core::{
 };
 use homotopy_graphics::style::{Color, VertexShape};
 use im::Vector;
-use instant::Instant;
+use instant::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -80,6 +80,9 @@ pub enum Output {
 pub struct Step {
     pub label: &'static str,
     pub progress: Option<Progress>,
+    /// The most that the step may take if the job keeps its limits, in milliseconds, or `0` if
+    /// there is no such limit (see [`Job::step_limit`]).
+    pub limit_ms: u32,
     /// For debugging: how long the step is to take at least.
     pub delay_ms: u32,
 }
@@ -744,17 +747,25 @@ fn run_checkpointed<J: Job>(
     // a job that is ended loses what it found since the last one, and what it says it had not
     // finished is cut short or not tried, to be honest about that.
     let mut not_before: Option<Instant> = None;
+    // The longest a checkpoint took: the silence after a report is a step and perhaps one of
+    // those, which the limit that is reported allows for.
+    let mut slowest = Duration::ZERO;
     loop {
         before_step(Step {
             label: job.label(),
             progress: job.progress(),
+            limit_ms: job.step_limit().map_or(0, |limit| {
+                u32::try_from((limit + slowest).as_millis()).unwrap_or(u32::MAX)
+            }),
             delay_ms,
         });
         if not_before.is_none_or(|time| Instant::now() >= time) {
             if let Some(checkpoint) = job.checkpoint() {
                 let started = Instant::now();
                 on_checkpoint(checkpoint);
-                not_before = Some(Instant::now() + started.elapsed() * CHECKPOINT_COST_FACTOR);
+                let took = started.elapsed();
+                slowest = slowest.max(took);
+                not_before = Some(Instant::now() + took * CHECKPOINT_COST_FACTOR);
             }
         }
         if let Some(output) = job.step() {

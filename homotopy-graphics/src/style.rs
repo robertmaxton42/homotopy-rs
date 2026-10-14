@@ -23,6 +23,20 @@ pub trait SignatureStyleData: Signature {
     fn generator_style(&self, g: Generator) -> Option<&Self::Style>;
 }
 
+/// The relative luminance (WCAG, 0 to 1) below which a colour counts as dark.
+///
+/// Dark stripes are not seen on a dark colour, so the stripes of placeholders are drawn light on
+/// it. That is black and the darkest colours (a luminance of 0.05 is a grey of about `#3f3f3f`); the colours of
+/// the palette other than black stay as they were (the next darkest has 0.13).
+pub const LIGHT_STRIPES_BELOW: f32 = 0.05;
+
+/// What the stripes of a placeholder are drawn in, which is what its colour does not hide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stripes {
+    Dark,
+    Light,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Color(pub(crate) Srgb<u8>);
 
@@ -101,6 +115,24 @@ impl Color {
         Self(srgb.into_format())
     }
 
+    /// The WCAG relative luminance of the colour: 0 for black, 1 for white.
+    #[must_use]
+    pub fn relative_luminance(&self) -> f32 {
+        let (r, g, b) = self.clone().into_linear_f32_components();
+        0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+
+    /// The colour that the stripes of a placeholder of this colour are drawn in (see
+    /// [`Stripes`]): light on a colour that is dark enough for dark stripes not to show.
+    #[must_use]
+    pub fn stripes(&self) -> Stripes {
+        if self.relative_luminance() < LIGHT_STRIPES_BELOW {
+            Stripes::Light
+        } else {
+            Stripes::Dark
+        }
+    }
+
     #[must_use]
     pub fn into_components<T>(self) -> (T, T, T)
     where
@@ -158,5 +190,40 @@ impl std::fmt::Display for GeneratorRepresentation {
                 Self::Surface => "surface",
             }
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn color(hex: &str) -> Color {
+        hex.parse().unwrap()
+    }
+
+    #[test]
+    fn luminance_is_wcag() {
+        assert!(color("#000000").relative_luminance().abs() < 1e-6);
+        assert!((color("#ffffff").relative_luminance() - 1.0).abs() < 1e-4);
+        // Pure green is the brightest primary: 0.7152.
+        assert!((color("#00ff00").relative_luminance() - 0.7152).abs() < 1e-4);
+        assert!((color("#808080").relative_luminance() - 0.2159).abs() < 1e-3);
+    }
+
+    #[test]
+    fn stripes_are_light_only_on_dark_colours() {
+        assert_eq!(color("#000000").stripes(), Stripes::Light);
+        assert_eq!(color("#101010").stripes(), Stripes::Light);
+        assert_eq!(color("#000033").stripes(), Stripes::Light);
+        // The palette's other colours, including the darkest of them, keep dark stripes.
+        for hex in [
+            "#2980b9", "#c0392b", "#f39c12", "#8e44ad", "#27ae60", "#f1c40f", "#f6f5f4",
+        ] {
+            assert_eq!(color(hex).stripes(), Stripes::Dark, "{hex}");
+        }
+        assert_eq!(color("#808080").stripes(), Stripes::Dark);
+        // The threshold is a grey of about #3f3f3f.
+        assert_eq!(color("#3a3a3a").stripes(), Stripes::Light);
+        assert_eq!(color("#454545").stripes(), Stripes::Dark);
     }
 }

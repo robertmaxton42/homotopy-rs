@@ -14,11 +14,9 @@ declare_settings! {
         merge_exchanges: bool = false,
         autosave: bool = true,
         infer_instances: bool = true,
-        // Seconds; 0 for no limit.
-        infer_budget: u32 = 20,
+        // Seconds one generator may take when searching for attachments; 0 for no limit.
+        generator_budget: u32 = 5,
         infer_max_dimension: u32 = 7,
-        // Seconds; 0 for no limit.
-        plain_budget: u32 = 10,
         // A heuristic: only look for instances among the cells near the chosen sheet.
         infer_narrow_to_sheet: bool = false,
         // Set for the session after searches ran out of time, not part of the kept settings.
@@ -129,13 +127,14 @@ impl Component for SettingsView {
                     <div class="settings__note">{Self::inference_status()}</div>
                     {
                         Self::view_slider(
-                            &format!("Stop inferring after {}", Self::seconds(AppSettings::get_infer_budget())),
-                            AppSettings::get_infer_budget(),
-                            AppSettings::set_infer_budget,
+                            &format!("Give up on a generator after {}", Self::seconds(AppSettings::get_generator_budget())),
+                            AppSettings::get_generator_budget(),
+                            AppSettings::set_generator_budget,
                             0,
                             120,
                         )
                     }
+                    <div class="settings__note">{"This is the time any one generator may take when looking for what to attach: matching it and its inverse, the cells raised from it and its reflections (which takes long in high dimensions) and, for a schema, inferring its instances. After that the search gives up on it, keeps what it had found, and goes on to the next, so that one generator that takes long does not make the rest wait. There is no limit on the search as a whole, only on each generator (Esc ends the search); a search with more generators to look at takes longer. A notice says which generators were given up on; drag one onto the diagram, or pick it with the pointing hand, to search for just that."}</div>
                     {
                         Self::view_slider(
                             &format!("Infer instances up to dimension {}", Self::dimension_limit(AppSettings::get_infer_max_dimension())),
@@ -145,16 +144,6 @@ impl Component for SettingsView {
                             attach_inference::NO_DIMENSION_LIMIT,
                         )
                     }
-                    {
-                        Self::view_slider(
-                            &format!("Stop searching for plain attachments after {}", Self::seconds(AppSettings::get_plain_budget())),
-                            AppSettings::get_plain_budget(),
-                            AppSettings::set_plain_budget,
-                            0,
-                            120,
-                        )
-                    }
-                    <div class="settings__note">{"The cells of the signature, their inverses and what is raised from them, and their reflections, are found by matching them against the diagram, which takes long in high dimensions. After this time the generators that are left are not looked at and the one being looked at is cut short, with what it had found. The cheapest generators are looked at first, and the notice that follows says which were left; drag one of them onto the diagram, or choose a sheet, to search for just that."}</div>
                     {
                         Self::view_checkbox(
                             "Heuristic: infer instances only from cells near the chosen sheet",
@@ -334,7 +323,7 @@ impl SettingsView {
         if AppSettings::get_infer_suspended() {
             "Turned off for this session because searches ran out of time: turn it off and on again to start again."
         } else if AppSettings::get_infer_instances() {
-            "Looking for what to attach also looks for the replacements of placeholders that make a schema attach, which can take long in high dimensions and for many placeholders: it stops after the time below, and is skipped for diagrams above the dimension below."
+            "Looking for what to attach also looks for the replacements of placeholders that make a schema attach, which can take long in high dimensions and for many placeholders: each schema is given up on after the time below, and the inference is skipped for diagrams above the dimension below."
         } else {
             "Schemas are not offered when attaching, only the cells that do not need their placeholders replaced."
         }

@@ -74,6 +74,16 @@ pub enum SignatureEdit {
     RemoveSymmetry(usize),
 }
 
+impl SignatureEdit {
+    /// Whether the edit only changes what is shown (whether a folder or the instances of a
+    /// generator are open), and not the project: it is not a step of the history (undoing does
+    /// not undo it), and a job that works on a copy of the project is not in its way.
+    #[must_use]
+    pub const fn is_view_only(&self) -> bool {
+        matches!(self, Self::ToggleFolder(_) | Self::ToggleInstances(_))
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SignatureError {
     #[error("generator cannot be marked as {0} because it is being used in an incompatible way")]

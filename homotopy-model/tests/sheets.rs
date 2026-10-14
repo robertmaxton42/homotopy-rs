@@ -87,7 +87,7 @@ fn a_sheet_keeps_the_options_whose_embedding_contains_it() {
             }
             for weak_units in [false, true] {
                 let limits = InferenceLimits {
-                    plain_budget_ms: 0,
+                    generator_ms: 0,
                     ..InferenceLimits::default()
                 };
                 for (point, fibre) in clicks(&workspace.diagram, n) {

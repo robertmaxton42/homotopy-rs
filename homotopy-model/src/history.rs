@@ -141,6 +141,16 @@ impl History {
         }
     }
 
+    /// Changes the current proof in place, without a step of history: for what is only shown
+    /// (see [`SignatureEdit::is_view_only`](super::proof::SignatureEdit::is_view_only)). The
+    /// position does not change, so nothing that compares it takes this for a change of the
+    /// project; and jobs, which work on copies, do not see it.
+    pub fn amend(&mut self, change: impl FnOnce(&mut ProofState)) {
+        let current = self.current;
+        self.snapshots
+            .with_mut(current, |node| change(node.inner_mut()));
+    }
+
     pub fn undo(&mut self) -> Result<(), HistoryError> {
         let prev = self.proof().parent().ok_or(HistoryError::Undo)?;
         self.current = prev;

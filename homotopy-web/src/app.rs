@@ -21,7 +21,7 @@ use crate::{
         busy::{self, BusyIndicator},
         delta::CallbackIdx,
         icon::{Icon, IconSize},
-        inference_notice::InferenceNotice,
+        inference_notice::{InferenceNotice, NoticeLine},
         layout_note::LayoutNote,
         modal::Modal,
         panzoom::PanZoom,
@@ -55,7 +55,7 @@ mod sidebar;
 mod signature;
 mod signature_stylesheet;
 mod stash;
-mod tex;
+pub mod tex;
 mod tooltip;
 mod workspace;
 
@@ -64,10 +64,15 @@ mod workspace;
 /// least; and a step that cannot be split up takes as long as it takes.
 const SLICE: Duration = Duration::from_millis(10);
 
-/// How long past the time that the search for instances may take (`InferenceLimits::budget_ms`)
-/// the worker is given to answer, before it is ended and what it had found is used. The search
-/// looks at the clock as it goes and stops by itself, so this is for what it cannot see.
-const INFERENCE_GRACE: u32 = 750;
+/// How long past the time that one step of a job may take (`Job::step_limit`: for a search for
+/// attachments, the time for one generator, `InferenceLimits::generator_ms`) the worker is given
+/// to say anything, before it is ended and what it had found is used. The search looks at the
+/// clock as it goes and stops by itself, so this is for what it cannot see.
+const STEP_GRACE: u32 = 750;
+
+/// How long the page waits after a worker looks stuck to be sure, so that what the worker said
+/// while the page was busy (and the page has not yet taken in) is heard first.
+const STUCK_CONFIRM: u32 = 100;
 
 /// How long after the app starts the worker is started, so as not to compete with the page for
 /// the processor while it loads.
@@ -91,8 +96,8 @@ pub enum Message {
     Autosave(autosave::Message),
     /// The notice about inferring instances was dismissed.
     DismissInferenceNotice,
-    /// The time that the worker is given to infer instances for the job of the number is up.
-    InferenceDeadline(u64),
+    /// Look at whether the worker doing the job of the number has said anything lately.
+    Watchdog(u64),
 }
 
 /// A task that the worker is doing.
@@ -106,10 +111,17 @@ struct Remote {
     /// Whether the worker was asked again, with the signature.
     retried: bool,
     /// What the job would come to if it were ended now, as the worker last said, to be used if
-    /// it takes too long (see `Message::InferenceDeadline`).
+    /// a step takes too long (see `Message::Watchdog`).
     partial: Option<Vec<u8>>,
-    /// When the time began to run for the worker to infer instances, if it has.
-    deadline_since: Option<Instant>,
+    /// When the worker last said anything about the job, and the most that a step may take
+    /// from then, as it said (in milliseconds, `0` for no limit): past that and the grace, it
+    /// is stuck.
+    heard: Instant,
+    limit_ms: u32,
+    /// Whether a `Message::Watchdog` is on its way, and whether the worker already looked
+    /// stuck once and is being given a moment more.
+    watching: bool,
+    confirming: bool,
 }
 
 /// A task that is being worked on a slice at a time. It works on a copy of what it needs, and
@@ -157,7 +169,7 @@ pub struct App {
     autosave_setting: Vec<CallbackIdx>,
     /// What the last search for attachments had to say about inferring instances, until it is
     /// dismissed (see [`attach_inference`]).
-    inference_notice: Vec<String>,
+    inference_notice: Vec<NoticeLine>,
     /// Keeps the settings about inferring instances in this browser when they change.
     inference_setting: Vec<CallbackIdx>,
 }
@@ -212,10 +224,9 @@ impl Component for App {
         let inference_setting = AppSettings::subscribe(
             &[
                 AppSettingsKey::infer_instances,
-                AppSettingsKey::infer_budget,
+                AppSettingsKey::generator_budget,
                 AppSettingsKey::infer_max_dimension,
                 AppSettingsKey::infer_narrow_to_sheet,
-                AppSettingsKey::plain_budget,
             ],
             Callback::from(|_: AppSettingsMsg| attach_inference::store()),
         );
@@ -259,10 +270,9 @@ impl Component for App {
         AppSettings::unsubscribe(
             &[
                 AppSettingsKey::infer_instances,
-                AppSettingsKey::infer_budget,
+                AppSettingsKey::generator_budget,
                 AppSettingsKey::infer_max_dimension,
                 AppSettingsKey::infer_narrow_to_sheet,
-                AppSettingsKey::plain_budget,
             ],
             &self.inference_setting,
         );
@@ -305,7 +315,7 @@ impl App {
                 self.inference_notice.clear();
                 true
             }
-            Message::InferenceDeadline(id) => self.inference_deadline(ctx, id),
+            Message::Watchdog(id) => self.watchdog(ctx, id),
             Message::Escape(in_text_field) => {
                 if self.job.is_some() {
                     self.cancel()
@@ -406,7 +416,7 @@ impl App {
         // A search for attachments says how the inference of instances went.
         if let Some(report) = self.state.take_inference_report() {
             tracing::info!(
-                "Inferring instances spent {}ms of {}ms (longest step {}ms){}",
+                "Inferring instances spent {}ms ({}ms for a generator, longest step {}ms){}",
                 report.spent_ms,
                 report.budget_ms,
                 report.longest_step_ms,
@@ -508,7 +518,10 @@ impl App {
             bytes_out: bytes.len(),
             retried: with_signature,
             partial: None,
-            deadline_since: None,
+            heard: Instant::now(),
+            limit_ms: 0,
+            watching: false,
+            confirming: false,
         });
         job.started = Instant::now();
         true
@@ -528,21 +541,29 @@ impl App {
                 job,
                 label,
                 progress,
+                limit_ms,
             } => {
                 if let Some(running) = self.job.as_mut().filter(|running| running.id == job) {
                     if let Some(remote) = &mut running.remote {
                         remote.label = label;
+                        remote.heard = Instant::now();
+                        remote.limit_ms = limit_ms;
+                        remote.confirming = false;
                         busy::show(busy::Info {
                             job,
                             label: remote.label.clone().into(),
                             progress,
                         });
+                        if limit_ms > 0 && !remote.watching {
+                            remote.watching = true;
+                            Self::watch_in(ctx, job, limit_ms.saturating_add(Self::grace()));
+                        }
                     }
                 }
                 false
             }
             worker::Event::Partial { job, bytes } => {
-                self.worker_partial(ctx, job, bytes);
+                self.worker_partial(job, bytes);
                 false
             }
             worker::Event::Done { job, bytes } => self.worker_done(ctx, job, &bytes),
@@ -550,87 +571,104 @@ impl App {
         }
     }
 
-    /// The worker says what the running job would come to if it were ended now. That is kept
-    /// for the case that it has to be, and the first one starts the clock on the part of the
-    /// job that has no end to it: from here the worker has the time that the job is allowed to
-    /// spend on it, and a little more, to say that it is done.
-    fn worker_partial(&mut self, ctx: &Context<Self>, id: u64, bytes: Vec<u8>) {
-        let Some(running) = self.job.as_mut().filter(|running| running.id == id) else {
-            return;
-        };
-        let Some(remote) = &mut running.remote else {
-            return;
-        };
-        remote.partial = Some(bytes);
-        if remote.deadline_since.is_some() {
-            return;
-        }
-        let Some(budget) = running.task.time_allowed() else {
-            return;
-        };
-        remote.deadline_since = Some(Instant::now());
+    /// How long past a step's limit the worker is given before it is taken to be stuck.
+    fn grace() -> u32 {
         #[cfg(debug_assertions)]
-        let grace = debug_hooks::infer_grace_ms().unwrap_or(INFERENCE_GRACE);
+        return debug_hooks::infer_grace_ms().unwrap_or(STEP_GRACE);
         #[cfg(not(debug_assertions))]
-        let grace = INFERENCE_GRACE;
-        let wait = u32::try_from(budget.as_millis())
-            .unwrap_or(u32::MAX)
-            .saturating_add(grace);
+        STEP_GRACE
+    }
+
+    /// Has the watchdog look at the job in `wait` milliseconds.
+    fn watch_in(ctx: &Context<Self>, id: u64, wait: u32) {
         ctx.link().send_future(async move {
             TimeoutFuture::new(wait).await;
-            Message::InferenceDeadline(id)
+            Message::Watchdog(id)
         });
     }
 
-    /// The worker has had the time to infer instances and is still at it, which it should not
-    /// be: its search stops by itself when the time is up, so something it cannot see is taking
-    /// long. The job is ended as `Esc` would end it, and a new worker started, but instead of
-    /// being cancelled it is finished with what the worker had found before the schema it was
-    /// in the middle of; which of the schemas were not done with is in the notice.
-    fn inference_deadline(&mut self, ctx: &Context<Self>, id: u64) -> bool {
-        let waiting = self.job.as_ref().is_some_and(|running| {
-            running.id == id
-                && running
-                    .remote
-                    .as_ref()
-                    .is_some_and(|remote| remote.partial.is_some())
-        });
-        if !waiting {
+    /// The worker says what the running job would come to if it were ended now. That is kept
+    /// for the case that it has to be (see [`Self::watchdog`]).
+    fn worker_partial(&mut self, id: u64, bytes: Vec<u8>) {
+        let Some(remote) = self
+            .job
+            .as_mut()
+            .filter(|running| running.id == id)
+            .and_then(|running| running.remote.as_mut())
+        else {
+            return;
+        };
+        remote.partial = Some(bytes);
+        // (Making it took part of the time since the last word, and the step is yet to come.)
+        remote.heard = Instant::now();
+    }
+
+    /// Looks at whether the worker is stuck: a job that has a limit for its steps (for the search
+    /// for attachments, the time for one generator) stops by itself when it is up, so a worker
+    /// that has not said anything for that long and the grace is held up by something the search
+    /// cannot see (a stretch that does not look at the clock). Then the job is ended as `Esc`
+    /// would end it, and a new worker started, but instead of being cancelled it is finished
+    /// with what the worker had found before the generator it was in the middle of; that one is
+    /// given up on and the generators after it were not tried, which the notice says.
+    ///
+    /// (The alternative, a fresh worker to go on from the next generator, would have the
+    /// signature and the search to send again and the results of two workers to put together,
+    /// to save the rest of the generators in a case that is a stretch of the search not looking
+    /// at the clock: it is not done.)
+    fn watchdog(&mut self, ctx: &Context<Self>, id: u64) -> bool {
+        let Some(remote) = self
+            .job
+            .as_mut()
+            .filter(|running| running.id == id)
+            .and_then(|running| running.remote.as_mut())
+        else {
             // It was done in time, or cancelled.
             return false;
+        };
+        remote.watching = false;
+        if remote.limit_ms == 0 {
+            // (A later report with a limit starts the watch again.)
+            return false;
         }
+        let wait = Duration::from_millis(u64::from(remote.limit_ms) + u64::from(Self::grace()));
+        let silent = remote.heard.elapsed();
+        if silent < wait {
+            remote.watching = true;
+            Self::watch_in(ctx, id, wait.saturating_sub(silent).as_millis() as u32 + 1);
+            return false;
+        }
+        if !remote.confirming {
+            remote.confirming = true;
+            remote.watching = true;
+            Self::watch_in(ctx, id, STUCK_CONFIRM);
+            return false;
+        }
+        self.end_stuck_worker(ctx, id, silent)
+    }
+
+    /// Ends the worker that is stuck on a step, and finishes the job with what it had.
+    fn end_stuck_worker(&mut self, ctx: &Context<Self>, id: u64, silent: Duration) -> bool {
         let mut job = self.job.take().expect("a job was being done");
+        debug_assert_eq!(job.id, id);
         let remote = job.remote.take().expect("the worker was doing it");
-        let partial = remote.partial.unwrap_or_default();
-        let waited = remote
-            .deadline_since
-            .map_or(Duration::ZERO, |since| since.elapsed());
         tracing::warn!(
-            "{} did not stop in time ({:.2}s after it began, {:.1}s since it was sent): \
-             ending the worker",
+            "{} did not finish a step in time (silent for {:.2}s, a step may take {}ms; {:.1}s \
+             since it was sent): ending the worker",
             remote.label,
-            waited.as_secs_f64(),
+            silent.as_secs_f64(),
+            remote.limit_ms,
             remote.sent.elapsed().as_secs_f64()
         );
         // What it said is read before the worker is forgotten, as that has what it held.
-        let answer = self.worker.remote().response(&partial);
+        let answer = remote
+            .partial
+            .map(|partial| self.worker.remote().response(&partial));
         self.worker.stop();
         self.worker.ensure();
         let output = match answer {
-            Ok(Answer::Done { output, .. }) => job.task.output_of(output),
+            Some(Ok(Answer::Done { output, .. })) => job.task.output_of(output),
             _ => None,
         };
-        // How long it had was what it took.
-        let output = output.map(|mut output| {
-            if let model::TaskOutput::AttachOptions(outcome) = &mut output {
-                outcome.inference.spent_ms = waited.as_millis() as u64;
-                // If it was not the inference that was running, it was the plain passes.
-                if outcome.inference.cut_short.is_empty() {
-                    outcome.inference.plain.spent_ms = waited.as_millis() as u64;
-                }
-            }
-            output
-        });
         if let Some(output) = output {
             return self.commit(ctx, job, output);
         }
@@ -985,7 +1023,7 @@ impl App {
         ctx: &Context<Self>,
         state: &model::State,
         backup: Option<&autosave::Snapshot>,
-        inference_notice: &[String],
+        inference_notice: &[NoticeLine],
     ) -> Html {
         let proof = state.proof();
         let dispatch = ctx.link().callback(Message::Dispatch);

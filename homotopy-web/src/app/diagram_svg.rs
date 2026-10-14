@@ -19,12 +19,12 @@ use homotopy_core::{
     Boundary, Diagram, DiagramN, Generator, Height, SliceIndex,
 };
 use homotopy_graphics::{
-    style::{GeneratorStyle, SignatureStyleData, VertexShape},
+    style::{GeneratorStyle, SignatureStyleData, Stripes, VertexShape},
     svg::{
-        generator_class_from_diagram_dim,
+        color_index, generator_class_from_diagram_dim,
         render::{ActionRegion, GraphicElement},
         shape::{path_to_svg, project_2d, Point, Shape},
-        PLACEHOLDER_HATCH_ID,
+        PLACEHOLDER_HATCH_ID, PLACEHOLDER_HATCH_LIGHT_ID,
     },
 };
 use homotopy_model::sheets::Choice;
@@ -634,8 +634,26 @@ impl<const N: usize> DiagramSvg<N> {
             .is_some_and(GeneratorStyle::is_placeholder)
     }
 
-    fn hatch_id(ctx: &Context<Self>) -> String {
-        format!("{}-{PLACEHOLDER_HATCH_ID}", ctx.props().id)
+    /// The id of the hatch pattern for stripes in the given colour.
+    fn hatch_id(ctx: &Context<Self>, stripes: Stripes) -> String {
+        let id = match stripes {
+            Stripes::Dark => PLACEHOLDER_HATCH_ID,
+            Stripes::Light => PLACEHOLDER_HATCH_LIGHT_ID,
+        };
+        format!("{}-{id}", ctx.props().id)
+    }
+
+    /// The colour of the stripes of a placeholder surface: the one that its colour, as it is drawn
+    /// in this diagram, does not hide.
+    fn stripes_of(ctx: &Context<Self>, element: &GraphicElement<N>, dimension: usize) -> Stripes {
+        let generator = element.generator();
+        let c = color_index(generator, dimension, element.clone().into());
+        ctx.props()
+            .signature
+            .generator_style(generator)
+            .map_or(Stripes::Dark, |style| {
+                style.color().lighten(c, element.orientation()).stripes()
+            })
     }
 
     /// Defines the pattern with which the surfaces of placeholders are hatched, if there are any.
@@ -647,10 +665,14 @@ impl<const N: usize> DiagramSvg<N> {
             return html! {};
         }
 
-        html! {
-            <defs>
+        let pattern = |stripes: Stripes| {
+            let (colour, opacity) = match stripes {
+                Stripes::Dark => ("black", "0.55"),
+                Stripes::Light => ("white", "0.8"),
+            };
+            html! {
                 <pattern
-                    id={Self::hatch_id(ctx)}
+                    id={Self::hatch_id(ctx, stripes)}
                     width="7"
                     height="7"
                     patternUnits="userSpaceOnUse"
@@ -661,11 +683,18 @@ impl<const N: usize> DiagramSvg<N> {
                         y1="0"
                         x2="0"
                         y2="7"
-                        stroke="black"
+                        stroke={colour}
                         stroke-width="2"
-                        stroke-opacity="0.55"
+                        stroke-opacity={opacity}
                     />
                 </pattern>
+            }
+        };
+
+        html! {
+            <defs>
+                {pattern(Stripes::Dark)}
+                {pattern(Stripes::Light)}
             </defs>
         }
     }
@@ -688,13 +717,15 @@ impl<const N: usize> DiagramSvg<N> {
             GraphicElement::Surface(d, path) => {
                 let path = path_to_svg(&path.clone().transformed(&prepared.transform));
                 if Self::is_placeholder(ctx, d.generator) {
-                    // Placeholders are translucent (by their stylesheet) and also hatched.
+                    // Placeholders are translucent (by their stylesheet) and also hatched, in
+                    // stripes that show on their colour.
+                    let stripes = Self::stripes_of(ctx, element, prepared.diagram.dimension());
                     html! {
                         <>
                             <path d={path.clone()} class={class} />
                             <path
                                 d={path}
-                                fill={format!("url(#{})", Self::hatch_id(ctx))}
+                                fill={format!("url(#{})", Self::hatch_id(ctx, stripes))}
                                 stroke="none"
                             />
                         </>

@@ -31,6 +31,14 @@ pub trait Job {
     /// handle other input between them, so a step should be as small as the job can make it.
     fn step(&mut self) -> Option<Self::Output>;
 
+    /// The most time that one step may take if the job keeps its limits, if it has any, for
+    /// whoever runs the job somewhere that it can be ended from outside (a worker) to notice that
+    /// a step is taking much longer than that and to end it (see [`checkpoint`](Self::checkpoint)).
+    /// A job that stops by itself within the limit never meets it.
+    fn step_limit(&self) -> Option<std::time::Duration> {
+        None
+    }
+
     /// What the job would come to if it were stopped now, if it has something new to say about
     /// that since the last time it was asked. Asked before each step by whoever runs the job
     /// somewhere it can be ended from outside (a worker), so that if that happens the work is

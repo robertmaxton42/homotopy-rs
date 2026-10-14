@@ -5,7 +5,7 @@ use homotopy_core::{
     signature::{Invertibility, Signature as _},
     Diagram, Generator,
 };
-use homotopy_graphics::style::{Color, VertexShape};
+use homotopy_graphics::style::{Color, Stripes, VertexShape};
 use wasm_bindgen::JsCast;
 use web_sys::{Element, HtmlInputElement};
 use yew::prelude::*;
@@ -499,10 +499,12 @@ impl ItemView {
                 } else {
                     ""
                 },
-                if info.placeholder {
-                    "signature__generator-placeholder"
-                } else {
-                    ""
+                match (info.placeholder, info.color.stripes()) {
+                    (false, _) => "",
+                    (true, Stripes::Dark) => "signature__generator-placeholder",
+                    (true, Stripes::Light) => {
+                        "signature__generator-placeholder signature__generator-placeholder-light"
+                    }
                 },
             );
 
@@ -741,10 +743,12 @@ impl ItemView {
                     Hovering => "signature__generator-color-hover",
                     Editing => "signature__generator-color-edit",
                 },
-                if info.placeholder {
-                    "signature__generator-placeholder"
-                } else {
-                    ""
+                match (info.placeholder, info.color.stripes()) {
+                    (false, _) => "",
+                    (true, Stripes::Dark) => "signature__generator-placeholder",
+                    (true, Stripes::Light) => {
+                        "signature__generator-placeholder signature__generator-placeholder-light"
+                    }
                 },
             );
             let dimension_class = format!(

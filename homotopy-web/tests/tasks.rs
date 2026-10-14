@@ -219,10 +219,19 @@ fn finding_attachments_is_a_task_that_gives_the_options_when_done() {
 
 #[test]
 fn what_may_be_done_while_busy_does_not_touch_the_project() {
-    use homotopy_model::history;
+    use homotopy_common::idx::Idx as _;
+    use homotopy_model::{
+        history,
+        proof::{SignatureEdit, SignatureItem},
+    };
+    // Whatever updates the history is refused, and so is what is expensive in itself.
     let refused = [
         Action::Proof(proof::Action::CreateGeneratorZero),
         Action::Proof(proof::Action::AscendSlice(1)),
+        Action::Proof(proof::Action::SelectGenerator(Generator::new(0, 0))),
+        Action::Proof(proof::Action::EditSignature(SignatureEdit::NewFolder(
+            homotopy_common::tree::Node::new(0),
+        ))),
         Action::History(history::Action::Move(history::Direction::Linear(
             homotopy_core::Direction::Backward,
         ))),
@@ -231,22 +240,79 @@ fn what_may_be_done_while_busy_does_not_touch_the_project() {
         ))),
         Action::ImportActions(SerializedData(vec![])),
         Action::ExportProof,
-        Action::ExportActions,
         Action::Select(0),
         Action::SelectPoint(vec![], false, InferenceLimits::default()),
-        Action::ClearSelections,
         Action::Draft(proof::DraftEdit::Infer(Generator::new(0, 0))),
     ];
     for action in refused {
         assert!(!action.allowed_while_busy(), "{action:?}");
     }
+    // What only changes what is shown, or what is picked or highlighted, is allowed.
+    let node = homotopy_common::tree::Node::new(0);
     for action in [
         Action::HighlightAttachment(None),
         Action::HighlightSlice(None),
         Action::Help,
+        Action::Arm(None),
+        Action::ClearSelections,
+        Action::ExportActions,
+        Action::Proof(proof::Action::EditSignature(SignatureEdit::ToggleFolder(
+            node,
+        ))),
+        Action::Proof(proof::Action::EditSignature(
+            SignatureEdit::ToggleInstances(node),
+        )),
     ] {
         assert!(action.allowed_while_busy(), "{action:?}");
     }
+
+    // Opening a folder is not a step of the history: nothing is added to it, undo does not
+    // undo it, and what a task computed from the project as it was is not in its way.
+    let mut state = State::default();
+    state
+        .update(Action::Proof(proof::Action::EditSignature(
+            SignatureEdit::NewFolder(state.proof().signature.as_tree().root()),
+        )))
+        .unwrap();
+    let tree = state.proof().signature.as_tree();
+    let folder = tree
+        .iter()
+        .find_map(|(node, data)| {
+            (node != tree.root() && matches!(data.inner(), SignatureItem::Folder(_)))
+                .then_some(node)
+        })
+        .expect("a folder was made");
+    let open = |state: &State| {
+        state.proof().signature.as_tree().with(
+            folder,
+            |data| matches!(data.inner(), SignatureItem::Folder(info) if info.open),
+        )
+    };
+    let (position, actions) = (state.history.position(), state.history.get_actions());
+    let before = open(&state);
+    assert!(
+        !state
+            .update(Action::Proof(proof::Action::EditSignature(
+                SignatureEdit::ToggleFolder(folder),
+            )))
+            .unwrap(),
+        "toggling is not a change to the project"
+    );
+    assert_ne!(open(&state), before);
+    assert_eq!(state.history.position(), position);
+    assert_eq!(state.history.get_actions(), actions);
+    // Undoing goes back past the folder being made, not to before it was opened.
+    state
+        .update(Action::History(history::Action::Move(
+            history::Direction::Linear(homotopy_core::Direction::Backward),
+        )))
+        .unwrap();
+    state
+        .update(Action::History(history::Action::Move(
+            history::Direction::Linear(homotopy_core::Direction::Forward),
+        )))
+        .unwrap();
+    assert_ne!(open(&state), before, "the toggle was not undone");
 }
 
 #[test]
@@ -578,5 +644,4 @@ fn attaching_one_generator_gives_the_options_for_that_generator_and_picking_one_
     let attach = Action::AttachGenerator(generator, point, true, limits);
     assert_eq!(attach.heavy_label(), Some("Searching for attachments"));
     assert!(!attach.allowed_while_busy());
-    assert!(!Action::Arm(None).allowed_while_busy());
 }
