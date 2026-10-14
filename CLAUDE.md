@@ -242,6 +242,12 @@ indicator: see "Laying out diagrams" below.
     it the plain cells and their reflections, which are 10 to 20 times slower in the debug build than the
     1s they take natively (another reason for the dimension limit to be a setting, and not a
     reason to expect the debug build to be quick).
+  - A latent crash found on the way: `DiagramN::reflections` (`Rewrite::reflect` → `RewriteN::new`)
+    panics with "Rewrite is malformed: [NotOrderedCorrectly]" for the reflections of some cells in
+    some states of the `equivalence_to_adjoint_equivalence` example (every click after its action 74,
+    898 of the 11,259 clicks tried), which the old search made unconditionally on every click. The search
+    now only makes reflections that could match, so those clicks work, but the panic is still there
+    for a reflection that does.
   - Known gaps: the time is measured between steps, so a step that takes long (the first candidate
     list of a new source, up to 1.6s) can go over; in the page (no worker yet) the search is stepped
     in slices as the others; the searches that do not finish are cut, not made quick; the options a cut
