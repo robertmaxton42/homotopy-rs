@@ -247,6 +247,31 @@ and check it with the debug hooks below.
   through wasm, which does not panic: Yew was left half way through its scheduler, so the app froze
   with no crash screen. **Never add a Firebase binding without `catch`** (a rejected promise from a
   non-`catch` async import is a panic).
+- **The Firebase project only accepts some sites.** The configuration in `static/firebase.js` is
+  upstream homotopy.io's own project, whose API key only accepts requests from homotopy.io (and the
+  hosts in its list of authorised domains, which has `localhost` but not `127.0.0.1`). A copy
+  served from anywhere else fails with `Firebase: Error (auth/requests-from-referer-<origin>-are-blocked.)`,
+  which no code here can fix (the user who found it served the app at `http://127.0.0.1:5000`).
+  So `firebase.js` has `homotopyCloudProbe()`, which the Account drawer calls once when it opens
+  (not at load: it is a request to Google): it asks `identitytoolkit.googleapis.com/v1/projects?key=`
+  what the SDK asks first, and is told either the API key is restricted
+  (`API_KEY_HTTP_REFERRER_BLOCKED`) or the list of authorised domains, and if this page is not
+  accepted Firebase is made unavailable with `homotopyCloud.rejected` set. The drawer then says,
+  plainly and without *Retry* (it is not a matter of scripts), "Cloud storage only works on
+  homotopy.io: this copy is served from <origin>, which the homotopy.io Firebase project doesn't
+  accept. To use cloud storage here, configure your own Firebase project". Errors from the SDK
+  that say the same (`requests-from-referer`, `unauthorized-domain`; `explainCloudError`, used by
+  `CloudError::from(JsValue)`) are explained in the same way wherever they turn up (opening
+  `/p/<tag>`, saving). A probe that cannot be answered (offline, slow, not understood) is not a
+  rejection. To use another project: `localStorage.setItem("homotopy-firebase-config",
+  JSON.stringify({apiKey, authDomain, projectId, storageBucket, appId, ...}))` and reload (the
+  rules, indexes and functions in the repository, `firebase.json`, are what that project needs).
+- **The emulators are opt-in.** Before, `firebase.js` pointed auth, firestore, storage and
+  functions at emulators on `127.0.0.1` whenever `location.hostname === "localhost"`, so anyone
+  running the app on localhost without the emulators had cloud storage that failed. Now they are
+  used only if the page is opened with `?emulators` or `localStorage["homotopy-firebase-emulators"]`
+  is `"1"`; and a connection failure while they are in use is reported as "the Firebase emulators
+  could not be reached ... remove ?emulators".
 - The Account drawer says that cloud storage is unavailable, with *Retry*. Retry
   (`window.homotopyCloudRetry`) inserts the missing scripts again (in order, `async = false`) and
   initialises Firebase, so that someone who allows gstatic.com does not have to reload and lose

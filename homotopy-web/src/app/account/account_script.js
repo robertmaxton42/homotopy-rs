@@ -20,6 +20,19 @@ export function cloudError() {
   return (c && c.error) || "Firebase is not available.";
 }
 
+// Whether Firebase is there but its project does not accept this page (see `probeCloud`).
+export function cloudRejected() {
+  const c = window.homotopyCloud;
+  return !!(c && c.rejected);
+}
+
+// Asks (once, and only if Firebase is there) whether the Firebase project accepts requests from
+// this page. Resolves to why not, or `null`. Never rejects.
+export function probeCloud() {
+  if (typeof window.homotopyCloudProbe !== "function") return Promise.resolve(null);
+  return window.homotopyCloudProbe().catch(() => null);
+}
+
 // Tries to load Firebase again. Resolves to why it is not available, or `null` if it is now.
 export function retryCloud() {
   if (typeof window.homotopyCloudRetry !== "function") {
@@ -54,4 +67,16 @@ export function initUI(onSignInSuccessWithAuthResult) {
 export async function publishPersonal(id) {
   const f = cloud().functions.httpsCallable('publishPersonal');
   return f({ id });
+}
+
+// If an error from Firebase is the project not accepting this page (and Firebase is made
+// unavailable, with a message that says so), that message; otherwise `null`.
+export function explainCloudError(error) {
+  const c = window.homotopyCloud;
+  if (!c || typeof c.explain !== "function") return null;
+  try {
+    return c.explain(error);
+  } catch (e) {
+    return null;
+  }
 }

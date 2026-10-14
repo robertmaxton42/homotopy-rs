@@ -83,6 +83,8 @@ pub enum Msg {
     Retry,
     /// What came of that: why Firebase is still not available, or `None` if it is now.
     Retried(Option<CloudError>),
+    /// What asking Firebase whether its project accepts this page came to: why not, or `None`.
+    Probed(Option<CloudError>),
     /// The sign-in buttons could not be started.
     SignInFailed(CloudError),
 }
@@ -113,42 +115,63 @@ pub struct AccountView {
 
 /// An error from Firebase, or from there being none, as something to tell the person.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CloudError(String);
+pub struct CloudError {
+    message: String,
+    /// Whether Firebase is there but its project does not accept this page (a copy served from
+    /// somewhere else than the sites the project allows). Trying again does not help.
+    rejected: bool,
+}
 
 impl CloudError {
     fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self {
+            message: message.into(),
+            rejected: false,
+        }
+    }
+
+    /// Why Firebase cannot be used, as `static/firebase.js` knows it.
+    fn unavailable(message: String) -> Self {
+        Self {
+            message,
+            rejected: cloud_rejected(),
+        }
     }
 }
 
 impl fmt::Display for CloudError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
 impl From<JsValue> for CloudError {
-    /// Errors from Firebase are objects with a `message`; others are whatever was thrown.
+    /// Errors from Firebase are objects with a `message`; others are whatever was thrown. The
+    /// ones that say that the project does not accept this page (or that the emulators are not
+    /// running) are explained.
     fn from(value: JsValue) -> Self {
+        if let Some(explanation) = explain_cloud_error(&value) {
+            return Self::unavailable(explanation);
+        }
         let message = js_sys::Reflect::get(&value, &JsValue::from_str("message"))
             .ok()
             .and_then(|message| message.as_string())
             .or_else(|| value.as_string())
             .unwrap_or_else(|| format!("{value:?}"));
-        Self(message)
+        Self::new(message)
     }
 }
 
 impl From<serde_wasm_bindgen::Error> for CloudError {
     fn from(error: serde_wasm_bindgen::Error) -> Self {
-        Self(error.to_string())
+        Self::new(error.to_string())
     }
 }
 
 /// Why Firebase is not available, or `None` if it is: whether its scripts could be loaded and it
 /// started. Nothing here can throw.
 pub fn cloud_unavailable() -> Option<CloudError> {
-    cloud_error().map(CloudError::new)
+    cloud_error().map(CloudError::unavailable)
 }
 
 type CloudResult<T> = Result<T, CloudError>;
@@ -158,8 +181,12 @@ impl Component for AccountView {
     type Properties = Props;
 
     fn create(ctx: &Context<Self>) -> Self {
-        ctx.link().callback(|()| Msg::FetchProjects).emit(());
         tracing::debug!("creating account view");
+        // Whether the project accepts this page is found out first (once; it is asked of
+        // Firebase), so that a copy of the app that it does not accept says so plainly instead of
+        // failing at whatever is tried first.
+        ctx.link()
+            .send_future(async { Msg::Probed(probe_cloud_error().await) });
 
         Self {
             projects: ProjectCollection::default(),
@@ -359,14 +386,26 @@ impl Component for AccountView {
                 self.sign_in_failed = None;
                 self.unavailable = reason;
                 if self.unavailable.is_none() {
-                    toast(Toast::success("Cloud storage is available"));
+                    ctx.link()
+                        .send_future(async { Msg::Probed(probe_cloud_error().await) });
+                }
+                true
+            }
+            Msg::Probed(reason) => {
+                if reason.is_some() {
+                    self.unavailable = reason;
+                } else if self.unavailable.is_none() {
                     ctx.link().send_message(Msg::FetchProjects);
                 }
                 true
             }
             Msg::SignInFailed(error) => {
                 tracing::warn!("Failed to start the sign-in options: {error}");
-                self.sign_in_failed = Some(error);
+                if error.rejected {
+                    self.unavailable = Some(error);
+                } else {
+                    self.sign_in_failed = Some(error);
+                }
                 true
             }
             Msg::SetProjectsView(view) => {
@@ -617,6 +656,16 @@ impl AccountView {
     /// What the drawer says when Firebase could not be loaded or started: that it is not the
     /// person's work that is at fault, why, and how to try again without losing it.
     fn unavailable_view(&self, ctx: &Context<Self>, reason: &CloudError) -> Html {
+        if reason.rejected {
+            // Not a matter of scripts or of the network: there is nothing to try again.
+            return html! {
+                <div class="account__unavailable">
+                    <p><strong>{"Cloud storage is unavailable here"}</strong></p>
+                    <p>{reason.to_string()}</p>
+                    <p>{"Your work here is unaffected."}</p>
+                </div>
+            };
+        }
         html! {
             <div class="account__unavailable">
                 <p><strong>{"Cloud storage is unavailable"}</strong></p>
@@ -788,8 +837,16 @@ async fn sign_out() -> CloudResult<()> {
 /// if it is not.
 async fn try_again() -> Option<CloudError> {
     match retry_cloud().await {
-        Ok(reason) => reason.as_string().map(CloudError::new),
+        Ok(reason) => reason.as_string().map(CloudError::unavailable),
         Err(error) => Some(error.into()),
+    }
+}
+
+/// Asks Firebase whether its project accepts requests from this page: why not, or `None`.
+async fn probe_cloud_error() -> Option<CloudError> {
+    match probe_cloud().await {
+        Ok(reason) => reason.as_string().map(CloudError::unavailable),
+        Err(_) => None,
     }
 }
 
@@ -1170,6 +1227,19 @@ extern "C" {
     /// imported with `catch`: a failure here is a message and not a crash.
     #[wasm_bindgen(js_name = "cloudError")]
     pub fn cloud_error() -> Option<String>;
+
+    /// Whether Firebase is there but its project does not accept this page.
+    #[wasm_bindgen(js_name = "cloudRejected")]
+    pub fn cloud_rejected() -> bool;
+
+    /// Asks Firebase whether its project accepts this page (once): resolves to why not, or `null`.
+    #[wasm_bindgen(catch, js_name = "probeCloud")]
+    pub async fn probe_cloud() -> Result<JsValue, JsValue>;
+
+    /// What an error from Firebase says, if it is the project not accepting this page or the
+    /// emulators not running; otherwise `null`.
+    #[wasm_bindgen(js_name = "explainCloudError")]
+    pub fn explain_cloud_error(error: &JsValue) -> Option<String>;
 
     /// Loads the Firebase scripts again, and resolves to what `cloud_error` is after that.
     #[wasm_bindgen(catch, js_name = "retryCloud")]
