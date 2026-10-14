@@ -30,6 +30,15 @@ pub trait Job {
     /// The steps are the unit of responsiveness: the driver can only stop, show progress or
     /// handle other input between them, so a step should be as small as the job can make it.
     fn step(&mut self) -> Option<Self::Output>;
+
+    /// What the job would come to if it were stopped now, if it has something new to say about
+    /// that since the last time it was asked. Asked before each step by whoever runs the job
+    /// somewhere it can be ended from outside (a worker), so that if that happens the work is
+    /// not all lost: it is only for jobs whose steps can take long and whose output can be
+    /// partial.
+    fn checkpoint(&mut self) -> Option<Self::Output> {
+        None
+    }
 }
 
 /// Runs a job to the end without interruption.

@@ -2,7 +2,10 @@
 
 use std::{rc::Rc, time::Duration};
 
-use homotopy_common::hash::{FastHashMap, FastHashSet};
+use homotopy_common::{
+    deadline,
+    hash::{FastHashMap, FastHashSet},
+};
 use homotopy_core::{
     common::{BoundaryPath, Generator},
     signature::Signature as _,
@@ -72,10 +75,17 @@ impl InferenceLimits {
         (self.budget_ms > 0).then(|| Duration::from_millis(u64::from(self.budget_ms)))
     }
 
-    /// How long one schema may take.
-    fn budget_each(self) -> Option<Duration> {
-        self.budget()
-            .map(|total| (total / 4).max(total.min(Duration::from_secs(1))))
+    /// How long one schema may take, when there are `schemas` of them to infer instances of: a
+    /// quarter of the budget, but at least a second, so that one schema that has no end to it
+    /// does not use up the time of the rest. A schema that is the only one has all of it.
+    fn budget_each(self, schemas: usize) -> Option<Duration> {
+        self.budget().map(|total| {
+            if schemas <= 1 {
+                total
+            } else {
+                (total / 4).max(total.min(Duration::from_secs(1)))
+            }
+        })
     }
 }
 
@@ -100,6 +110,15 @@ pub struct InferenceReport {
     /// How long the inference took, and how long it was allowed to.
     pub spent_ms: u64,
     pub budget_ms: u32,
+    /// Whether the search did not stop when the time was up and had to be ended from outside
+    /// (see [`Job::checkpoint`]): what is offered is what it had before the
+    /// schema it was in the middle of.
+    #[serde(default)]
+    pub forced: bool,
+    /// The longest a single step of the inference took, in milliseconds, for judging how well
+    /// the time limit is kept.
+    #[serde(default)]
+    pub longest_step_ms: u64,
 }
 
 impl InferenceReport {
@@ -182,6 +201,10 @@ pub struct AttachOptionsJob {
     spent: Duration,
     report: InferenceReport,
     started: bool,
+    /// Whether the options so far have changed since the last [`checkpoint`](Job::checkpoint)
+    /// and the inference is going.
+    checkpoint_due: bool,
+    longest_step: Duration,
 }
 
 #[derive(Debug)]
@@ -255,6 +278,8 @@ impl AttachOptionsJob {
             spent: Duration::ZERO,
             report,
             started: false,
+            checkpoint_due: false,
+            longest_step: Duration::ZERO,
         };
         job.to_reflect = job.reflecting().map(|(index, _)| index).collect();
         job.to_infer = job.inferring_for().map(|(index, _)| index).collect();
@@ -447,9 +472,13 @@ impl AttachOptionsJob {
 
     /// Does a little of the inference of instances of schemas: the next candidate of the search
     /// that is going, or the start of the next one. `true` when it is over.
+    ///
+    /// A step does not run past the time that is left: the search looks at the clock as it goes
+    /// (see [`deadline`]), so that one candidate list or one check that would take long is cut
+    /// short, and the schema is given up on with what it had found.
     fn infer(&mut self) -> bool {
         let limit = self.limits.budget();
-        let limit_each = self.limits.budget_each();
+        let limit_each = self.limits.budget_each(self.to_infer.len());
         let started = Instant::now();
 
         if self.inferring.is_none() {
@@ -464,8 +493,11 @@ impl AttachOptionsJob {
             if limit.is_some_and(|limit| self.spent >= limit) {
                 self.report.not_tried.push(name);
                 self.done += 1;
+                self.checkpoint_due = true;
                 return false;
             }
+            let time_up = limit.map(|limit| started + limit.saturating_sub(self.spent));
+            let _limit = time_up.map(deadline::until);
             self.inferring = InferSearch::new(
                 &self.signature,
                 Rc::clone(&self.cells),
@@ -481,19 +513,35 @@ impl AttachOptionsJob {
             });
             if self.inferring.is_none() {
                 self.done += 1;
+                self.checkpoint_due = true;
             }
             self.spent += started.elapsed();
             return false;
         }
 
         let inferring = self.inferring.as_mut().unwrap();
+        // The most this step may take: what is left of the time for the schema and for all.
+        let left = [
+            limit_each.map(|each| each.saturating_sub(inferring.spent)),
+            limit.map(|limit| limit.saturating_sub(self.spent)),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        let limit_now = left.map(|left| deadline::until(started + left));
         let over = inferring.search.step();
+        let out_of_time = limit_now.as_ref().is_some_and(deadline::Limit::expired);
+        drop(limit_now);
         let took = started.elapsed();
         inferring.spent += took;
         self.spent += took;
-        let cut = !over
-            && (limit_each.is_some_and(|limit| inferring.spent >= limit)
-                || limit.is_some_and(|limit| self.spent >= limit));
+        self.longest_step = self.longest_step.max(took);
+        // A search that was cut short by the clock is not over, whatever it says: it ran out of
+        // what it was looking at.
+        let cut = out_of_time
+            || (!over
+                && (limit_each.is_some_and(|limit| inferring.spent >= limit)
+                    || limit.is_some_and(|limit| self.spent >= limit)));
         if over || cut {
             let Inferring {
                 generator, search, ..
@@ -522,14 +570,27 @@ impl AttachOptionsJob {
                 ));
             }
             self.done += 1;
+            self.checkpoint_due = true;
         }
         false
+    }
+
+    /// The most time that the inference of instances can take, if it is going to happen and has
+    /// a limit: for whoever runs the search somewhere that it can be ended from outside (see
+    /// [`checkpoint`](Job::checkpoint)) to know when to.
+    #[must_use]
+    pub fn inference_budget(&self) -> Option<Duration> {
+        if self.to_infer.is_empty() {
+            return None;
+        }
+        self.limits.budget()
     }
 
     fn outcome(&mut self) -> AttachOutcome {
         let mut matches = std::mem::take(&mut self.matches);
         matches.sort_by_key(|(index, rank, _)| (*index, *rank));
         self.report.spent_ms = self.spent.as_millis() as u64;
+        self.report.longest_step_ms = self.longest_step.as_millis() as u64;
         AttachOutcome {
             options: matches.into_iter().map(|(_, _, option)| option).collect(),
             inference: std::mem::take(&mut self.report),
@@ -554,6 +615,44 @@ impl Job for AttachOptionsJob {
         })
     }
 
+    /// What the search would come to if it were ended now, if that is different from the last
+    /// time this was asked and it is in the inference of instances.
+    ///
+    /// The inference is the part of the search that has no end to it, and a single step of it
+    /// can in principle go on for long: so where the search is done by something that can be
+    /// ended from outside (a worker), this is the answer to fall back on if it has to be, with
+    /// the schemas that are not done with, and the one it was in the middle of, reported as not
+    /// finished.
+    fn checkpoint(&mut self) -> Option<Self::Output> {
+        if self.pass != Pass::Instances || !self.checkpoint_due {
+            return None;
+        }
+        self.checkpoint_due = false;
+        let mut matches = self.matches.clone();
+        matches.sort_by_key(|(index, rank, _)| (*index, *rank));
+        let mut report = self.report.clone();
+        report.forced = true;
+        report.spent_ms = self.spent.as_millis() as u64;
+        report.longest_step_ms = self.longest_step.as_millis() as u64;
+        // The schema that is running (or the next, which is about to) is the one that does not
+        // end, if anything is.
+        let mut unfinished = self
+            .inferring
+            .iter()
+            .map(|inferring| inferring.generator)
+            .chain(self.to_infer.iter().skip(self.next).copied());
+        if let Some(running) = unfinished.next() {
+            report.cut_short.push(self.generators[running].name.clone());
+        }
+        report
+            .not_tried
+            .extend(unfinished.map(|index| self.generators[index].name.clone()));
+        Some(AttachOutcome {
+            options: matches.into_iter().map(|(_, _, option)| option).collect(),
+            inference: report,
+        })
+    }
+
     fn step(&mut self) -> Option<Self::Output> {
         self.started = true;
         match self.pass {
@@ -575,6 +674,7 @@ impl Job for AttachOptionsJob {
                 } else {
                     self.pass = Pass::Instances;
                     self.next = 0;
+                    self.checkpoint_due = !self.to_infer.is_empty();
                 }
             }
             Pass::Instances => {

@@ -13,9 +13,13 @@
 //! - `fillWithGenerator("[schema, placeholder, generator]")` chooses the diagram of a generator
 //!   for a placeholder in the Instantiate panel of a schema (each as `[id, dimension]`).
 //! - `profile(json)` replays recorded actions and times each kind (in milliseconds).
+//! - `window.__homotopy_infer_grace_ms` sets how long past its time the worker is given to
+//!   finish inferring instances before it is ended (to see it keep its time by itself, set it
+//!   high).
 //! - `window.__homotopy_step_delay_ms`, if set, makes every step of a job take at least that long,
 //!   to make jobs slow enough to test with (also those done in the worker, which is told when
-//!   it is given the job).
+//!   it is given the job); `window.__homotopy_step_delay_label` limits that to steps whose label
+//!   contains it (`"Inferring"`, say, to have a step of the inference that cannot be interrupted).
 //! - `autosave()` is a JSON summary of saving the project in the background (see `autosave`);
 //!   `window.__homotopy_autosave_idle_ms` sets how long the project is left alone before it is
 //!   saved, and `window.__homotopy_autosave_worker` does for the worker that saves it what
@@ -151,6 +155,27 @@ pub fn step_delay_ms() -> u32 {
         .map_or(0, |delay| delay as u32)
 }
 
+/// What `window.__homotopy_step_delay_label` says, if it is set: the delay of
+/// `__homotopy_step_delay_ms` is only for steps whose label contains this ("Inferring instances"
+/// slows down only the inference of instances, for example).
+pub fn step_delay_label() -> String {
+    web_sys::window()
+        .and_then(|window| {
+            js_sys::Reflect::get(&window, &"__homotopy_step_delay_label".into()).ok()
+        })
+        .and_then(|label| label.as_string())
+        .unwrap_or_default()
+}
+
+/// What `window.__homotopy_infer_grace_ms` says, if it is set: how long past the time for
+/// inferring instances the worker is given to answer before it is ended (in milliseconds).
+pub fn infer_grace_ms() -> Option<u32> {
+    web_sys::window()
+        .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_infer_grace_ms".into()).ok())
+        .and_then(|grace| grace.as_f64())
+        .map(|grace| grace as u32)
+}
+
 /// What `window.__homotopy_worker` says about the worker, if anything: `"off"` for none, `"broken"`
 /// for one whose script cannot be loaded, `"crash"` for one that panics in each job, `"garble"`
 /// for one that answers with nonsense.
@@ -209,11 +234,15 @@ pub fn layout_delay_ms() -> u32 {
         .map_or(0, |delay| delay as u32)
 }
 
-/// Makes a step take as long as `window.__homotopy_step_delay_ms` says, if it is set.
-pub fn artificial_delay() {
+/// Makes a step take as long as `window.__homotopy_step_delay_ms` says, if it is set (and the
+/// label of the step is one that `__homotopy_step_delay_label` says, if that is set).
+pub fn artificial_delay(label: &str) {
     let Some(window) = web_sys::window() else {
         return;
     };
+    if !label.contains(&step_delay_label()) {
+        return;
+    }
     let delay = f64::from(step_delay_ms());
     if delay == 0.0 {
         return;

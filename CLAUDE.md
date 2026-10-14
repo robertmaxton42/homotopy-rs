@@ -233,6 +233,51 @@ indicator: see "Laying out diagrams" below.
     off for the rest of the session (`infer_suspended`, not kept, ended by toggling the setting): a search
     that spends all its time on every click is worse than one with fewer options. A diagram above the
     dimension limit says so once per session. Esc cancels the whole search as any job.
+  - **The limit is hard** (`homotopy_common::deadline`, `Job::checkpoint`, `Message::InferenceDeadline`
+    in `app.rs`). The time was only looked at between steps, and one step (a candidate list, a check
+    of a substitution) could take a long time: in the release build, native, a 1.5 s limit gave 2.46 s
+    spent (+955ms), 700ms gave 975ms; in the debug wasm the steps are 10 to 30 times longer. Now in
+    two layers:
+    - *In the search*, whichever thread it is on (the page when the worker is not ready, or the
+      worker): `AttachOptionsJob::infer` sets a limit for the step with `deadline::until(start + what
+      is left for the schema and for all)`, and the code that loops over what can be large looks at it
+      with `deadline::expired()` (a thread-local read when no limit is set, the clock every 4th
+      call otherwise; sticky until the limit is dropped): `DiagramN::embeddings` (per regular slice),
+      `embeddings_through` (per offset), `Composites::level` (per composite and per embedding).
+      Stopping early only makes a search find less: the results are a prefix of the whole
+      (`homotopy-model/tests/embeddings_through.rs`, `inference::tests::a_search_cut_by_the_clock_is_incomplete_not_wrong`),
+      and nothing that was cut is remembered (a candidate list that was cut short is not cached, a
+      level of composites is rolled back), so later searches of the same job are not the poorer for it.
+      A step that was cut makes its schema "gave up on", as one that went over its share. Measured
+      native release on the fixture, budgets 200ms to 2.5s: spent at most 29ms over (14ms over with
+      the clock looked at on every call; 4 is the compromise); debug wasm in the worker, 700ms to
+      3s: 9 to 21ms over (`spent_ms` of the report, and `longest_step_ms`, are logged as "Inferring
+      instances spent N ms of M"). A single schema that is the only one searched gets all the budget
+      (`budget_each`), not a quarter.
+    - *From the page*, as a backstop for what the search cannot see (a stretch that does not look at
+      the clock): the worker posts `{kind: "partial"}` with an answer that does for the job if it is
+      ended (`Job::checkpoint`: for `AttachOptionsJob`, the options so far, with the schema it is in
+      the middle of in `cut_short` and the ones after it in `not_tried`; `Executor::run_with_checkpoints`;
+      the first as the instances begin, and after that not before ten times the time the last took to
+      make, as packing the options is as costly as packing the answer, 1.5MB for the fixture). The
+      page keeps the latest without decoding it, and when the first arrives starts a timer of the
+      budget plus 750ms (`INFERENCE_GRACE`). If the worker has not answered by then, the page decodes
+      the checkpoint, ends the worker as Esc would (`stop` + `ensure`) and commits the checkpoint
+      as the outcome of the job (`InferenceReport::forced`; the notice says that the search was
+      ended and what it had before then is offered, and that the schemas it names may have been
+      finished). What the worker had found for the schema it was in the middle of is lost. If
+      the checkpoint cannot be read the search is done in the page instead (where the first layer
+      stops it). Busy pill, refusal and Esc are as for any job: the job is the running one until
+      it is committed. Test (debug build): `window.__homotopy_step_delay_ms = 4000` with
+      `window.__homotopy_step_delay_label = "Inferring"` makes every step of the inference spin
+      4s, which no search can see; with a 1s budget the worker was ended 2.4s after the first
+      checkpoint (1.75s asked for: the page's timers are late while it renders the 3D view) and
+      9 options and the notice were committed. `window.__homotopy_infer_grace_ms` sets the grace
+      (high, to see the search keep its time by itself).
+    - The limit is for the inference. The plain cells and their reflections are not limited
+      (they are always offered): on the full workspace of the fixture they are most of the time of
+      a search in the debug wasm build (about 31s of 35s for a click at `[R3, R2]` with a 3s
+      limit; 12 to 14s on the workspace `start`).
   - Debug hooks: `__homotopy.dispatch` takes `{"SelectPoint": [point, weak_units]}` (limits from the
     settings) and `{"SelectPointWith": [point, weak_units, {"enabled":..,"budget_ms":..,"max_dimension":..}]}`;
     a point is a list of `{"Singular": n}`, `{"Regular": n}` or `{"Boundary": "Source"}`. Measured in
@@ -248,13 +293,26 @@ indicator: see "Laying out diagrams" below.
     898 of the 11,259 clicks tried), which the old search made unconditionally on every click. The search
     now only makes reflections that could match, so those clicks work, but the panic is still there
     for a reflection that does.
-  - Known gaps: the time is measured between steps, so a step that takes long (the first candidate
-    list of a new source, up to 1.6s) can go over; in the page (no worker yet) the search is stepped
-    in slices as the others; the searches that do not finish are cut, not made quick; the options a cut
-    schema would have had are not there (use the setting to give it more time).
+  - Known gaps: stretches of the search that do not look at the clock (`Pool::substitute` and the
+    instance lookups, `composite.attach`, the typechecks of reflections, which are not in the
+    inference at all) can still go over by their length (up to 29ms in the release build, none
+    seen beyond that); in the page (no worker yet) a step is as long as one candidate list (the
+    clock stops it, but the page does not respond meanwhile) and the search is stepped in slices as
+    the others; the searches that do not finish are cut, not made quick; the options a cut schema
+    would have had are not there (use the setting to give it more time).
 
 New expensive work: write it as a job (or give an existing job another kind of step), label it,
 and check it with the debug hooks below.
+
+## Policy: heuristics
+
+False negatives are acceptable: a useful heuristic may miss solutions. But a heuristic must never
+produce an invalid result, and it must not be silent about being one: label heuristics in the UI
+(say that this is a search that is bounded, or a guess, and what it left out when it can be said),
+and make them switchable (a setting, as for inferring instances of schemas). Anything that
+cuts a search short (a time limit, a bound on candidates) must leave behind only results that are
+valid by themselves, and nothing remembered as if it were complete. The tests for this are of the
+form "what it found is among what the whole search finds" (see `a_search_cut_by_the_clock_is_incomplete_not_wrong`).
 
 ## Development
 
@@ -303,7 +361,10 @@ and check it with the debug hooks below.
   have something slow to test with in a headless browser (watch `state().busy`, the
   `.busy__pill` element, send `Escape`). Timings of jobs are logged: "<label> took Nms in K steps
   (longest Mms)" in the page, "<label> took Nms in the worker: Wms working, Pms to prepare and Tms
-  to take in the answer (A KB there, B KB back)" for the worker.
+  to take in the answer (A KB there, B KB back)" for the worker. `window.__homotopy_step_delay_label`
+  limits the delay to steps whose label contains it (`"Inferring"`), and `window.__homotopy_infer_grace_ms`
+  sets how long the page waits past the inference budget before it ends the worker (see "The limit is
+  hard").
 
 ## Firebase may not be there, and crashes must not lose work
 

@@ -6,7 +6,10 @@ use std::{
 };
 
 use hashconsing::{HConsed, HConsign, HashConsign};
-use homotopy_common::hash::{FastHashMap, FastHashSet};
+use homotopy_common::{
+    deadline,
+    hash::{FastHashMap, FastHashSet},
+};
 use once_cell::unsync::OnceCell;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -119,6 +122,9 @@ impl Diagram {
         }
     }
 
+    /// The embeddings of `diagram` in this one. If the thread has a [time
+    /// limit](homotopy_common::deadline) that is reached, the search stops and the embeddings
+    /// that were found are all there are: all of them are embeddings, but not all there are.
     #[must_use]
     pub fn embeddings(&self, diagram: &Self) -> Embeddings {
         use Diagram::{Diagram0, DiagramN};
@@ -135,7 +141,8 @@ impl Diagram {
     /// those of [`embeddings`](Self::embeddings) that `needle.contains_point(point, ..)` holds
     /// for, in the same order: but when `needle` has as many dimensions as this diagram, only the
     /// places the point can be in are looked at, a few for each coordinate of the point and not
-    /// all the places there are.
+    /// all the places there are. As for [`embeddings`](Self::embeddings), a time limit that is
+    /// reached cuts the search short.
     #[must_use]
     pub fn embeddings_through(&self, needle: &Self, point: &[Height]) -> Embeddings {
         if point.is_empty() {
@@ -667,8 +674,10 @@ impl DiagramN {
     }
 
     fn embeddings_slice(&self, diagram: Diagram) -> impl Iterator<Item = Vec<usize>> {
+        // (Stops early if the time is up: see `homotopy_common::deadline`.)
         self.regular_slices()
             .enumerate()
+            .take_while(|_| !deadline::expired())
             .flat_map(move |(index, slice)| {
                 slice.embeddings(&diagram).map(move |mut emb| {
                     emb.insert(0, index);
@@ -1067,6 +1076,9 @@ fn embeddings_through(
         .skip(first)
         .take(last + 1 - first)
     {
+        if deadline::expired() {
+            break;
+        }
         let (pointed, point) = match (point.split_first(), pointed) {
             (Some((height, rest)), Diagram::DiagramN(pointed)) => {
                 let relative = usize::from(*height) - 2 * offset;

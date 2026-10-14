@@ -114,7 +114,7 @@ pub fn notice(report: &InferenceReport) -> Vec<String> {
         }
     }
     if report.timed_out() {
-        let seconds = report.spent_ms.div_ceil(1000);
+        let seconds = (report.spent_ms + 500) / 1000;
         lines.push(format!(
             "Instance inference took too long and was skipped for this search ({seconds} s). \
              You can turn it off in Settings."
@@ -125,6 +125,13 @@ pub fn notice(report: &InferenceReport) -> Vec<String> {
         }
         if !report.not_tried.is_empty() {
             lines.push(format!("Not tried: {}.", names(&report.not_tried)));
+        }
+        if report.forced {
+            lines.push(
+                "The search did not stop when its time was up, so it was ended and what it had \
+                 found before then is offered."
+                    .to_owned(),
+            );
         }
         let timeouts = TIMEOUTS.with(|timeouts| {
             timeouts.set(timeouts.get() + 1);
