@@ -398,7 +398,7 @@ indicator: see "Laying out diagrams" below.
     `DiagramSvg` (`accepts_drops`, `on_attach`) accepts a drag (`preventDefault` on `dragover`) only if
     it carries that type, the verdict is yes and the diagram is not waiting for its layout (the handlers
     are not there while `pending`: drops are ignored as clicks are); it outlines the simplex under the
-    pointer (`diagram-svg__drop-highlight`, from the shape that `simplex_at` finds, no search) and on drop
+    pointer (`diagram-svg__drop-highlight`, from the first shape of `hits_at`, no search) and on drop
     emits `(generator, simplex[0])`, which the workspace turns into `AttachGenerator(generator, point, weak
     units, limits)`. While a job runs a drop is refused like a click (the pill shakes; dragover is
     still accepted, so that there is something to refuse). Folder drop zones and the signature are as
@@ -466,8 +466,8 @@ indicator: see "Laying out diagrams" below.
     part of the point; `step` goes to the next, round; `drill` first fixes the default and then pushes the
     first sheet inside the chosen one (never silently: it is a key press), `undrilled` pops. A choice that is
     not of a position under the pointer is no choice. `DiagramSvg` (`sheets` property, set by the workspace)
-    keeps `choice`, `hits` (`hits_at`: all shapes under the pointer, top first, which `simplex_at` is the
-    first of; only the first is looked for when `sheets` is off), and a `keydown` listener on the window
+    keeps `choice`, `hits` (`hits_at`: all shapes under the pointer, top first; the first is the one on top;
+    only the first is looked for when `sheets` is off), and a `keydown` listener on the window
     (`gloo`, non-passive) that only takes `[`, `]`, `Tab` and `Shift+Tab` while the pointer is over a stack
     worth listing (`Keys::wanted`, a shared flag: several diagrams can exist, and Tab is not ours otherwise;
     not from text fields). `Shift+wheel` is an `onwheel` on the svg that stops the event before the pan/zoom
@@ -514,7 +514,14 @@ indicator: see "Laying out diagrams" below.
     the point chosen, how many wires are dimmed). Real mouse moves, `page.keyboard.press("]")`,
     `Tab`, and `keyboard.down("Shift")` with `mouse.wheel` work in Playwright. The 5.3MB fixture takes ~40 s to
     import in the debug build; set `DecreaseView` once to get the 2D view (it opens in 3D).
-  - Gaps: homotopies by dragging still use the front sheet (`Depths::node_depth`); only the first chosen
+  - **Homotopy drags**: a horizontal drag (an `Expand`, for a 3-dimensional diagram) acts on the chosen sheet. The
+    choice is copied at pointer down (`drag_choice`; the pointer moves before the drag threshold, and moving to
+    another shape clears `choice`), and `pointer_move` picks the shape to start from with `pick_hit` (as a click
+    does) and hands `drag_to_homotopy` the first `z` of the choice (`chosen_sheet`, only if the choice is at that
+    shape's position) instead of `Depths::node_depth`. No choice, or one at another position: the front sheet, as
+    before. Contractions act on all sheets and vertical drags have no depth, so they are unchanged. Test:
+    `a_horizontal_drag_expands_at_the_sheet_chosen_and_else_at_the_front` (`diagram_svg.rs`).
+  - Gaps: only the first chosen
     `z` dims wires; surfaces and vertices are not dimmed; the 3D view has no sheets; the native drag gives no
     keys, so a drop uses a choice made before the drag (only when the pointer comes back to the same shape);
     `Stack` lists the sheets of the shapes of one kind (the regions behind a wire cannot be chosen).

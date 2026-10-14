@@ -63,6 +63,9 @@ pub struct DiagramSvg<const N: usize> {
     /// Whether the layout has just arrived, and `on_laid_out` is to be called once it is drawn.
     announce: bool,
     drag_start: Option<Point2D<f32>>,
+    /// The sheet that was chosen when the button went down, for the drag that may follow: the
+    /// pointer moves before the drag is recognised, and moving to another shape forgets `choice`.
+    drag_choice: Option<Choice<N>>,
     /// What the pointer is over, which the tooltip shown is for.
     hovered: Option<Simplex<N>>,
     /// The part of the diagram that a generator being dragged over it would be attached at.
@@ -239,6 +242,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
             pending: None,
             announce: false,
             drag_start: Default::default(),
+            drag_choice: None,
             hovered: None,
             drop_target: None,
             hits: vec![],
@@ -256,6 +260,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
         match msg {
             DiagramSvgMessage::OnMouseDown(point) => {
                 self.drag_start = Some(point);
+                self.drag_choice = self.choice.clone();
                 self.hide_tooltip();
             }
             DiagramSvgMessage::OnMouseMove(point, shift_key) => {
@@ -278,6 +283,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
             DiagramSvgMessage::OnTouchUpdate(touches) => {
                 if self.drag_start.is_none() && touches.len() == 1 {
                     self.drag_start = Some(touches[0].1);
+                    self.drag_choice = None;
                 } else if touches.is_empty() {
                     self.drag_start = None;
                 }
@@ -915,14 +921,8 @@ impl<const N: usize> DiagramSvg<N> {
         Some(prepared.transform.transform_point(point))
     }
 
-    /// The part of the diagram at the point of the screen, if there is one and the diagram is
-    /// ready to be acted on (not while it is waiting for its layout).
-    fn simplex_at(&self, ctx: &Context<Self>, point: Point2D<f32>) -> Option<Simplex<N>> {
-        self.hits_at(ctx, point).first().copied()
-    }
-
     /// Everything at the point of the screen, the part on top first: wires and vertices over
-    /// regions. Only the first when the diagram has no sheets to choose between, and nothing
+    /// regions (none while the diagram is waiting for its layout). Only the first when the diagram has no sheets to choose between, and nothing
     /// but the first is looked for then.
     fn hits_at(&self, ctx: &Context<Self>, point: Point2D<f32>) -> Vec<Simplex<N>> {
         let Some(prepared) = self.current() else {
@@ -944,11 +944,7 @@ impl<const N: usize> DiagramSvg<N> {
     /// Which of the things at a place a click or a drop is for: the one that the sheet chosen is
     /// of, if it is there, and else the one on top.
     fn hit_to_act_on(&self, hits: &[Simplex<N>]) -> Option<Simplex<N>> {
-        self.choice
-            .as_ref()
-            .and_then(|choice| hits.iter().find(|hit| hit[0] == choice.position))
-            .or_else(|| hits.first())
-            .copied()
+        pick_hit(self.choice.as_ref(), hits)
     }
 
     /// The point of the diagram that a click or a drop at this point of the screen is at: the
@@ -974,10 +970,16 @@ impl<const N: usize> DiagramSvg<N> {
             let angle = diff.angle_from_x_axis();
             self.drag_start = None;
 
-            let (Some(simplex), Some(prepared)) = (self.simplex_at(ctx, start), self.current())
+            // The sheet chosen when the button went down, if it is of the place the drag starts
+            // from (as for a click); else the front one.
+            let choice = self.drag_choice.take();
+            let hits = self.hits_at(ctx, start);
+            let (Some(simplex), Some(prepared)) =
+                (pick_hit(choice.as_ref(), &hits), self.current())
             else {
                 return;
             };
+            let sheet = chosen_sheet(choice.as_ref(), simplex[0]);
 
             let homotopy = drag_to_homotopy(
                 angle,
@@ -985,6 +987,7 @@ impl<const N: usize> DiagramSvg<N> {
                 prepared.diagram.clone(),
                 &prepared.depths,
                 shift_key,
+                sheet,
             );
 
             if let Some(homotopy) = homotopy {
@@ -1087,12 +1090,36 @@ impl<const N: usize> DiagramSvg<N> {
     }
 }
 
+/// Which of the things at a place a click, a drop or a drag is for: the one that the sheet chosen
+/// is of, if it is there, and else the one on top.
+fn pick_hit<const N: usize>(choice: Option<&Choice<N>>, hits: &[Simplex<N>]) -> Option<Simplex<N>> {
+    choice
+        .and_then(|choice| hits.iter().find(|hit| hit[0] == choice.position))
+        .or_else(|| hits.first())
+        .copied()
+}
+
+/// The height `z` of the sheet that a choice made at `position` picks out for the next
+/// coordinate (the first of its path), if it was made at that position.
+fn chosen_sheet<const N: usize>(
+    choice: Option<&Choice<N>>,
+    position: [SliceIndex; N],
+) -> Option<usize> {
+    choice
+        .filter(|choice| choice.position == position)
+        .and_then(|choice| choice.path.first().copied())
+}
+
+/// The homotopy that dragging from a part of the diagram in a direction is. A horizontal drag in
+/// a view of a 3-dimensional diagram acts on the sheet at `sheet` (its height `z` at the position)
+/// if one was chosen, and else on the front one (`Depths::node_depth`).
 fn drag_to_homotopy<const N: usize>(
     angle: Angle<f32>,
     simplex: &Simplex<N>,
     diagram: Diagram,
     depths: &Depths<N>,
     force_same: bool,
+    sheet: Option<usize>,
 ) -> Option<Homotopy> {
     use Height::{Regular, Singular};
     use SliceIndex::{Boundary, Interior};
@@ -1133,9 +1160,9 @@ fn drag_to_homotopy<const N: usize>(
             // Handle horizontal and vertical drags
             let (prefix, y, x, diagram) = if horizontal {
                 let depth = match point[1] {
-                    Interior(Singular(_)) => {
-                        Height::Singular(depths.node_depth(*point).unwrap_or_default())
-                    }
+                    Interior(Singular(_)) => Height::Singular(
+                        sheet.unwrap_or_else(|| depths.node_depth(*point).unwrap_or_default()),
+                    ),
                     _ => return None,
                 };
 
@@ -1238,5 +1265,109 @@ impl Default for RenderStyle {
             wire_thickness: 8.0,
             point_radius: 6.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use homotopy_core::{examples, projection::Depths, Diagram, DiagramN};
+
+    use super::*;
+
+    fn choice(z: &[usize]) -> Choice<2> {
+        Choice {
+            position: [Height::Singular(1).into(), Height::Singular(0).into()],
+            path: z.to_vec(),
+        }
+    }
+
+    #[test]
+    fn the_sheet_is_the_first_height_of_a_choice_at_the_position() {
+        let at = choice(&[2, 0]).position;
+        assert_eq!(chosen_sheet(Some(&choice(&[2, 0])), at), Some(2));
+        assert_eq!(chosen_sheet(Some(&choice(&[1])), at), Some(1));
+        assert_eq!(chosen_sheet(None, at), None);
+        // A choice at another position is none.
+        let elsewhere = [Height::Singular(0).into(), Height::Singular(0).into()];
+        assert_eq!(chosen_sheet(Some(&choice(&[2])), elsewhere), None);
+    }
+
+    #[test]
+    fn a_choice_picks_its_own_shape_else_the_one_on_top() {
+        let c = choice(&[0]);
+        let other = [Height::Singular(0).into(), Height::Singular(0).into()];
+        let (top, chosen) = (Simplex::Point([other]), Simplex::Point([c.position]));
+        assert_eq!(pick_hit(Some(&c), &[top, chosen]), Some(chosen));
+        assert_eq!(pick_hit(Some(&c), &[top]), Some(top));
+        assert_eq!(pick_hit(None, &[top, chosen]), Some(top));
+        assert_eq!(pick_hit::<2>(None, &[]), None);
+    }
+
+    /// The point that the expansion of a horizontal drag from a point of the diagram acts at.
+    fn expansion_at(
+        diagram: &DiagramN,
+        depths: &Depths<2>,
+        position: [SliceIndex; 2],
+        sheet: Option<usize>,
+    ) -> Option<[SliceIndex; 2]> {
+        let drag = drag_to_homotopy(
+            Angle::radians(0.0),
+            &Simplex::Point([position]),
+            Diagram::from(diagram.clone()),
+            depths,
+            false,
+            sheet,
+        )?;
+        match drag {
+            Homotopy::Expand(expand) => Some(expand.point.map(Into::into)),
+            Homotopy::Contract(_) => None,
+        }
+    }
+
+    #[test]
+    fn a_horizontal_drag_expands_at_the_sheet_chosen_and_else_at_the_front() {
+        let mut checked = 0;
+        for (_, diagram) in [
+            examples::associator(),
+            examples::crossing(),
+            examples::half_braid(),
+            examples::bubble(),
+            examples::algebraic_snake(),
+            examples::lips(),
+            examples::pants_unit(),
+            examples::two_cups(),
+        ] {
+            if diagram.dimension() < 3 {
+                continue;
+            }
+            let depths = Depths::<2>::new(&diagram.clone().into()).unwrap();
+            for i in 0..=2 * diagram.size() {
+                let Some(Ok(slice)) = diagram.slice(Height::from(i)).map(DiagramN::try_from) else {
+                    continue;
+                };
+                for j in 0..=2 * slice.size() {
+                    let position = [Height::from(i).into(), Height::from(j).into()];
+                    let sheets = depths.sheets(position, &[]);
+                    let front = depths.node_depth(position).unwrap_or_default();
+                    let default = expansion_at(&diagram, &depths, position, None);
+                    // Without a choice, it is as it was.
+                    if let Some(point) = default {
+                        assert_eq!(point[1], Height::Singular(front).into());
+                    }
+                    for sheet in sheets.iter().filter(|s| s.z != front) {
+                        if let Some(point) =
+                            expansion_at(&diagram, &depths, position, Some(sheet.z))
+                        {
+                            assert_eq!(point[1], Height::Singular(sheet.z).into());
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "some drag expands at a sheet that is not the front one"
+        );
     }
 }

@@ -61,6 +61,10 @@ what can. This is often much quicker, as the search does not look at the rest. (
 is no choosing during a drag. Pick the generator with the pointing hand instead, choose the sheet,
 and click. A drop uses the sheet that was chosen for the position it lands on, if there is one.)
 
+Dragging a wire sideways to expand it (a horizontal drag) acts on the sheet you chose at the
+place the drag starts from, if you chose one there before pressing the button, and else on the
+front one, as before. Contractions act on all the sheets and are the same whatever you chose.
+
 Choose no sheet (leave the position and come back, or Shift + Tab all the way) and a click is
 what it has always been. The 3D view has no sheets.
 
