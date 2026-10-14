@@ -2084,3 +2084,23 @@ input[type="color"]::-webkit-color-swatch {
   outline: 2px solid #66aeeb;
   border-radius: 50%;
 }
+
+/* The instances of a schema in the list of attachments: a group that is closed until opened. */
+.attach__group {
+  align-items: center;
+}
+
+.attach__group-toggle {
+  padding-left: var(--space-1);
+}
+
+.attach__group-count {
+  padding: var(--space-1);
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--drawer-foreground-dimmed-text);
+}
+
+.attach__option--grouped .attach__option-name {
+  padding-left: calc(var(--space-1) * 3);
+}
