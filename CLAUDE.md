@@ -596,6 +596,11 @@ valid (`narrowing_to_a_sheet_only_finds_valid_instances`, for the sheet heuristi
   worker, cached, cancelled, pending) are for testing. `__homotopy.profileLayouts()` times the
   layout and geometry of every diagram of the project and its slices next to their weight, for
   choosing the thresholds.
+- **Temporary input logger** (`app/input_log.rs`, for diagnosing the mouse back/forward buttons and the
+  history-trap redesign; remove when done): with `localStorage["homotopy-log-input"] = "1"` (read once at
+  startup) the console logs `[homotopy input] ...` lines for mouse buttons above 2 (all of `auxclick`),
+  `Browser*` keys and Alt+Left/Right, `popstate` (history length and state), `beforeunload` and `pagehide`.
+  It works in the release build and only logs.
 - `.claude/dev/highs-shim.js` and `flake.nix`'s `post.js` assign `self.Highs_*` rather than
   `window.Highs_*`, so that HiGHS is there in a worker too. The shim was tested here; the `flake.nix`
   edit (a textual replacement of `window.` by `self.` in `post.js`, which goes through the Closure
