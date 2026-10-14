@@ -10,6 +10,8 @@
 //!   `__homotopy_worker` does for the other (`"off"`, `"broken"`, `"crash"`, `"garble"`);
 //!   `window.__homotopy_layout_weight` sets the weight up to which diagrams are laid out on the
 //!   page (0 sends all of them to the worker).
+//! - `fillWithGenerator("[schema, placeholder, generator]")` chooses the diagram of a generator
+//!   for a placeholder in the Instantiate panel of a schema (each as `[id, dimension]`).
 //! - `profile(json)` replays recorded actions and times each kind (in milliseconds).
 //! - `window.__homotopy_step_delay_ms`, if set, makes every step of a job take at least that long,
 //!   to make jobs slow enough to test with (also those done in the worker, which is told when
@@ -384,6 +386,32 @@ pub fn install(link: &Scope<App>) {
                     .map(|(_, d)| d.clone())
             });
             let diagram = diagram.ok_or_else(|| JsValue::from_str("no such replacement"))?;
+            fill.send_message(Message::Dispatch(model::Action::Draft(
+                proof::DraftEdit::Fill(schema, placeholder, diagram),
+            )));
+            Ok(())
+        })
+        .into_js_value(),
+    );
+
+    // `fillWithGenerator(schema, placeholder, generator)`, each as `[id, dimension]`: chooses for
+    // the placeholder the diagram of a generator of the signature, as *Use workspace* does with
+    // that cell in the workspace.
+    let fill = link.clone();
+    set(
+        "fillWithGenerator",
+        Closure::<dyn Fn(String) -> Result<(), JsValue>>::new(move |json: String| {
+            use homotopy_core::{signature::Signature as _, Generator};
+            let [schema, placeholder, cell]: [[usize; 2]; 3] =
+                serde_json::from_str(&json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let [schema, placeholder, cell] =
+                [schema, placeholder, cell].map(|[id, dimension]| Generator::new(id, dimension));
+            let diagram = STATE.with(|state| {
+                let state = state.borrow();
+                let info = state.0.proof().signature.generator_info(cell)?;
+                Some(info.diagram.clone())
+            });
+            let diagram = diagram.ok_or_else(|| JsValue::from_str("no such generator"))?;
             fill.send_message(Message::Dispatch(model::Action::Draft(
                 proof::DraftEdit::Fill(schema, placeholder, diagram),
             )));

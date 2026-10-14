@@ -223,8 +223,9 @@ and check it with the debug hooks below.
   actions, timing each), `profileDrafts()`, `fillFromInstance("[schema, placeholder, instance,
   dimension]")` (each generator as `[id, dimension]`: chooses, as *Use workspace* does, the
   replacement of that dimension that an instance was made with, for diagrams that are hard to put
-  in the workspace, such as a cell whiskered by another), `crash("panic"|"throw")` (the crash
-  screen, see below). Setting `window.__homotopy_step_delay_ms = 50` makes
+  in the workspace, such as a cell whiskered by another), `fillWithGenerator("[schema,
+  placeholder, generator]")` (the same with the diagram of a generator of the signature),
+  `crash("panic"|"throw")` (the crash screen, see below). Setting `window.__homotopy_step_delay_ms = 50` makes
   every step of a job spin that long (also in the worker: the value is sent with each job), to
   have something slow to test with in a headless browser (watch `state().busy`, the
   `.busy__pill` element, send `Escape`). Timings of jobs are logged: "<label> took Nms in K steps
