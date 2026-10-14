@@ -16,6 +16,10 @@
 //! - `window.__homotopy_step_delay_ms`, if set, makes every step of a job take at least that long,
 //!   to make jobs slow enough to test with (also those done in the worker, which is told when
 //!   it is given the job).
+//! - `autosave()` is a JSON summary of saving the project in the background (see `autosave`);
+//!   `window.__homotopy_autosave_idle_ms` sets how long the project is left alone before it is
+//!   saved, and `window.__homotopy_autosave_worker` does for the worker that saves it what
+//!   `__homotopy_worker` does for the other (`"off"`, `"broken"`, `"crash"`, `"garble"`).
 //! - `crash("panic")` panics in the app and `crash("throw")` calls JavaScript that throws and
 //!   nothing catches, to test the crash screen and recovering the project (see `panic`).
 //! - `window.__homotopy_worker` can be set to `"off"` before the app starts to do without the
@@ -147,6 +151,26 @@ pub fn worker_mode() -> String {
         .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_worker".into()).ok())
         .and_then(|mode| mode.as_string())
         .unwrap_or_default()
+}
+
+/// What `window.__homotopy_autosave_worker` says about the worker that saves the project, if
+/// anything: the same as `__homotopy_worker` says about the other (`"off"`, `"broken"`,
+/// `"crash"`, `"garble"`).
+pub fn autosave_worker_mode() -> String {
+    web_sys::window()
+        .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_autosave_worker".into()).ok())
+        .and_then(|mode| mode.as_string())
+        .unwrap_or_default()
+}
+
+/// How long `window.__homotopy_autosave_idle_ms` says to leave the project alone before saving
+/// it, if it is set (in milliseconds).
+pub fn autosave_idle_ms() -> Option<f64> {
+    web_sys::window()
+        .and_then(|window| {
+            js_sys::Reflect::get(&window, &"__homotopy_autosave_idle_ms".into()).ok()
+        })
+        .and_then(|idle| idle.as_f64())
 }
 
 /// What `window.__homotopy_layout_worker` says about the worker that lays diagrams out, if
@@ -503,6 +527,25 @@ pub fn install(link: &Scope<App>) {
         "profileAutosave",
         Closure::<dyn Fn() -> String>::new(|| {
             STATE.with(|state| profile_autosave(&state.borrow().0))
+        })
+        .into_js_value(),
+    );
+
+    set(
+        "autosave",
+        Closure::<dyn Fn() -> String>::new(|| {
+            let status = crate::autosave::status();
+            serde_json::json!({
+                "enabled": status.enabled,
+                "saving": status.saving,
+                "stage": status.stage,
+                "session": status.session,
+                "saved": status.saved.map(|(time, bytes)| serde_json::json!({"time": time, "bytes": bytes})),
+                "error": status.error,
+                "saves": status.saves,
+                "failures": status.failures,
+            })
+            .to_string()
         })
         .into_js_value(),
     );

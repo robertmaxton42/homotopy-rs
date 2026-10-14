@@ -11,7 +11,8 @@
 //!
 //! - page to worker: `{kind: "run", job, bytes}` for a job, or `{kind: "layout", job, bytes}` for
 //!   a layout (see [`homotopy_model::remote::layout`]), with the bytes transferred rather than
-//!   copied;
+//!   copied; and `{kind: "preload", bytes}`, diagrams for the next job to find (see
+//!   [`homotopy_model::remote::Remote::preload`]), which has no answer;
 //! - worker to page: `{kind: "ready"}` (said by `static/worker.js`) once the module is running,
 //!   then for each job any number of `{kind: "progress", job, label, done, total}` and finally
 //!   `{kind: "done", job, bytes}`, or `{kind: "panic", job, message}` if the worker crashed
@@ -200,6 +201,12 @@ impl Client {
         self.give("run", job, bytes, fault)
     }
 
+    /// Gives the worker diagrams to hold for the request that follows, which is the bytes
+    /// [`Remote::preload`] makes. There is no answer.
+    pub fn preload(&self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.give("preload", 0, bytes, "")
+    }
+
     /// Gives the worker a layout to do, which is the bytes of a request of
     /// [`homotopy_model::remote::layout`].
     pub fn lay_out(&self, job: u64, bytes: &[u8], fault: &str) -> Result<(), JsValue> {
@@ -360,6 +367,13 @@ pub fn init() {
 #[wasm_bindgen]
 pub fn worker_message(data: &JsValue) {
     let kind = get(data, "kind").as_string();
+    if kind.as_deref() == Some("preload") {
+        // Diagrams for the next request, which nothing is said about.
+        if let Ok(bytes) = get(data, "bytes").dyn_into::<Uint8Array>() {
+            EXECUTOR.with(|executor| executor.borrow_mut().preload(&bytes.to_vec()));
+        }
+        return;
+    }
     if !matches!(kind.as_deref(), Some("run" | "layout")) {
         return;
     }

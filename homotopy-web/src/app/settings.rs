@@ -11,6 +11,7 @@ declare_settings! {
         animated_3d: bool = false,
         contraction_step: u32 = 1,
         merge_exchanges: bool = false,
+        autosave: bool = true,
 
         cubical_subdivision: bool = true,
         dpr_scale: bool = true,
@@ -99,6 +100,14 @@ impl Component for SettingsView {
                             AppSettings::set_merge_exchanges,
                         )
                     }
+                    {
+                        Self::view_checkbox(
+                            "Back up my work in this browser",
+                            AppSettings::get_autosave(),
+                            AppSettings::set_autosave,
+                        )
+                    }
+                    <div class="settings__note">{Self::autosave_status()}</div>
                     {
                         Self::view_slider(
                             "Contraction step",
@@ -249,6 +258,32 @@ impl Component for SettingsView {
 }
 
 impl SettingsView {
+    /// What there is to say about the backups.
+    fn autosave_status() -> String {
+        let status = crate::autosave::status();
+        if !status.enabled {
+            return "No backups are made (turning this off deleted them).".to_owned();
+        }
+        if let Some(error) = status.error {
+            return format!("Backups are not working: {error}");
+        }
+        match status.saved {
+            Some((time, bytes)) => {
+                let when = crate::autosave::Snapshot {
+                    session: String::new(),
+                    time,
+                    title: None,
+                    size: bytes,
+                }
+                .when();
+                format!("Last backup at {when} ({} KB).", bytes.div_ceil(1024))
+            }
+            None => {
+                "A backup is made a few seconds after you stop changing the project.".to_owned()
+            }
+        }
+    }
+
     fn view_checkbox<S>(name: &str, current: bool, setter: S) -> Html
     where
         S: Fn(bool) + 'static,

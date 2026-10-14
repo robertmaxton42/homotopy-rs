@@ -1334,6 +1334,12 @@ svg {
   padding-bottom: var(--space-1);
 }
 
+.settings__note {
+  margin: 0 0 var(--space-1);
+  font-size: 12px;
+  opacity: 0.7;
+}
+
 .settings__toggle-setting input {
   margin-right: var(--space-1);
   cursor: pointer;
@@ -1692,6 +1698,89 @@ svg {
 
 @media (prefers-reduced-motion: reduce) {
   .layout-note__spinner { animation-duration: 3s; }
+}
+
+/*
+ * The note that a backup of the project is being made (components/autosave_note.rs): small, in
+ * the corner, and in after 150ms like the busy pill and the layout note, so that a save that is
+ * done in no time causes no flicker. It is nothing to click on.
+ */
+.autosave-note {
+  position: fixed;
+  bottom: var(--space-1);
+  right: var(--space-1);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-0) var(--space-1);
+  border-radius: 999px;
+  background: var(--sidebar-background);
+  color: var(--sidebar-foreground);
+  opacity: 0.85;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1004;
+  animation: busy__in 120ms ease-out 150ms both;
+}
+
+.autosave-note__spinner {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .autosave-note__spinner { animation-duration: 3s; }
+}
+
+/*
+ * The offer to restore the work of an earlier visit (components/restore_notice.rs). It sits
+ * beside the sidebar, and is not modal.
+ */
+.restore-notice {
+  position: fixed;
+  left: calc(var(--sidebar-width) + var(--space-2));
+  bottom: var(--space-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: calc(100vw - var(--sidebar-width) - 2 * var(--space-2));
+  padding: var(--space-1) var(--space-2);
+  border-radius: 8px;
+  background: var(--sidebar-background);
+  color: var(--sidebar-foreground);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  font-size: 14px;
+  z-index: 1004;
+}
+
+.restore-notice__title {
+  font-style: italic;
+}
+
+.restore-notice__button {
+  padding: var(--space-0) var(--space-1);
+  border: 1px solid var(--sidebar-hover);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.restore-notice__button:hover,
+.restore-notice__button:focus-visible {
+  background: var(--sidebar-hover);
+}
+
+.restore-notice__button--primary {
+  border-color: var(--drawer-selected);
 }
 
 /* Modal */
