@@ -113,6 +113,25 @@ impl History {
         &self.snapshots[self.current]
     }
 
+    /// Which proof of the history is the current one, as a number that is different for each
+    /// (undoing gives back the number the proof had), for telling whether the project has
+    /// changed without comparing it.
+    #[must_use]
+    pub fn position(&self) -> usize {
+        homotopy_common::idx::Idx::index(&self.current)
+    }
+
+    /// Whether the current proof is the one that importing a project made, which is whatever the
+    /// file held. The action is not cloned, which would copy the file.
+    #[must_use]
+    pub fn at_import(&self) -> bool {
+        self.snapshots
+            .with(self.current, |s| {
+                matches!(s.action, Some(super::proof::Action::ImportProof(_)))
+            })
+            .unwrap_or_default()
+    }
+
     pub fn add(&mut self, action: super::proof::Action, proof: Proof) {
         if let Some(child) = self.snapshots.push_onto(
             self.current,

@@ -12,54 +12,80 @@
 //! done about it, and says when to save next. It knows nothing of time except what it is told, nor
 //! of what a version is (the app uses the position in the history), so that it can be tested.
 
-use std::collections::VecDeque;
-
-use homotopy_core::{serialize::Store, Diagram};
+use homotopy_core::{serialize::Store, Diagram, Rewrite};
 
 use crate::proof::Signature;
 
-/// Packs the diagrams of a signature into a [`Store`] one at a time, handing out what has been
-/// packed as it goes.
+/// A piece of the work of a [`Packer`].
+enum Task {
+    /// Everything about a diagram, which comes apart into smaller tasks.
+    Diagram(Diagram),
+    /// A rewrite, which a diagram has two of for each of its cospans.
+    Rewrite(Rewrite),
+    /// The diagram itself, when what it is made of has been packed.
+    Pack(Diagram),
+}
+
+/// Packs the diagrams of a signature into a [`Store`] a little at a time, handing out what has
+/// been packed as it goes.
+///
+/// A diagram of a large project can take longer to pack in one go than the page can be blocked
+/// for, so a diagram is packed in the order of what it is made of: its source, then the rewrites
+/// of its cospans one at a time, and then the diagram, which has nothing left to do but find them
+/// already packed.
 pub struct Packer {
     store: Store,
-    pending: VecDeque<Diagram>,
-    total: usize,
+    /// What is left to do, the next on top.
+    tasks: Vec<Task>,
 }
 
 impl Packer {
     #[must_use]
     pub fn new(signature: &Signature) -> Self {
-        let mut pending = VecDeque::new();
+        let mut tasks = vec![];
         for info in signature.iter() {
-            pending.push_back(info.diagram.clone());
+            tasks.push(Task::Diagram(info.diagram.clone()));
             if let Some(instance) = &info.instance {
-                pending.extend(
+                tasks.extend(
                     instance
                         .substitution
                         .iter()
-                        .map(|(_, diagram)| diagram.clone()),
+                        .map(|(_, diagram)| Task::Diagram(diagram.clone())),
                 );
             }
         }
+        // The first in the signature is the first done.
+        tasks.reverse();
         Self {
             store: Store::default(),
-            total: pending.len(),
-            pending,
+            tasks,
         }
     }
 
-    /// Packs the next diagram. Returns whether there are no more.
+    /// Does a bit of the work. Returns whether there is no more.
     pub fn step(&mut self) -> bool {
-        if let Some(diagram) = self.pending.pop_front() {
-            self.store.pack_diagram(&diagram);
+        match self.tasks.pop() {
+            None => {}
+            Some(Task::Rewrite(rewrite)) => {
+                self.store.pack_rewrite(&rewrite);
+            }
+            Some(Task::Pack(diagram)) => {
+                self.store.pack_diagram(&diagram);
+            }
+            Some(Task::Diagram(Diagram::Diagram0(point))) => {
+                self.store.pack_diagram(&point.into());
+            }
+            Some(Task::Diagram(Diagram::DiagramN(diagram))) => {
+                // In reverse, as the last pushed is the first done.
+                self.tasks.push(Task::Pack(diagram.clone().into()));
+                for cospan in diagram.cospans().iter().rev() {
+                    self.tasks.push(Task::Rewrite(cospan.backward.clone()));
+                    self.tasks.push(Task::Rewrite(cospan.forward.clone()));
+                }
+                self.tasks.push(Task::Diagram(diagram.source()));
+            }
         }
-        self.pending.is_empty()
-    }
-
-    /// How many diagrams have been packed, and how many there are.
-    #[must_use]
-    pub fn progress(&self) -> (usize, usize) {
-        (self.total - self.pending.len(), self.total)
+        self.tasks.is_empty()
     }
 
     /// What has been packed since the last call, to be sent. What it has given away is not
@@ -92,6 +118,13 @@ const CLEAN: usize = 8;
 #[derive(Clone, Debug)]
 pub struct Plan<V> {
     enabled: bool,
+    /// How long to leave the project alone before saving it, and the longest to go on waiting
+    /// for that (see [`IDLE_MS`] and [`MAX_WAIT_MS`]).
+    idle: f64,
+    max_wait: f64,
+    /// How long to wait after a failure, and the longest (see [`RETRY_MS`]).
+    retry: f64,
+    max_retry: f64,
     /// Versions whose project is safe elsewhere: the one that was opened, those imported and
     /// those exported. There is nothing to protect in them.
     clean: Vec<V>,
@@ -112,6 +145,10 @@ impl<V: Copy + Eq> Plan<V> {
     pub fn new(version: V, now: f64) -> Self {
         Self {
             enabled: true,
+            idle: IDLE_MS,
+            max_wait: MAX_WAIT_MS,
+            retry: RETRY_MS,
+            max_retry: MAX_RETRY_MS,
             clean: vec![version],
             saved: None,
             current: version,
@@ -121,6 +158,16 @@ impl<V: Copy + Eq> Plan<V> {
             failures: 0,
             failed_at: now,
         }
+    }
+
+    /// Waits for other times than the usual, to test with: the retries are in proportion.
+    #[must_use]
+    pub fn with_timing(mut self, idle_ms: f64, max_wait_ms: f64) -> Self {
+        self.idle = idle_ms;
+        self.max_wait = max_wait_ms;
+        self.retry = RETRY_MS * idle_ms / IDLE_MS;
+        self.max_retry = MAX_RETRY_MS * idle_ms / IDLE_MS;
+        self
     }
 
     /// Whether saving is wanted at all.
@@ -173,13 +220,21 @@ impl<V: Copy + Eq> Plan<V> {
             return None;
         }
         // After the project has been left alone for a while, or has been changing for too long.
-        let mut due = (self.changed_at + IDLE_MS).min(self.unsaved_since + MAX_WAIT_MS);
+        let mut due = (self.changed_at + self.idle).min(self.unsaved_since + self.max_wait);
         if self.failures > 0 {
             let backoff =
-                (RETRY_MS * f64::from(1_u32 << (self.failures - 1).min(10))).min(MAX_RETRY_MS);
+                (self.retry * f64::from(1_u32 << (self.failures - 1).min(10))).min(self.max_retry);
             due = due.max(self.failed_at + backoff);
         }
         Some((due - now).max(0.0))
+    }
+
+    /// Makes the project due to be saved now rather than after the wait, if it is to be saved at
+    /// all: the person is leaving (the tab was hidden or is being closed), and what is not saved
+    /// by the time they are gone is lost.
+    pub const fn hurry(&mut self) {
+        self.changed_at = f64::NEG_INFINITY;
+        self.unsaved_since = f64::NEG_INFINITY;
     }
 
     /// Starts a save of the current version, which is returned.
@@ -307,6 +362,27 @@ mod tests {
         assert!(plan.unsaved());
         plan.observe(2, 31_000.0);
         assert_eq!(plan.wait(1e9), None);
+    }
+
+    #[test]
+    fn leaving_makes_it_due_at_once_but_not_before_a_retry() {
+        let mut plan = Plan::new(0_u32, 0.0);
+        plan.observe(1, 0.0);
+        assert_eq!(plan.wait(100.0), Some(IDLE_MS - 100.0));
+        plan.hurry();
+        assert_eq!(plan.wait(100.0), Some(0.0));
+        // A save that failed is not tried again at once, however much of a hurry.
+        plan.start();
+        plan.finish(false, 200.0);
+        plan.hurry();
+        assert_eq!(plan.wait(200.0), Some(RETRY_MS));
+        // Nothing to save, nothing due.
+        let mut plan = Plan::new(0_u32, 0.0);
+        plan.hurry();
+        assert_eq!(plan.wait(1e9), None);
+        // Changes after it count as usual.
+        plan.observe(1, 1_000.0);
+        assert_eq!(plan.wait(1_000.0), Some(IDLE_MS));
     }
 
     #[test]

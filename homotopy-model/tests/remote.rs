@@ -408,3 +408,36 @@ fn saving_elsewhere_is_saving_here() {
         assert_eq!(serialized(output), expected, "{name}");
     }
 }
+
+/// Where there is no worker the page packs the signature a piece at a time and makes the file
+/// itself: it is the file that serialising in one go makes.
+#[test]
+fn saving_in_pieces_is_saving_in_one() {
+    use homotopy_model::serialize::{serialize, serialize_with};
+
+    for (name, json) in EXAMPLES {
+        let actions = recorded_actions(json);
+        let outcome = run_to_end(ActionsJob::replay(Proof::default(), actions, REPLAYING));
+        let state: ProofState = (**outcome.applied.last().unwrap().1).clone();
+        let mut packer = Packer::new(&state.signature);
+        let mut steps = 1;
+        while !packer.step() {
+            steps += 1;
+        }
+        assert!(
+            steps > state.signature.iter().count(),
+            "{name}: it is done in small steps"
+        );
+        let file = serialize_with(
+            packer.into_store(),
+            state.signature.clone(),
+            state.workspace.clone(),
+            state.metadata.clone(),
+        );
+        assert_eq!(
+            file,
+            serialize(state.signature, state.workspace, state.metadata),
+            "{name}"
+        );
+    }
+}
