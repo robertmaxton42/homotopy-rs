@@ -20,6 +20,12 @@ anything. "Is this thing responding? *click click*" must not stack up several ex
 New features that add expensive work are not done until they meet all three. When touching an
 existing expensive path that does not, fix it or note it as a known gap.
 
+What the page *derives from the project to show it* (the layout of the diagram on screen) is not
+an operation in this sense: nobody asked for it, there is nothing to cancel or to refuse (the
+project is not being changed), and a newer diagram simply replaces it. That is held to the first
+two points (off the main thread, and it says that it is working), but it does not use the busy
+indicator: see "Laying out diagrams" below.
+
 ### How the policy is met
 
 - **Jobs** (`homotopy_model::job::Job`) are the unit of expensive work: a state machine that
@@ -112,6 +118,56 @@ existing expensive path that does not, fix it or note it as a known gap.
   `tooltip::show/move_to/hide` like the busy indicator, and `DiagramSvg` only works out a new label
   when the pointer changes what it is over: moving over one part of the diagram renders nothing.
 
+- **Laying out diagrams** (`homotopy-web/src/layout.rs`, `homotopy_model::remote::layout`,
+  `static/worker.js?layout`). The layout of a diagram (`homotopy_core::layout::Layout`, a linear
+  program that HiGHS solves) and, for the 3D view, the `CubicalGeometry` made from it (mesh,
+  layout, vertices and cells: all of what is plain data and takes longest) are made by a *second*
+  Web Worker, the same wasm module with HiGHS loaded. It is a worker of its own so that cancelling
+  a job (which ends the job worker) does not lose a layout in the making (tested: Esc during a
+  replay while a layout is on its way; the layout still arrives from the worker), and a layout
+  does not queue behind a job that takes seconds. Both workers are started 500ms after the app and
+  are ready about 1s later. `worker.js` takes the role from its query (`?layout` loads
+  `highs.js`, awaiting its start, and says `ready` only after that); HiGHS is installed as
+  `self.Highs_*` (`flake.nix`'s `post.js`, `.claude/dev/highs-shim.js`), which is `window.Highs_*`
+  on the page and exists in a worker too; the `highs` crate's imports are bare globals, so they
+  resolve in both. The wire is the diagram through a `Store` and a request for a layout of `N`
+  dimensions or for geometry (with or without time as a dimension); the answer is flat
+  little-endian numbers (a layout is the coordinates and positions of points, geometry its
+  vertices, cells and curves), which are the same as what the page makes itself (tests in
+  `homotopy-model/tests/layout_remote.rs`: on a thread of its own, on the corpus and all the
+  diagrams of its signatures, in every dimension, equal to the layout and geometry made in place;
+  and in the browser: the same SVG elements and byte-identical screenshots of the 2D and 3D views).
+- **Asking for a layout**: views `ask` for the layout (`layout::ask`, `ask_geometry`) of the
+  diagram they are to show. They get it at once if the diagram is small (`layout::weight`, a
+  count of its distinct parts that stops at a limit so that it costs the same whatever the size:
+  300 for layouts, 100 for geometry, see below), if one was made recently (a cache of the last 8
+  of large diagrams: going back to a slice is instant) or if there is no worker ready (it is
+  made on the page, as before). Otherwise they get a ticket and the answer through a callback
+  later, keep showing what they showed, and `cancel` the ticket if the diagram is replaced or
+  they go. Only one request is with the worker at a time, so that the ones that were cancelled
+  are dropped before they are sent (rapid slice switching on large diagrams: 8 steps, 7 cancelled,
+  only the layouts that were still wanted done), and an answer for a cancelled ticket or an older
+  diagram is ignored. If the worker crashes or answers nonsense, the layout is made on the page
+  (and the worker restarted; three failures in a row without an answer and it is given up on,
+  with a toast), as for jobs.
+- **While a layout is on its way** `DiagramSvg` shows the diagram it prepared before (nothing if
+  it is new, a one pixel `svg`), dimmed and with a "Laying out…" note (`components/layout_note.rs`,
+  bottom centre), both fading in after 150ms with a CSS animation like the busy pill, so that
+  layouts that are quick cause no flicker. Pointer input on the diagram is ignored (clicks, drags
+  into homotopies, hover tooltips, highlights of attach options and slices: points of the old
+  diagram are not points of the new one) until the layout is there; the sidebar and everything
+  else works, and any change of the project just asks again. `DiagramGl` keeps its renderer in
+  the same way, dimmed, until the geometry arrives, and then builds the next renderer. The
+  slice buttons, which are as high as the diagram, are told to look again when it is drawn after
+  waiting (`on_laid_out`). A layout is not a job, so the busy indicator is not used, Esc does not
+  stop it and nothing is refused meanwhile.
+- **Thresholds** (debug build, which is about ten times slower than the optimised one): on the
+  examples a layout of a diagram of weight up to 300 takes 1 to 2ms in the middle and 10ms at
+  most, the page's share of sending it to the worker (the request, and taking in the answer) is
+  about 8ms for the 31KB request of the largest, so that is where they meet. Geometry (mesh,
+  layout, cells, curves) takes 10 to 50ms in the debug build for diagrams that weigh up to 300,
+  with no clear relation to the weight, so the limit for it is lower (100).
+
 New expensive work: write it as a job (or give an existing job another kind of step), label it,
 and check it with the debug hooks below.
 
@@ -131,6 +187,20 @@ and check it with the debug hooks below.
   does without a worker, `"broken"` points it at a script that does not exist (falls back after
   three failed starts), `"crash"` or `"garble"` (can be set at any time) make the next jobs panic in the
   worker or be answered with nonsense (which falls back to the page).
+- The layout worker is `worker.js?layout`: wait ~3s after load for it too (the log line "The
+  layout worker is ready"), or layouts of large diagrams are made on the page. In a debug build
+  `window.__homotopy_layout_worker` (`"off"`, `"broken"`, `"crash"`, `"garble"`, as for the job
+  worker, but for this one only), `__homotopy_layout_delay_ms` (each layout in the worker takes
+  at least that long), `__homotopy_layout_weight` (the weight up to which layouts are made on the
+  page: `0` sends everything to the worker, which is how to test with small diagrams) and
+  `__homotopy.layouts()` (counts: made by the worker, small, made on the page for lack of a
+  worker, cached, cancelled, pending) are for testing. `__homotopy.profileLayouts()` times the
+  layout and geometry of every diagram of the project and its slices next to their weight, for
+  choosing the thresholds.
+- `.claude/dev/highs-shim.js` and `flake.nix`'s `post.js` now assign `self.Highs_*` instead of
+  `window.Highs_*`. The shim was tested; **the `flake.nix` edit was made by analogy and has not
+  been built** (no nix here): it is a textual replacement of `window.` by `self.` in `post.js`,
+  which goes through the Closure compiler as an extern; `self` is a standard extern there.
 - Debug builds expose `window.__homotopy` (`app/debug_hooks.rs`): `dispatch(json)` for an action
   (`{"Proof": ...}`, `{"SelectPoint": [[...], false]}`, `{"Select": 0}`, `"Undo"`, ...),
   `importActions(bytes)`, `importProof(bytes)`, `cancel()`, `state()` (busy label, history
@@ -173,11 +243,34 @@ assertions, on `homotopy-model/tests/examples` and a project with limits as sche
 - Attach options without schemas, and everything while the worker is not ready (it is started
   500ms after the app and ready ~1s later; ~180ms after a cancel or crash): done in the page
   in slices as before (the whole search is 1-5ms typically).
-- Laying out the diagram on render (`PreparedDiagram::new`, HiGHS; GL meshes): 5-70ms on the
-  examples in the debug build (45ms optimised for a freshly imported project, 2ms after), not
-  behind an indicator and not cancellable. HiGHS is a set of `window.Highs_*` globals set by
-  `highs.js` (`flake.nix`'s `post.js`, `.claude/dev/highs-shim.js`), so it is not available in
-  the worker: see the plan below.
+- Diagram layout is done in the layout worker (see "Laying out diagrams" above), which took the
+  3D view of the 184KB project from 312ms (geometry) on the page to 8.7ms to send the request and
+  3.7ms to take in the answer (debug build; 113ms to 1.7ms in the optimised one with debug
+  assertions). What it leaves on the page, per view:
+  - `DiagramSvg`: building the rest of `PreparedDiagram` from the layout (`make_complex`,
+    `Depths`, `Projection`, the graphic elements and action regions), which is not plain data: 4 to
+    16ms for slices, 45 to 52ms (debug build) for the 2D view of the whole of that project's
+    4-dimensional diagram, plus Yew building the SVG. (Its layout was only 15 to 45ms, and 2D
+    layouts of the examples never took more than 8ms in the debug build, so the gain for 2D
+    views is small; it is the 3D ones that were heavy.) Diagrams of weight up to 300 are laid
+    out where they are asked for: about 1 to 2ms in the optimised build, 10ms at most in the debug.
+  - `DiagramGl`: making the renderer from the geometry, 95 to 130ms in the debug build and 47ms
+    in the optimised one, of which subdivision (48 and 3ms), inflating the surfaces and uploading
+    buffers (43 and 16ms) and the GL objects that are made again with every renderer (shaders,
+    framebuffers) could still move: the first two depend on the settings and the signature's
+    styles, and the buffers are made on the page. The 3D view in headless Chromium with software
+    GL takes ~150ms (debug) to 200ms (optimised) per frame, so rAF gaps cannot go under that
+    there: the longest gap after importing that project went from 543, 572, 493ms to 316, 347,
+    270ms; what is left is the frames themselves and the renderer.
+  - A layout that is in the worker when it is no longer wanted is not interrupted (a layout worker
+    that is ended costs about a second to start again, mostly loading HiGHS): the next one waits for it, 0.3s
+    to 3s with `__homotopy_layout_delay_ms` set, and for the examples at most the time of a large
+    geometry (about 0.5s in the debug build). It is only the next layouts that are late, and the views show what they showed.
+  - Without a ready worker (until ~1.5s after the page loads, ~1s after a crash) layouts are made
+    on the page as before; browsers that cannot start module workers get the fallback and a toast.
+  - Two workers are two copies of the wasm module in memory (35MB in the debug build) and the
+    second one HiGHS too; the optimised build is 0.7MB bigger (8.9 to 9.6MB with debug assertions,
+    92KB more gzipped: the wire format, a second path through `CubicalGeometry`).
 - `Signature::infer_replacements`, called when a replacement is chosen or cleared in the
   Instantiate panel (`Drafts::apply` in `homotopy-model/src/proof/drafts.rs`): at most 5ms on
   the limits project, bounded by `MAX_COMPLETION_NODES`, but it runs inside the sidebar
@@ -193,14 +286,3 @@ assertions, on `homotopy-model/tests/examples` and a project with limits as sche
   hidden tabs, so a job there crawls (a job in the worker does not).
 - Browsers without module workers (Firefox before 114, Safari before 15) fall back to the page
   after three failed starts, with a toast.
-
-Plan for laying out in the worker (the remaining big blocker): make HiGHS available as
-`self.Highs_*` rather than `window.Highs_*` (in `post.js`, which goes through the Closure
-compiler: `self` is safe there, `globalThis` may not be), have `worker.js` also load `highs.js`
-before saying it is ready, and add a `Work::Layout` to `homotopy_model::remote` whose request is
-a diagram (through a `Store`) and whose answer is the `Layout<N>` map (plain data). `DiagramSvg`
-and the GL scene then ask for the layout, keep showing the previous diagram with a "Laying
-out…" note meanwhile, drop answers that are not for the diagram any more (as slices drop by
-job id), and build the rest of `PreparedDiagram` (a few ms) from the answer. Use a second
-worker for layout so that cancelling an action does not lose it, and cancelling a layout (a
-newer diagram) does not lose a job.
