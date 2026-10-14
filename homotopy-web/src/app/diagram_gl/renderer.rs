@@ -5,7 +5,7 @@ use homotopy_gl::{
     frame::{DepthTest, Frame},
     GlCtx, Result,
 };
-use homotopy_graphics::geom::CubicalGeometry;
+use homotopy_graphics::{geom::CubicalGeometry, style::Stripes};
 use ultraviolet::{Mat4, Vec4};
 
 use self::{
@@ -151,7 +151,8 @@ impl Renderer {
                         mv: v,
                         p: p,
                         albedo: *albedo,
-                        placeholder: *placeholder,
+                        placeholder: placeholder.is_some(),
+                        light_stripes: *placeholder == Some(Stripes::Light),
                         t: t,
                     }));
                 }
@@ -177,7 +178,8 @@ impl Renderer {
                         mv: v,
                         p: p,
                         albedo: *albedo,
-                        placeholder: *placeholder,
+                        placeholder: placeholder.is_some(),
+                        light_stripes: *placeholder == Some(Stripes::Light),
                         t: t,
                     }));
                 }
@@ -193,7 +195,8 @@ impl Renderer {
                                 mv: v * Mat4::from_translation(position.xyz()) * Mat4::from_scale(geometry_scale),
                                 p: p,
                                 albedo: animation_curve.albedo,
-                                placeholder: animation_curve.placeholder,
+                                placeholder: animation_curve.placeholder.is_some(),
+                                light_stripes: animation_curve.placeholder == Some(Stripes::Light),
                                 t: t,
                             }));
                         }
@@ -215,7 +218,8 @@ impl Renderer {
                                     mv: v * Mat4::from_translation(point.xyz()) * Mat4::from_scale(scale),
                                     p: p,
                                     albedo: singularity.albedo,
-                                    placeholder: singularity.placeholder,
+                                    placeholder: singularity.placeholder.is_some(),
+                                    light_stripes: singularity.placeholder == Some(Stripes::Light),
                                     t: t,
                                 }));
                             }

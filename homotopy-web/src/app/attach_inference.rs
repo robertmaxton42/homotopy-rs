@@ -161,14 +161,23 @@ pub fn notice(report: &InferenceReport) -> Vec<String> {
             ));
         }
     }
-    let each = format!("{} s", (u64::from(report.budget_ms) + 500) / 1000);
+    let seconds = format!("{} s", (u64::from(report.budget_ms) + 500) / 1000);
+    // "after 5 s" for one, "after 5 s each" for several.
+    let after = |count: usize| {
+        if count == 1 {
+            format!("after {seconds}")
+        } else {
+            format!("after {seconds} each")
+        }
+    };
     if report.plain.timed_out() {
         let plain = &report.plain;
         let mut parts = vec![];
         if !plain.cut_short.is_empty() {
             parts.push(format!(
-                "Gave up on {} after {each} each (Settings, \"Give up on a generator after\"): {}.",
+                "Gave up on {} {} (Settings, \"Give up on a generator after\"): {}.",
                 generators(plain.cut_short.len()),
+                after(plain.cut_short.len()),
                 plain.cut_short.join(", ")
             ));
         }
@@ -198,15 +207,21 @@ pub fn notice(report: &InferenceReport) -> Vec<String> {
         let names = |names: &[String]| names.join(", ");
         if !report.cut_short.is_empty() {
             lines.push(format!(
-                "Instance inference gave up on {} after {each} each: {}. What it had found for \
-                 them is offered. You can give generators more time, or turn the inference off, \
+                "Instance inference gave up on {} {}: {}. What it had found for \
+                 {} is offered. You can give generators more time, or turn the inference off, \
                  in Settings.",
                 if report.cut_short.len() == 1 {
                     "a schema".to_owned()
                 } else {
                     format!("{} schemas", report.cut_short.len())
                 },
-                names(&report.cut_short)
+                after(report.cut_short.len()),
+                names(&report.cut_short),
+                if report.cut_short.len() == 1 {
+                    "it"
+                } else {
+                    "them"
+                }
             ));
         }
         if !report.not_tried.is_empty() {

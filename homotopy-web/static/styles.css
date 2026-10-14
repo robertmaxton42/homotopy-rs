@@ -962,6 +962,13 @@ input.signature__item-name {
   );
 }
 
+/* A dark colour is hatched in light stripes, as in diagrams. */
+.signature__generator-placeholder.signature__generator-placeholder-light {
+  background-image: repeating-linear-gradient(
+    45deg, transparent 0 4px, rgba(255, 255, 255, 0.6) 4px 6px
+  );
+}
+
 /* The disclosure control for the instances of a generator. */
 .signature__instances-toggle {
   flex: 0 0 auto;

@@ -13,8 +13,24 @@ const STROKE_OPACITY: f32 = 0.65;
 const WIRE_DASH: &str = "7 5";
 
 /// The id of the pattern with which the surfaces of placeholders are hatched (on top of being
-/// translucent). It is up to the renderer of the SVG to define it.
+/// translucent), in dark stripes.
+///
+/// The second is the pattern with light stripes, for colours that dark stripes do not show on (see [`Color::stripes`](crate::style::Color::stripes)). It is up to the
+/// renderer of the SVG to define them.
 pub const PLACEHOLDER_HATCH_ID: &str = "placeholder-hatch";
+pub const PLACEHOLDER_HATCH_LIGHT_ID: &str = "placeholder-hatch-light";
+
+/// The index of the lightening of a generator's colour (the `c` of [`Color::lighten`]) when it is
+/// drawn in a diagram of the given dimension as a point, wire or surface.
+#[inline]
+#[must_use]
+pub const fn color_index(
+    generator: Generator,
+    diagram_dimension: usize,
+    representation: GeneratorRepresentation,
+) -> usize {
+    diagram_dimension.saturating_sub(generator.dimension + representation as usize) % 3
+}
 
 macro_rules! write_styles_for {
     (
@@ -80,11 +96,7 @@ pub fn generator_class_from_diagram_dim(
     diagram_dimension: usize,
     representation: GeneratorRepresentation,
 ) -> String {
-    let d = diagram_dimension;
-    let n = generator.dimension;
-    let k = representation as usize;
-
-    let c = d.saturating_sub(n + k) % 3;
+    let c = color_index(generator, diagram_dimension, representation);
 
     format!(
         "{} {}",
