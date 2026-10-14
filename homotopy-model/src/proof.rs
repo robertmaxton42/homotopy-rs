@@ -36,6 +36,7 @@ pub mod generators;
 pub mod homotopy;
 mod inference;
 mod instances;
+pub mod notation;
 mod structure;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]

@@ -12,10 +12,10 @@
 //!    on top of each other;
 //! 4. a composite, in the order of the diagram (from its source to its target), each step
 //!    described by the following: `f ; g`;
-//! 5. one step of the diagram that introduces a cell: the name of the cell, without what is
-//!    beside it. The inverse of a cell is `f^{-1}` if it is invertible and `f^{*}` otherwise
-//!    (for 1-cells; `\overline{f}` for others, as the directions it was reflected in are not
-//!    known any more);
+//! 5. one step of the diagram that introduces a cell: the name of the cell, with what is beside
+//!    it as whiskers (see below). The inverse of a cell is `f^{-1}` if it is invertible and
+//!    `f^{*}` otherwise (for 1-cells; `\overline{f}` for others, as the directions it was
+//!    reflected in are not known any more);
 //! 6. one step that exchanges two cells, `\mathrm{ex}_{f,g}`, with `f` the one that is first
 //!    (lowest) in the source. If nothing but the exchange itself fixes on which side of each
 //!    other the cells are (neither cell is attached to anything), it is a braid,
@@ -27,6 +27,16 @@
 //! 8. anything else is described by its type, `s \Rightarrow t`, where the source and target are
 //!    described in the same way, but only to a small depth.
 //!
+//! **Whiskers.** A cell `p` of dimension `n` (2 or more) with other diagrams beside it is named
+//! with them, in the order of the diagram: `p \triangleright T` if `T` is after it,
+//! `S \triangleleft p` if `S` is before it, and `S \triangleleft p \triangleright T` for both. The
+//! triangle points at the whisker. The whiskers are diagrams of dimension `n - 1`: what comes before
+//! and after `p` in the top direction of the step's slice (for a 2-cell, the 1-cells on each side
+//! of it in the string diagram; for a 5-cell, the 4-diagrams). One that is the identity is left
+//! out, and one that is a composite is put in parentheses, `p \triangleright (F \mathbin{;} G)`.
+//! What is beside the cell in lower directions, inside the step, is not part of its name. All of
+//! the notation, this included, is in [`notation`](super::notation).
+//!
 //! Diagrams in the workspace can be large, and a description is made every time the panel is
 //! shown, so the work is bounded: at most [`MAX_STEPS`] diagrams are looked at, whatever the
 //! diagram, and what is left out is shown as `\ldots`.
@@ -37,7 +47,10 @@ use homotopy_core::{
     Rewrite, SliceIndex,
 };
 
-use super::{Signature, Structure};
+use super::{
+    notation::{self, Notation},
+    Signature, Structure,
+};
 
 /// How many diagrams (and steps of them) one description looks at.
 const MAX_STEPS: usize = 48;
@@ -54,9 +67,6 @@ const MAX_REFLECTED_DIMENSION: usize = 5;
 /// How many dimensions a bubble is taken up.
 const MAX_BUBBLES: usize = 3;
 
-const ELLIPSIS: &str = r"\ldots";
-const HOMOTOPY: &str = r"\mathrm{h}";
-
 impl Signature {
     /// A short description of a diagram, as a label that can be put in other labels: its name
     /// if it is a generator, and otherwise a formula that says what it is made of (see the
@@ -66,8 +76,9 @@ impl Signature {
         if let Some(info) = self.iter().find(|info| info.diagram == *diagram) {
             return seal(&info.name);
         }
-        let math = Describer::new(self).diagram(diagram, 0);
-        if math == ELLIPSIS {
+        let mut describer = Describer::new(self);
+        let math = describer.diagram(diagram, 0);
+        if math == describer.notation.ellipsis() {
             "…".to_owned()
         } else {
             format!("${math}$")
@@ -78,7 +89,8 @@ impl Signature {
     /// (with its orientation): `point` is the vertex in the projection of `diagram` to two
     /// dimensions, the heights in its outermost direction and then in the next one.
     ///
-    /// A generator is named by the generator, or its reverse. A vertex where no cell of the
+    /// A generator is named by the generator, or its reverse; a cell drawn as a vertex of a
+    /// 2-diagram is named with the whiskers that it has (see the [module](self)). A vertex where no cell of the
     /// dimension of the diagram is, but several things happen at once (two strands crossing,
     /// a cell cancelled or created), is named for the step of the diagram that it is (see the
     /// [module](self)): `\mathrm{ex}_{f,g}`, `\beta_{f,g}`, `\varepsilon_f`, `\eta_f`. If the step is
@@ -90,18 +102,21 @@ impl Signature {
         point: &[SliceIndex],
         cell: Diagram0,
     ) -> String {
-        let describer = Describer::new(self);
+        let mut describer = Describer::new(self);
         let homotopy =
             cell.orientation == Orientation::Zero || cell.generator.dimension < diagram.dimension();
-        let math = homotopy
-            .then(|| describer.step_at(diagram, point))
-            .flatten()
-            .unwrap_or_else(|| describer.cell(cell));
+        let math = if homotopy {
+            describer.step_at(diagram, point)
+        } else {
+            describer.whiskered_at(diagram, point, cell)
+        }
+        .unwrap_or_else(|| describer.cell(cell));
         format!("${math}$")
     }
 
     /// The label of a cell, as drawn on a wire or a surface: see
-    /// [`describe_point`](Self::describe_point).
+    /// [`describe_point`](Self::describe_point). A wire or a surface is a cell by itself, with
+    /// nothing beside it, so this has no whiskers.
     #[must_use]
     pub fn describe_cell(&self, cell: Diagram0) -> String {
         format!("${}$", Describer::new(self).cell(cell))
@@ -110,6 +125,7 @@ impl Signature {
 
 struct Describer<'a> {
     signature: &'a Signature,
+    notation: &'a dyn Notation,
     steps: usize,
 }
 
@@ -191,19 +207,15 @@ fn sole_cone(rewrite: &Rewrite) -> Option<(usize, usize)> {
     }
 }
 
-/// `k` as the exponent of an iterated operation, if it is more than one.
-fn iterated(k: usize) -> String {
-    if k > 1 {
-        format!("^{{{k}}}")
-    } else {
-        String::new()
-    }
-}
-
 impl<'a> Describer<'a> {
-    const fn new(signature: &'a Signature) -> Self {
+    fn new(signature: &'a Signature) -> Self {
+        Self::with_notation(signature, notation::current())
+    }
+
+    const fn with_notation(signature: &'a Signature, notation: &'a dyn Notation) -> Self {
         Self {
             signature,
+            notation,
             steps: 0,
         }
     }
@@ -217,7 +229,7 @@ impl<'a> Describer<'a> {
     /// The description (without dollar signs) of a diagram. `depth` is how many types it is in.
     fn diagram(&mut self, diagram: &Diagram, depth: usize) -> String {
         if !self.tick() {
-            return ELLIPSIS.to_owned();
+            return self.notation.ellipsis().to_owned();
         }
         if let Some(known) = self.known(diagram) {
             return known;
@@ -271,7 +283,7 @@ impl<'a> Describer<'a> {
                         |symmetry| Structure::Symmetry(symmetry.name.clone()),
                     )
             };
-            return structure.math(&info.name);
+            return structure.math_in(self.notation, &info.name);
         }
 
         if invertible && k < n && n - k <= MAX_BUBBLES {
@@ -288,7 +300,7 @@ impl<'a> Describer<'a> {
             } else {
                 return None;
             };
-            return structure.math(&info.name);
+            return structure.math_in(self.notation, &info.name);
         }
         None
     }
@@ -309,7 +321,7 @@ impl<'a> Describer<'a> {
         }
         (identities > 0).then(|| {
             let inner = self.diagram(&inner, depth);
-            format!(r"\mathrm{{id}}{}_{{{inner}}}", iterated(identities))
+            self.notation.identity(identities, &inner)
         })
     }
 
@@ -317,7 +329,7 @@ impl<'a> Describer<'a> {
     fn steps_of(&mut self, diagram: &DiagramN, depth: usize) -> Option<String> {
         let size = diagram.size();
         if size == 1 {
-            return self.step(diagram);
+            return self.step(diagram, depth);
         }
 
         let shown = if size <= MAX_LAYERS { size } else { 3 };
@@ -329,33 +341,121 @@ impl<'a> Describer<'a> {
             parts.push(self.step_or_identity(&layer(source, step), depth)?);
         }
         if size > shown {
-            parts.push(r"\cdots".to_owned());
+            parts.push(self.notation.cut().to_owned());
             if size <= MAX_SCAN {
                 let source = diagram.slice(Height::Regular(size - 1))?;
                 parts.push(self.step_or_identity(&layer(source, size - 1), depth)?);
             }
         }
-        Some(parts.join(r" \mathbin{;} "))
+        Some(self.notation.compose(&parts))
     }
 
     fn step_or_identity(&mut self, layer: &DiagramN, depth: usize) -> Option<String> {
         if !self.tick() {
-            return Some(ELLIPSIS.to_owned());
+            return Some(self.notation.ellipsis().to_owned());
         }
-        self.identity(layer, depth).or_else(|| self.step(layer))
+        self.identity(layer, depth)
+            .or_else(|| self.step(layer, depth))
     }
 
-    /// A diagram with a single step: a cell with whatever is beside it, or a homotopy.
-    fn step(&self, diagram: &DiagramN) -> Option<String> {
+    /// A diagram with a single step: a cell with whatever is beside it as whiskers, or a
+    /// homotopy.
+    fn step(&mut self, diagram: &DiagramN, depth: usize) -> Option<String> {
         let singular = diagram.slice(Height::Singular(0))?;
         match cells(&singular, diagram.dimension()) {
             Cells::Many => None,
-            Cells::One(cell) => Some(self.cell(cell)),
+            Cells::One(cell) => Some(self.whiskered(&singular, cell, depth)),
             Cells::None => Some(
                 self.homotopy(diagram)
-                    .unwrap_or_else(|| HOMOTOPY.to_owned()),
+                    .unwrap_or_else(|| self.notation.homotopy().to_owned()),
             ),
         }
+    }
+
+    /// The cell `cell`, which is the only one of its dimension (that of the step) in `singular`
+    /// (the slice of a step at its singular height), with the diagrams that are before and after
+    /// it in the top direction of `singular` as whiskers. A cell of dimension 1 has none: there
+    /// is nothing to be beside.
+    fn whiskered(&mut self, singular: &Diagram, cell: Diagram0, depth: usize) -> String {
+        let Diagram::DiagramN(singular) = singular else {
+            return self.cell(cell);
+        };
+        let dimension = cell.generator.dimension;
+        let at = singular.singular_slices().position(
+            |slice| matches!(cells(&slice, dimension), Cells::One(found) if found == cell),
+        );
+        match at {
+            Some(at) => self.whiskers(singular, at, cell, depth),
+            None => self.cell(cell),
+        }
+    }
+
+    /// The cell that is in the given singular height of `singular` (a diagram one dimension
+    /// below it), named with the rest of `singular` on each side of that height as its whiskers:
+    /// what is before it to the left, and what is after it to the right.
+    fn whiskers(&mut self, singular: &DiagramN, at: usize, cell: Diagram0, depth: usize) -> String {
+        let cospans = singular.cospans();
+        let left = DiagramN::new(singular.source(), cospans[..at].to_vec());
+        let right = singular
+            .slice(Height::Regular(at + 1))
+            .map(|source| DiagramN::new(source, cospans[at + 1..].to_vec()));
+        let mut name = self.cell(cell);
+        if let Some(whisker) = self.whisker(&left, depth) {
+            name = self.notation.whisker_left(&whisker, &name);
+        }
+        if let Some(whisker) = right.and_then(|right| self.whisker(&right, depth)) {
+            name = self.notation.whisker_right(&name, &whisker);
+        }
+        name
+    }
+
+    /// The description of a whisker, which is grouped if it is a composite, or `None` if it is
+    /// an identity.
+    fn whisker(&mut self, whisker: &DiagramN, depth: usize) -> Option<String> {
+        if whisker.size() == 0 {
+            return None;
+        }
+        let diagram = Diagram::from(whisker.clone());
+        let atomic = self.known(&diagram).is_some();
+        let math = self.diagram(&diagram, depth);
+        Some(if atomic || math == self.notation.ellipsis() {
+            math
+        } else {
+            self.notation.group(&math)
+        })
+    }
+
+    /// The cell drawn at a vertex of a 2-diagram, with its whiskers, if it is a cell of that
+    /// dimension at that vertex.
+    fn whiskered_at(
+        &mut self,
+        diagram: &Diagram,
+        point: &[SliceIndex],
+        cell: Diagram0,
+    ) -> Option<String> {
+        use SliceIndex::Interior;
+
+        let [Interior(Height::Singular(step)), Interior(Height::Singular(height))] = point else {
+            return None;
+        };
+        let diagram = DiagramN::try_from(diagram.clone()).ok()?;
+        if diagram.dimension() != 2 || cell.generator.dimension != 2 {
+            return None;
+        }
+        let Diagram::DiagramN(line) = DiagramN::try_from(diagram.slice(Height::Regular(*step))?)
+            .ok()
+            .and_then(|source| {
+                DiagramN::new(source.into(), vec![diagram.cospans().get(*step)?.clone()])
+                    .slice(Height::Singular(0))
+            })?
+        else {
+            return None;
+        };
+        let here = line.singular_slices().nth(*height)?;
+        let Diagram::Diagram0(here) = here else {
+            return None;
+        };
+        (here.generator == cell.generator).then(|| self.whiskers(&line, *height, here, 0))
     }
 
     /// A step that is an exchange of two cells, the cancelling or creation of a cell with its
@@ -403,11 +503,11 @@ impl<'a> Describer<'a> {
         match (forward.source_len(), backward.source_len()) {
             (2, 0) => {
                 let pair = pair(source, forward).filter(|pair| reverses(*pair))?;
-                Some(format!(r"\varepsilon_{{{}}}", self.cell(pair.0)))
+                Some(self.notation.counit(&self.cell(pair.0)))
             }
             (0, 2) => {
                 let pair = pair(target, backward).filter(|pair| reverses(*pair))?;
-                Some(format!(r"\eta_{{{}}}", self.cell(pair.1)))
+                Some(self.notation.unit(&self.cell(pair.1)))
             }
             (2, 2) => {
                 let (lower, upper) = pair(source, forward)?;
@@ -418,20 +518,14 @@ impl<'a> Describer<'a> {
                 };
                 let upper_in_lower = sole_cone(lower_slice);
                 let lower_in_upper = sole_cone(upper_slice);
-                let name = |symbol: &str, sign: &str| {
-                    format!(
-                        "{symbol}{sign}_{{{},{}}}",
-                        self.cell(lower),
-                        self.cell(upper)
-                    )
-                };
+                let (lower, upper) = (self.cell(lower), self.cell(upper));
                 Some(match (lower_in_upper, upper_in_lower) {
                     // Neither cell is attached to anything, so nothing says which side.
                     (Some((lower_at, 0)), Some((upper_at, 0))) if lower_at < upper_at => {
-                        name(r"\beta", "")
+                        self.notation.braid(&lower, &upper, false)
                     }
-                    (Some((_, 0)), Some((_, 0))) => name(r"\beta", "^{-1}"),
-                    _ => name(r"\mathrm{ex}", ""),
+                    (Some((_, 0)), Some((_, 0))) => self.notation.braid(&lower, &upper, true),
+                    _ => self.notation.exchange(&lower, &upper),
                 })
             }
             _ => None,
@@ -465,26 +559,21 @@ impl<'a> Describer<'a> {
         let name = to_math(&name);
         match cell.orientation {
             Orientation::Positive => name,
-            Orientation::Negative if invertible => format!("{{{name}}}^{{-1}}"),
-            Orientation::Negative if cell.generator.dimension == 1 => format!("{{{name}}}^{{*}}"),
-            Orientation::Negative => format!(r"\overline{{{name}}}"),
-            Orientation::Zero => format!(r"{HOMOTOPY}({name})"),
+            Orientation::Negative if invertible => self.notation.inverse(&name),
+            Orientation::Negative if cell.generator.dimension == 1 => self.notation.dual(&name),
+            Orientation::Negative => self.notation.reversed(&name),
+            Orientation::Zero => self.notation.fold(&name),
         }
     }
 
     /// A diagram as its type: the description of its source and its target.
     fn type_of(&mut self, diagram: &DiagramN, depth: usize) -> String {
         if depth >= MAX_DEPTH || diagram.size() > MAX_SCAN {
-            return ELLIPSIS.to_owned();
+            return self.notation.ellipsis().to_owned();
         }
-        let arrow = match diagram.dimension() {
-            1 => r"\to",
-            2 => r"\Rightarrow",
-            _ => r"\Rrightarrow",
-        };
         let source = self.diagram(&diagram.source(), depth + 1);
         let target = self.diagram(&diagram.target(), depth + 1);
-        format!("{source} {arrow} {target}")
+        self.notation.arrow(diagram.dimension(), &source, &target)
     }
 }
 
@@ -732,16 +821,176 @@ mod tests {
     }
 
     #[test]
-    fn whiskered_cells_are_named_by_the_cell() {
+    fn whiskered_cells_are_named_with_their_whiskers() {
         let Exchange {
             sig, alpha_beta, ..
         } = exchange();
-        // The first step of the diagram is the cell α, beside a wire.
+        // The first step of the diagram is the cell α, with the wire b after it.
         let first = DiagramN::new(alpha_beta.source(), vec![alpha_beta.cospans()[0].clone()]);
-        assert_eq!(describe(&sig, first), r"$\text{α}$");
+        assert_eq!(describe(&sig, first), r"$\text{α} \triangleright \text{b}$");
+        // And the second is β with a before it.
         assert_eq!(
             describe(&sig, alpha_beta),
-            r"$\text{α} \mathbin{;} \text{β}$"
+            r"$\text{α} \triangleright \text{b} \mathbin{;} \text{a} \triangleleft \text{β}$"
+        );
+    }
+
+    /// `f`, `g : x → x` and `α : f ⇒ f`, with the 2-diagrams that attach `α` to composites of
+    /// `f` and `g`: the cells before it, then the cells after it.
+    struct Whiskers {
+        sig: Signature,
+        f: DiagramN,
+        g: DiagramN,
+        alpha: DiagramN,
+    }
+
+    fn whiskers() -> Whiskers {
+        let Fixture { mut sig, f, g, .. } = fixture();
+        let alpha = cell(
+            &mut sig,
+            "α",
+            f.clone().into(),
+            f.clone().into(),
+            Invertibility::Directed,
+        );
+        Whiskers { sig, f, g, alpha }
+    }
+
+    impl Whiskers {
+        /// The 2-diagram that is `α` with the given 1-cells before it and after it.
+        fn whiskered(&self, before: &[&DiagramN], after: &[&DiagramN]) -> DiagramN {
+            let mut line: Option<DiagramN> = None;
+            for cell in before
+                .iter()
+                .copied()
+                .chain([&self.f])
+                .chain(after.iter().copied())
+            {
+                line = Some(match line {
+                    Some(line) => line.attach(cell, Boundary::Target, &[]).unwrap(),
+                    None => cell.clone(),
+                });
+            }
+            line.unwrap()
+                .identity()
+                .attach(&self.alpha, Boundary::Target, &[before.len()])
+                .unwrap()
+        }
+    }
+
+    #[test]
+    fn cells_are_whiskered_on_the_right_and_on_the_left() {
+        let w = whiskers();
+        let (f, g) = (&w.f, &w.g);
+        // Nothing beside it: it is the generator, and has no whiskers (not identities).
+        assert_eq!(describe(&w.sig, w.whiskered(&[], &[])), r"α");
+        // The triangles point at the whiskering cell, which is after (before) the cell.
+        assert_eq!(
+            describe(&w.sig, w.whiskered(&[], &[g])),
+            r"$\text{α} \triangleright \text{g}$"
+        );
+        assert_eq!(
+            describe(&w.sig, w.whiskered(&[g], &[])),
+            r"$\text{g} \triangleleft \text{α}$"
+        );
+        assert_eq!(
+            describe(&w.sig, w.whiskered(&[g], &[g])),
+            r"$\text{g} \triangleleft \text{α} \triangleright \text{g}$"
+        );
+        // Other cells that are the whiskers are named as they are anywhere else.
+        assert_eq!(
+            describe(&w.sig, w.whiskered(&[], &[&f.inverse()])),
+            r"$\text{α} \triangleright {\text{f}}^{-1}$"
+        );
+        // Composites are grouped, and in the order of the diagram.
+        assert_eq!(
+            describe(&w.sig, w.whiskered(&[], &[f, g])),
+            r"$\text{α} \triangleright (\text{f} \mathbin{;} \text{g})$"
+        );
+        assert_eq!(
+            describe(&w.sig, w.whiskered(&[g, f], &[g])),
+            r"$(\text{g} \mathbin{;} \text{f}) \triangleleft \text{α} \triangleright \text{g}$"
+        );
+        for diagram in [
+            w.whiskered(&[g, f], &[g]),
+            w.whiskered(&[], &[f, g]),
+            w.whiskered(&[g], &[]),
+        ] {
+            assert!(single_formula(&describe(&w.sig, diagram)));
+        }
+    }
+
+    #[test]
+    fn a_whisker_that_is_long_is_cut_short() {
+        let w = whiskers();
+        let mut long = w.g.clone();
+        for _ in 0..99 {
+            long = long.attach(&w.g, Boundary::Target, &[]).unwrap();
+        }
+        let diagram = w.whiskered(&[], &[&long]);
+        let label = describe(&w.sig, diagram);
+        assert!(label.len() < 150, "{label}");
+        assert!(
+            label.contains(r"\triangleright (") && label.contains(r"\cdots"),
+            "{label}"
+        );
+        assert!(single_formula(&label));
+    }
+
+    #[test]
+    fn the_cell_at_a_vertex_of_a_2_diagram_has_its_whiskers() {
+        let w = whiskers();
+        let diagram = Diagram::from(w.whiskered(&[&w.g], &[&w.g]));
+        let alpha = Diagram0 {
+            generator: w.alpha.max_generator().generator,
+            orientation: Orientation::Positive,
+        };
+        // The vertex is at the second height of the first (only) step.
+        assert_eq!(
+            w.sig.describe_point(&diagram, &vertex(0, 1), alpha),
+            r"$\text{g} \triangleleft \text{α} \triangleright \text{g}$"
+        );
+        // A wire or a surface is a cell by itself, and a vertex that the cell is not at (or no
+        // vertex) is named by the cell.
+        assert_eq!(w.sig.describe_cell(alpha), r"$\text{α}$");
+        assert_eq!(
+            w.sig.describe_point(&diagram, &vertex(0, 0), alpha),
+            r"$\text{α}$"
+        );
+        assert_eq!(w.sig.describe_point(&diagram, &[], alpha), r"$\text{α}$");
+    }
+
+    /// Another convention is another implementation of the notation: nothing in the names is
+    /// written anywhere else.
+    #[test]
+    fn the_notation_decides_how_names_are_written() {
+        use crate::proof::notation::Notation;
+
+        struct Prefix;
+        impl Notation for Prefix {
+            fn whisker_left(&self, whisker: &str, cell: &str) -> String {
+                format!("L[{whisker}]({cell})")
+            }
+            fn whisker_right(&self, cell: &str, whisker: &str) -> String {
+                format!("R[{whisker}]({cell})")
+            }
+            fn group(&self, formula: &str) -> String {
+                format!("<{formula}>")
+            }
+            fn compose(&self, parts: &[String]) -> String {
+                parts.join(" then ")
+            }
+            fn inverse(&self, f: &str) -> String {
+                format!("inv({f})")
+            }
+        }
+
+        let w = whiskers();
+        let diagram = Diagram::from(w.whiskered(&[&w.g, &w.f], &[&w.g, &w.f.inverse()]));
+        let mut describer = super::Describer::with_notation(&w.sig, &Prefix);
+        assert_eq!(
+            describer.diagram(&diagram, 0),
+            r"R[<\text{g} then inv(\text{f})>](L[<\text{g} then \text{f}>](\text{α}))"
         );
     }
 
