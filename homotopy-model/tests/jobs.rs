@@ -129,7 +129,7 @@ fn an_error_keeps_what_was_done_before_it() {
 fn attach_options_need_a_workspace() {
     let proof = Proof::default();
     assert_eq!(
-        AttachOptionsJob::new(&proof, &[], false, InferenceLimits::default()).err(),
+        AttachOptionsJob::new(&proof, &[], false, InferenceLimits::default(), None).err(),
         Some(NoAttachment::NoWorkspace)
     );
 }
@@ -151,7 +151,8 @@ fn attach_options_are_found_a_generator_at_a_time() {
     assert!(proof.workspace.is_some());
 
     let point = [SliceIndex::Boundary(Boundary::Target)];
-    let mut job = AttachOptionsJob::new(&proof, &point, true, InferenceLimits::default()).unwrap();
+    let mut job =
+        AttachOptionsJob::new(&proof, &point, true, InferenceLimits::default(), None).unwrap();
     let total = job.progress().unwrap().total;
     // At least a step for each generator.
     assert!(total >= proof.signature.iter().count());

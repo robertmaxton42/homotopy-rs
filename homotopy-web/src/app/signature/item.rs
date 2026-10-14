@@ -13,17 +13,18 @@ use yew_macro::function_component;
 
 use crate::{
     app::{
-        diagram_svg::DiagramSvg, sidebar::DrawerViewSize, tex::TexSpan, AppSettings,
-        AppSettingsKey, AppSettingsMsg,
+        attach_inference, diagram_svg::DiagramSvg, sidebar::DrawerViewSize, tex::TexSpan,
+        AppSettings, AppSettingsKey, AppSettingsMsg,
     },
     components::{
         delta::CallbackIdx,
         icon::{Icon, IconSize},
+        toast::{toast, Toast},
     },
     model::{
         proof::{
-            self, generators::GeneratorInfo, Draft, DraftEdit, Signature, SignatureEdit,
-            SignatureItem, SignatureItemEdit, COLORS, VERTEX_SHAPES,
+            self, can_attach, generators::GeneratorInfo, Draft, DraftEdit, Signature,
+            SignatureEdit, SignatureItem, SignatureItemEdit, COLORS, VERTEX_SHAPES,
         },
         Action,
     },
@@ -135,6 +136,14 @@ pub struct ItemViewProps {
     pub on_drop: Callback<DragEvent>,
     #[prop_or_default]
     pub on_drag_start: Callback<DragEvent>,
+    #[prop_or_default]
+    pub on_drag_end: Callback<DragEvent>,
+    /// Whether this generator is the one picked to be attached by the next click on the diagram.
+    #[prop_or_default]
+    pub armed: bool,
+    /// Picks a generator to be attached by the next click on the diagram, or puts it down.
+    #[prop_or_default]
+    pub on_arm: Callback<Option<Generator>>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
@@ -156,6 +165,8 @@ pub enum ItemViewMessage {
     SwitchTo(ItemViewMode),
     Edit(SignatureItemEdit),
     CachePreview(bool, Diagram),
+    /// Pick the generator to be attached by the next click on the diagram, or put it down.
+    ToggleArmed,
     /// Fill the slot of a placeholder with the diagram in the workspace.
     FillSlot(Generator),
     ClearSlot(Generator),
@@ -261,6 +272,26 @@ impl Component for ItemView {
                 self.cache_preview(ctx, show_single_preview, &diagram);
                 return true;
             }
+            ItemViewMessage::ToggleArmed => {
+                let SignatureItem::Item(info) = &ctx.props().item else {
+                    return false;
+                };
+                if ctx.props().armed {
+                    ctx.props().on_arm.emit(None);
+                    return false;
+                }
+                // Said now, rather than after a click on the diagram that attaches nothing.
+                match can_attach(
+                    &ctx.props().signature,
+                    ctx.props().workspace.as_ref(),
+                    info.generator,
+                    AppSettings::get_weak_units(),
+                    attach_inference::limits(),
+                ) {
+                    Ok(()) => ctx.props().on_arm.emit(Some(info.generator)),
+                    Err(reason) => toast(Toast::warn(reason.reason())),
+                }
+            }
             ItemViewMessage::FillSlot(placeholder) => {
                 if let (Some(diagram), SignatureItem::Item(info)) =
                     (ctx.props().workspace.clone(), &ctx.props().item)
@@ -360,14 +391,25 @@ impl Component for ItemView {
             _ => Callback::noop(),
         };
 
+        // (Tells the rows apart for tests, whose names are formulas.)
+        let data_generator = match item {
+            SignatureItem::Item(info) => Some(format!(
+                "{}:{}",
+                info.generator.id, info.generator.dimension
+            )),
+            SignatureItem::Folder(_) => None,
+        };
+
         html! {
             <div
                 class={class}
+                data-generator={data_generator}
                 draggable={(self.mode != ItemViewMode::Editing).to_string()}
                 ondragover={ctx.props().on_drag_over.clone()}
                 ondragenter={ctx.props().on_drag_enter.clone()}
                 ondrop={ctx.props().on_drop.clone()}
                 ondragstart={ctx.props().on_drag_start.clone()}
+                ondragend={ctx.props().on_drag_end.clone()}
                 onmouseover={on_mouse_over}
                 onmouseout={on_mouse_out}
             >
@@ -824,8 +866,47 @@ impl ItemView {
                     {buttons}
                 </div>
             }
+        } else if matches!(ctx.props().item, SignatureItem::Item(_)) {
+            self.view_attach_button(ctx)
         } else {
             html! {}
+        }
+    }
+
+    /// The button that picks a generator to be attached by the next click on the diagram, for
+    /// people who do not drag.
+    fn view_attach_button(&self, ctx: &Context<Self>) -> Html {
+        let armed = ctx.props().armed;
+        // (It is there all the time, and shown where the pointer is, by the stylesheet: if it
+        // came and went with the pointer it would be gone before it could be clicked.)
+        if self.mode == ItemViewMode::Editing || ctx.props().workspace.is_none() {
+            return html! {};
+        }
+        let title = if armed {
+            "Stop attaching this generator"
+        } else {
+            "Attach this: pick it, then click a point in the diagram (or drag it there)"
+        };
+        html! {
+            <div class="signature__item-right">
+                <span
+                    class={classes!(
+                        "signature__item-child",
+                        "signature__item-attach",
+                        armed.then_some("signature__item-attach--armed"),
+                    )}
+                    title={title}
+                    role="button"
+                    aria-pressed={armed.to_string()}
+                    onclick={ctx.link().callback(|e: MouseEvent| {
+                        // Not also selecting the generator.
+                        e.stop_propagation();
+                        ItemViewMessage::ToggleArmed
+                    })}
+                >
+                    <Icon name={"touch_app"} size={IconSize::Icon18} />
+                </span>
+            </div>
         }
     }
 

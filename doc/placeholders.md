@@ -23,6 +23,10 @@ of the substitution in your proofs.
    a collapsed folder, so instances stay out of the way until you open it. An instance is an
    ordinary generator from then on: attach it, invert it, use it in proofs.
 
+To attach an instance of a particular schema at a point without having every schema searched
+for, drag the schema from the signature onto the point, or pick it and click there (see
+[attaching a specific generator](attaching.md)).
+
 **Theorem schemas need no extra machinery.** A theorem whose statement mentions a placeholder
 is itself a schema. To prove `∀P. φ(P)`, prove `φ(P)` with `P` a placeholder.
 

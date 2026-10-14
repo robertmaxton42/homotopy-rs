@@ -41,6 +41,12 @@ pub enum Action {
     /// Click on a point of the workspace, to find what can be attached there: through weak units
     /// if the flag is set, and with the limits on inferring instances of schemas.
     SelectPoint(Vec<SliceIndex>, bool, InferenceLimits),
+    /// Drop (or click, once armed) a generator on a point of the workspace, to find only the ways
+    /// to attach that generator there: as for [`SelectPoint`](Self::SelectPoint) otherwise.
+    AttachGenerator(Generator, Vec<SliceIndex>, bool, InferenceLimits),
+    /// Pick a generator to attach, which the next click on the workspace attaches, or put it
+    /// down (`None`). Not part of the project.
+    Arm(Option<Generator>),
     HighlightAttachment(Option<AttachOption>),
     HighlightSlice(Option<SliceIndex>),
 
@@ -115,7 +121,7 @@ impl Action {
         match self {
             Self::Proof(action) => action.work_label(),
             Self::ImportActions(_) => Some(proof::REPLAYING),
-            Self::SelectPoint(..) => Some("Searching for attachments"),
+            Self::SelectPoint(..) | Self::AttachGenerator(..) => Some("Searching for attachments"),
             Self::Draft(_) => Some("Inferring replacements"),
             Self::ExportImage(
                 ImageFormat::Stl(_) | ImageFormat::Tikz(_) | ImageFormat::Manim(_),
@@ -183,6 +189,9 @@ pub struct State {
     pub remote_project_metadata: Option<account::RemoteProjectMetadata>,
     pub history: History,
     pub options: Option<Selectables>,
+    /// The generator that the next click on the workspace is to attach, if one was picked
+    /// (see [`Action::Arm`]).
+    pub armed: Option<Generator>,
     pub attachment_highlight: Option<AttachOption>,
     pub slice_highlight: Option<SliceIndex>,
     /// The instantiations in progress, which are not part of the project: neither undo nor redo
@@ -428,11 +437,18 @@ impl State {
                 return self.start(Action::Proof(action));
             }
             Action::SelectPoint(point, weak_units, limits) => {
-                return match AttachOptionsJob::new(self.proof(), &point, weak_units, limits) {
-                    Ok(job) => Ok(Started::Running(Task::AttachOptions(Box::new(job)))),
-                    Err(NoAttachment::NoWorkspace) => Ok(Started::Done(true)),
-                    Err(NoAttachment::NoBoundary) => Err(ModelError::NoAttachment),
-                };
+                return self.start_attach_search(&point, weak_units, limits, None);
+            }
+            Action::AttachGenerator(generator, point, weak_units, limits) => {
+                // Whatever came of it, the generator is not waiting any more.
+                self.armed = None;
+                return self.start_attach_search(&point, weak_units, limits, Some(generator));
+            }
+            Action::Arm(generator) => {
+                self.clear_selections();
+                self.armed = generator;
+                // Picking is not changing the project.
+                return Ok(Started::Done(false));
             }
             Action::Draft(edit) => {
                 let signature = &self.history.proof().signature;
@@ -453,6 +469,24 @@ impl State {
         }
 
         Ok(Started::Done(true))
+    }
+
+    /// Starts the search for the ways to attach at a point of the workspace, all of them or those
+    /// of one generator.
+    fn start_attach_search(
+        &self,
+        point: &[SliceIndex],
+        weak_units: bool,
+        limits: InferenceLimits,
+        only: Option<Generator>,
+    ) -> Result<Started, ModelError> {
+        match AttachOptionsJob::new(self.proof(), point, weak_units, limits, only) {
+            Ok(job) => Ok(Started::Running(Task::AttachOptions(Box::new(job)))),
+            Err(NoAttachment::NoWorkspace) => Ok(Started::Done(true)),
+            Err(NoAttachment::NoBoundary | NoAttachment::UnknownGenerator) => {
+                Err(ModelError::NoAttachment)
+            }
+        }
     }
 
     /// Starts to perform actions on the proof, each following the one before. Those that were
@@ -564,6 +598,7 @@ impl State {
     /// Handler for [Action::ClearSelections].
     fn clear_selections(&mut self) {
         self.options = None;
+        self.armed = None;
         self.attachment_highlight = None;
         self.slice_highlight = None;
     }

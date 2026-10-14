@@ -1,6 +1,8 @@
+use armed_chip::ArmedChip;
 use boundary::BoundaryPreview;
 use futures::future::select;
 use gloo_timers::future::TimeoutFuture;
+use homotopy_core::signature::Signature as _;
 use homotopy_model::{job::Job, remote::Answer};
 use instant::{Duration, Instant};
 use mouse_buttons::MouseButtons;
@@ -32,8 +34,10 @@ use crate::{
 
 #[allow(clippy::mem_forget, clippy::future_not_send)] // due to wasm_bindgen
 pub mod account;
+mod armed_chip;
 mod attach;
 pub mod attach_inference;
+pub mod attach_target;
 mod boundary;
 #[cfg(any(debug_assertions, feature = "show_debug_panel"))]
 mod debug;
@@ -301,7 +305,9 @@ impl App {
             Message::Escape(in_text_field) => {
                 if self.job.is_some() {
                     self.cancel()
-                } else if !in_text_field && self.state.options.is_some() {
+                } else if !in_text_field
+                    && (self.state.options.is_some() || self.state.armed.is_some())
+                {
                     self.dispatch(ctx, model::Action::ClearSelections)
                 } else {
                     false
@@ -984,6 +990,7 @@ impl App {
                 dispatch={dispatch.clone()}
                 attachment_highlight={state.attachment_highlight.clone()}
                 slice_highlight={state.slice_highlight}
+                armed={state.armed}
             />
         };
 
@@ -1016,12 +1023,19 @@ impl App {
                         on_dismiss={ctx.link().callback(|()| Message::DismissInferenceNotice)}
                     />
                 }
+                if let Some(info) = state.armed.and_then(|generator| proof.signature.generator_info(generator)) {
+                    <ArmedChip
+                        name={info.name.clone()}
+                        on_cancel={dispatch.reform(|()| model::Action::Arm(None))}
+                    />
+                }
                 <tooltip::HoverTooltip />
                 <Sidebar
                     dispatch={dispatch}
                     proof={proof.clone()}
                     options={state.options.clone()}
                     drafts={state.drafts.clone()}
+                    armed={state.armed}
                     remote_project_metadata={state.remote_project_metadata.clone()}
                 />
                 <div class="toaster">

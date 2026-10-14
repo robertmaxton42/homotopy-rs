@@ -1014,6 +1014,10 @@ mod tests {
     /// finds instances), or, with the cell `u : q ⇒ q` as well, a diagram that the search for
     /// the placeholders has a great deal of choice in (and runs into its limit).
     fn attach_job(big: bool, limits: InferenceLimits) -> AttachOptionsJob {
+        AttachOptionsJob::new(&schema_proof(big), &[], false, limits, None).unwrap()
+    }
+
+    fn schema_proof(big: bool) -> ProofState {
         let (sig, _, q, u) = independent();
         let haystack = if big {
             let mut d = q.identity();
@@ -1024,12 +1028,83 @@ mod tests {
         } else {
             small_haystack(&q)
         };
-        let proof = ProofState {
+        ProofState {
             signature: sig,
             workspace: Some(Workspace::new(haystack)),
             ..ProofState::default()
+        }
+    }
+
+    /// The search for the schema alone gives what the whole search gives for it, in pieces, and
+    /// with all of the time that inferring is given: a quarter of it is for a schema that has
+    /// others to share the time with.
+    #[test]
+    fn a_schema_searched_for_alone_is_what_the_whole_search_finds_for_it() {
+        for big in [false, true] {
+            let proof = schema_proof(big);
+            let limits = InferenceLimits::UNLIMITED;
+            let whole =
+                run_to_end(AttachOptionsJob::new(&proof, &[], false, limits, None).unwrap());
+            let mut instances = 0;
+            for info in proof.signature.iter() {
+                let mut job =
+                    AttachOptionsJob::new(&proof, &[], false, limits, Some(info.generator))
+                        .unwrap();
+                let (mut steps, mut last_done) = (0, 0);
+                let only = loop {
+                    let progress = job.progress().unwrap();
+                    assert!(progress.done <= progress.total && progress.done >= last_done);
+                    last_done = progress.done;
+                    steps += 1;
+                    if let Some(outcome) = job.step() {
+                        break outcome;
+                    }
+                };
+                let expected: Vec<_> = whole
+                    .options
+                    .iter()
+                    .filter(|option| option.generator == info.generator)
+                    .cloned()
+                    .collect();
+                assert_eq!(only.options, expected, "{}", info.name);
+                let found = only
+                    .options
+                    .iter()
+                    .filter(|option| option.substitution.is_some())
+                    .count();
+                if found > 0 {
+                    // Searching for the schema is more than a step: the pieces and the inference.
+                    assert!(steps > 3, "{steps}");
+                }
+                instances += found;
+            }
+            assert!(instances > 0, "instances are inferred");
+        }
+    }
+
+    /// With a time limit the schema that is searched for alone has all of it, not a quarter.
+    #[test]
+    fn a_schema_searched_for_alone_has_all_the_time() {
+        let limits = InferenceLimits {
+            budget_ms: 4000,
+            ..InferenceLimits::UNLIMITED
         };
-        AttachOptionsJob::new(&proof, &[], false, limits).unwrap()
+        assert_eq!(
+            limits.budget_each(1),
+            Some(std::time::Duration::from_millis(4000))
+        );
+        assert_eq!(
+            limits.budget_each(5),
+            Some(std::time::Duration::from_millis(1000))
+        );
+        let short = InferenceLimits {
+            budget_ms: 800,
+            ..limits
+        };
+        assert_eq!(
+            short.budget_each(5),
+            Some(std::time::Duration::from_millis(800))
+        );
     }
 
     #[test]
@@ -1229,6 +1304,7 @@ mod tests {
             point: vec![],
             weak_units: false,
             limits: InferenceLimits::UNLIMITED,
+            only: None,
         };
         let mut remote = Remote::default();
         let request = remote.request(&proof, work, 0, false);

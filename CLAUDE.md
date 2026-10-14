@@ -301,6 +301,84 @@ indicator: see "Laying out diagrams" below.
     the others; the searches that do not finish are cut, not made quick; the options a cut schema
     would have had are not there (use the setting to give it more time).
 
+- **Attaching one generator** (`AttachOptionsJob::new(.., only)`, `can_attach`, `Action::AttachGenerator`
+  and `Action::Arm`, `app/attach_target.rs`, `app/armed_chip.rs`; user-facing text in
+  `doc/attaching.md`). Dropping a generator from the signature on the diagram, or picking it with the
+  button on its row and clicking a point, searches for the ways to attach *that* generator only, and the
+  outcomes are as for a click (none: "no attachment found"; one: attached at once; several: the option
+  list).
+  - Model: `only: Option<Generator>` in `AttachOptionsJob::new` (and `Work::AttachOptions`, `#[serde(default)]`,
+    so the worker does the same): the passes look at that generator and its variants only, and the
+    options are what the whole search gives for it, in the same order (tests:
+    `homotopy-model/tests/attach_only.rs`, on the example corpus at points of the diagrams and their
+    boundaries, with and without weak units; `inference::tests::a_schema_searched_for_alone_is_what_the_whole_search_finds_for_it`).
+    The work is cut into pieces so that progress and `Esc` mean something: one step for each cell
+    made from the generator (itself, inverse, weak identity, bubble, ...: `Variant`), one for each
+    reflection that could match (`ReflectionCandidate`: typecheck and embeddings), and the steps of the
+    inference as before; the progress counts the pieces when they have been made. A schema that is the
+    only one searched for has the whole of the budget (`InferenceLimits::budget_each(1)`), not a
+    quarter. The worker is offered it as for any attach search (`may_take_long`: a schema, or reflections
+    in four dimensions or more); a plain cell is done in the page (119ms in the debug wasm for `c` on
+    `start`, 6 steps). The busy pill says "Searching for attachments" (and "Inferring instances" only
+    when there is a schema to infer for).
+  - `can_attach(signature, diagram, generator, weak_units, limits) -> Result<(), CannotAttach>`:
+    what a drag asks, once, when it starts (`attach_target::start`, from `FolderView`'s
+    `on_drag_start`), never searching: the dimension (more than the diagram's plus one: no), whether the
+    cells that the generator starts at or ends at are in the diagram (a 0-cell: only through weak
+    units), and for a schema whether inference is on and the dimension within its limit. It looks at the
+    diagram as a whole and not at the point (a drag over the diagram never runs a search), so it can say no
+    for all points and yes for a point where the search finds nothing. Never says no wrongly: tested
+    on the corpus against the options that the whole search finds (`attach_only.rs`). Computing it
+    walks all the cells of the workspace diagram (`Diagram::generators`, not cached: 5.5ms for the
+    fixture's `start` in the debug wasm, more for the whole workspace) and is not done for rendering.
+  - Dragging: a signature row carries the generator as plain text (the node, for moving it in the
+    signature, which still works) and as `application/x-homotopy-generator` (`id,dimension`), with
+    `effectAllowed = "copyMove"`. The page cannot read the data until the drop, so `attach_target` keeps
+    the generator and the verdict of `can_attach` in a thread-local from `dragstart` to `dragend`.
+    `DiagramSvg` (`accepts_drops`, `on_attach`) accepts a drag (`preventDefault` on `dragover`) only if
+    it carries that type, the verdict is yes and the diagram is not waiting for its layout (the handlers
+    are not there while `pending`: drops are ignored as clicks are); it outlines the simplex under the
+    pointer (`diagram-svg__drop-highlight`, from the shape that `simplex_at` finds, no search) and on drop
+    emits `(generator, simplex[0])`, which the workspace turns into `AttachGenerator(generator, point, weak
+    units, limits)`. While a job runs a drop is refused like a click (the pill shakes; dragover is
+    still accepted, so that there is something to refuse). Folder drop zones and the signature are as
+    before; a drag of a folder carries no generator, so the diagram ignores it.
+  - Picking: `Action::Arm(Some(generator))` sets `State::armed` (not part of the project, `Done(false)`,
+    cleared by `ClearSelections`, which `Esc` does when nothing is running); `App::render` shows the chip
+    (`ArmedChip`: "Attaching <name> click a point in the diagram, Esc to cancel", a button that disarms) and
+    passes `armed` to the workspace, whose click then dispatches `AttachGenerator` instead of
+    `SelectPoint` (this disarms at the start of the action). The button (`signature__item-attach`, a
+    pointing hand, shown by the stylesheet where the pointer is: it must be in the DOM all the time or it is
+    gone before it can be clicked) checks `can_attach` when pressed and toasts why not (in words that do
+    not name the generator, whose name is a formula).
+  - Tests: `homotopy-web/tests/tasks.rs` (`attaching_one_generator_gives_the_options_for_that_generator_and_picking_one_is_not_the_project`:
+    the options are those of a click for that generator, picking is `Done(false)` and leaves the project
+    alone, `Esc`/`ClearSelections` puts it down, a generator that is not there is an error, the action is heavy
+    and refused while busy); in the browser (Playwright, not committed): arming with the button, the chip,
+    `Esc`, clicking the chip, `dragTo` of a row on the diagram at nine heights (8 options at the top, "no
+    attachment found" elsewhere, the highlight outlines the vertex or wire under the pointer and goes on
+    drop), a drag that the diagram does not take (6-cell on a 4-diagram: no highlight, nothing runs; the button
+    toasts why), a drop while the layout is pending (ignored) and while a job runs (refused, pill shakes).
+  - Debug hooks: `__homotopy.dispatch` takes `{"AttachGenerator": [{"id": 48, "dimension": 6}, [{"Regular": 1}], false]}`
+    (limits from the settings), `{"AttachGeneratorWith": [generator, point, weak_units, limits]}` and
+    `{"Arm": generator|null}`; `state().armed` is `[id, dimension]`. Rows of the signature have
+    `data-generator="id:dimension"`. In Playwright, `locator.dragTo` does a real drag (dragstart, dragover,
+    drop, dragend), as does `mouse.down`/`move`/`up` for most rows (some rows of schemas lose the drag after
+    `dragstart` with hand-made mouse moves, and `dragTo` works for them; a click straight after a drag is
+    swallowed); synthetic `DragEvent`s with a `DataTransfer` work too. Wait for the workspace's layout
+    (`.diagram-svg--stale`, `.layout-note`) before dragging, or the diagram does not accept the drop.
+  - Measured (debug wasm, the fixture, worker, 3s limit): generator 16 (`ζ[η̇→η̇′]`, the schema that
+    never finishes) dropped on a vertex of `start`: 4.1 to 4.8s to "no attachment found" with the notice
+    (the whole 3s of inference, 0.8s of which was sending the 5MB signature to the worker the first time),
+    against 15.4s for the full search with the same limit, which gives it a quarter of it and spends the
+    rest on the plain cells; a plain cell, `c` on `start` at `[R1]` (8 options): 119ms in 6 steps in the page,
+    against 7.9s; `c^2 = 1` (6-cell, with reflections) on the whole workspace at `[R3, R2]`: 5.8s (4 options),
+    against 33.8s for the full search. With the default limit (20s) generator 16 takes the 20s and then says so.
+  - Gaps: the 3D view does not take drops or armed clicks (`DiagramGl` has no attach by clicking);
+    the verdict is for the whole diagram and not the point, so a drop at a point where nothing attaches
+    runs the (usually quick) search and then says "no attachment found"; the busy pill does not
+    name the generator; touch devices have the button only (no hover: it is shown all the time there).
+
 New expensive work: write it as a job (or give an existing job another kind of step), label it,
 and check it with the debug hooks below.
 

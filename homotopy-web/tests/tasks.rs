@@ -479,3 +479,104 @@ fn inferring_what_a_replacement_determines_is_a_task_that_can_be_dropped() {
     other.update(Action::Draft(edit)).unwrap();
     assert_eq!(other.drafts.get(schema), draft);
 }
+
+#[test]
+fn attaching_one_generator_gives_the_options_for_that_generator_and_picking_one_is_not_the_project()
+{
+    use homotopy_web::model::{ModelError, Selectables};
+
+    let actions = recorded_actions(ASSOCIATOR);
+    let first_attach = actions
+        .iter()
+        .position(|a| matches!(a, proof::Action::Attach(_)))
+        .unwrap();
+    let point = vec![SliceIndex::Boundary(Boundary::Target)];
+    let limits = InferenceLimits::default();
+
+    // What a click finds, for all the generators.
+    let mut whole = state_before(&actions, first_attach);
+    run_in_steps(&mut whole, Action::SelectPoint(point.clone(), true, limits));
+    let Some(Selectables::Attach(all)) = whole.options.clone() else {
+        panic!("several ways to attach at the point");
+    };
+    let generators: std::collections::BTreeSet<_> = all
+        .iter()
+        .map(|option| (option.generator.id, option.generator.dimension))
+        .collect();
+    assert!(
+        generators.len() > 1,
+        "more than one generator can be attached there"
+    );
+
+    for &(id, dimension) in &generators {
+        let generator = Generator::new(id, dimension);
+        let expected: Vec<_> = all
+            .iter()
+            .filter(|option| option.generator == generator)
+            .cloned()
+            .collect();
+
+        // Picking the generator is not changing the project, and the attach starts by putting it
+        // down.
+        let mut state = state_before(&actions, first_attach);
+        let before = summary(&state);
+        assert!(matches!(
+            state.start(Action::Arm(Some(generator))).unwrap(),
+            Started::Done(false)
+        ));
+        assert_eq!(state.armed, Some(generator));
+        assert_eq!(summary(&state), before);
+        let Started::Running(mut task) = state
+            .start(Action::AttachGenerator(
+                generator,
+                point.clone(),
+                true,
+                limits,
+            ))
+            .unwrap()
+        else {
+            panic!("finding what to attach is a task");
+        };
+        assert_eq!(state.armed, None);
+        let output = loop {
+            if let Some(output) = task.step() {
+                break output;
+            }
+        };
+        state.finish(output).unwrap();
+        match expected.len() {
+            // (Nothing is attached for none: that is an error for the app to say.)
+            0 | 1 => assert!(state.options.is_none()),
+            _ => assert_eq!(state.options, Some(Selectables::Attach(expected))),
+        }
+    }
+
+    // Esc, or whatever clears what is selected, puts the picked generator down.
+    let mut state = state_before(&actions, first_attach);
+    let generator = Generator::new(0, 0);
+    state.update(Action::Arm(Some(generator))).unwrap();
+    assert_eq!(state.armed, Some(generator));
+    state.update(Action::ClearSelections).unwrap();
+    assert_eq!(state.armed, None);
+    state.update(Action::Arm(Some(generator))).unwrap();
+    state.update(Action::Arm(None)).unwrap();
+    assert_eq!(state.armed, None);
+
+    // A generator that is not in the signature is nothing to attach.
+    let stranger = Generator::new(9999, 1);
+    assert!(matches!(
+        state.start(Action::AttachGenerator(
+            stranger,
+            point.clone(),
+            true,
+            limits
+        )),
+        Err(ModelError::NoAttachment)
+    ));
+
+    // The search is heavy, as a click is, and refused while another is running.
+    let attach = Action::AttachGenerator(generator, point, true, limits);
+    assert_eq!(attach.heavy_label(), Some("Searching for attachments"));
+    assert!(!attach.allowed_while_busy());
+    assert!(!Action::Arm(None).allowed_while_busy());
+}

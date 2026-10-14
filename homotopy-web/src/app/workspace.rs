@@ -1,4 +1,4 @@
-use homotopy_core::SliceIndex;
+use homotopy_core::{Generator, SliceIndex};
 use path_control::PathControl;
 use slice_control::SliceControl;
 use view_control::ViewControl;
@@ -37,6 +37,8 @@ pub struct Props {
     pub metadata: Metadata,
     pub attachment_highlight: Option<AttachOption>,
     pub slice_highlight: Option<SliceIndex>,
+    /// The generator picked to be attached by the next click on the diagram, if there is one.
+    pub armed: Option<Generator>,
 }
 
 #[function_component]
@@ -136,8 +138,22 @@ fn view_diagram_svg<const N: usize>(
     diagram_ref: NodeRef,
     on_laid_out: Callback<()>,
 ) -> Html {
-    let on_select = props.dispatch.reform(|p| {
-        Action::SelectPoint(p, AppSettings::get_weak_units(), attach_inference::limits())
+    let armed = props.armed;
+    let on_select = props.dispatch.reform(move |p| {
+        let (weak_units, limits) = (AppSettings::get_weak_units(), attach_inference::limits());
+        match armed {
+            // A click attaches the generator that was picked, if it can be.
+            Some(generator) => Action::AttachGenerator(generator, p, weak_units, limits),
+            None => Action::SelectPoint(p, weak_units, limits),
+        }
+    });
+    let on_attach = props.dispatch.reform(|(generator, point)| {
+        Action::AttachGenerator(
+            generator,
+            point,
+            AppSettings::get_weak_units(),
+            attach_inference::limits(),
+        )
     });
     let on_homotopy = props
         .dispatch
@@ -157,6 +173,8 @@ fn view_diagram_svg<const N: usize>(
                     id="workspace__diagram"
                     signature={props.signature.clone()}
                     on_select={on_select}
+                    accepts_drops=true
+                    on_attach={on_attach}
                     on_homotopy={on_homotopy}
                     highlight={highlight}
                     diagram_ref={diagram_ref}

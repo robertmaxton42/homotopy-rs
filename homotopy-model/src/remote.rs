@@ -56,6 +56,9 @@ pub enum Work {
         point: Vec<SliceIndex>,
         weak_units: bool,
         limits: InferenceLimits,
+        /// The one generator to search for the ways to attach, if not all of them.
+        #[serde(default)]
+        only: Option<Generator>,
     },
     /// Make the project a `.hom` file (see [`serialize`](crate::serialize)), to save it in the
     /// background (see [`autosave`](crate::autosave)).
@@ -684,8 +687,9 @@ impl Executor {
                 point,
                 weak_units,
                 limits,
+                only,
             } => {
-                let job = AttachOptionsJob::new(&state, &point, weak_units, limits)
+                let job = AttachOptionsJob::new(&state, &point, weak_units, limits, only)
                     .map_err(|e| format!("nothing to attach to: {e:?}"))?;
                 let outcome = run_checkpointed(job, step_delay_ms, before_step, &mut |outcome| {
                     // What a job that is ended in the middle comes to: an answer as any other.

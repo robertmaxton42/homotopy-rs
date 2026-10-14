@@ -1922,3 +1922,93 @@ input[type="color"]::-webkit-color-swatch {
   user-select: text; /* Standard syntax */
 }
 
+
+/* Attaching one generator picked from the signature (see app/armed_chip.rs, app/attach_target.rs) */
+
+.armed-chip {
+  position: fixed;
+  top: var(--space-2);
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 1005;
+}
+
+.armed-chip__pill {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: calc(100vw - 2 * var(--space-2));
+  padding: var(--space-1) var(--space-2);
+  border: 2px solid #66aeeb;
+  border-radius: 999px;
+  background: var(--sidebar-background);
+  color: var(--sidebar-foreground);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.armed-chip__pill:focus-visible {
+  outline: 2px solid var(--drawer-selected);
+  outline-offset: 2px;
+}
+
+.armed-chip__hint {
+  opacity: 0.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The part of the diagram under a generator that is being dragged over it, which it would be
+   attached at. */
+.diagram-svg__drop-highlight {
+  fill: #ffff0066;
+  stroke: black;
+  stroke-width: 2px;
+  stroke-dasharray: 4;
+  pointer-events: none;
+}
+
+.diagram-svg__drop-highlight--line {
+  fill: none;
+  stroke: #ffcc00;
+  stroke-dasharray: none;
+  stroke-opacity: 0.8;
+}
+
+/* The button on a generator of the signature that picks it to be attached. */
+.signature__item-right {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.signature__item-attach {
+  opacity: 0;
+}
+
+.signature__item:hover .signature__item-attach {
+  opacity: 0.55;
+}
+
+.signature__item .signature__item-attach:hover,
+.signature__item .signature__item-attach--armed {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .signature__item-attach {
+    opacity: 0.55;
+  }
+}
+
+.signature__item-attach--armed {
+  outline: 2px solid #66aeeb;
+  border-radius: 50%;
+}
