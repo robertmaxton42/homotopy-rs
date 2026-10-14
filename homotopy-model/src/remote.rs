@@ -40,6 +40,7 @@ use crate::{
         ProofError, ProofState, SelectedBoundary, Signature, SignatureItem, View, Workspace,
         REPLAYING,
     },
+    serialize::serialize,
 };
 
 /// What a job is to do, apart from the proof it works on.
@@ -55,6 +56,9 @@ pub enum Work {
         point: Vec<SliceIndex>,
         weak_units: bool,
     },
+    /// Make the project a `.hom` file (see [`serialize`](crate::serialize)), to save it in the
+    /// background (see [`autosave`](crate::autosave)).
+    Serialize,
 }
 
 /// What a job came to.
@@ -62,6 +66,8 @@ pub enum Work {
 pub enum Output {
     Actions(ActionsOutcome),
     AttachOptions(Vec<AttachOption>),
+    /// The bytes of the file.
+    Serialized(Vec<u8>),
 }
 
 /// What there is to say about the job just before each of its steps, for the executor's caller to
@@ -162,6 +168,9 @@ struct Done {
     output: WireOutput,
     /// How long the job took where it was done, in milliseconds.
     worked_ms: f64,
+    /// How many bytes at the end of the message are not part of it but the file that a
+    /// [`Work::Serialize`] made, which would be slower to wrap in the message than to append.
+    trailer: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -171,6 +180,8 @@ enum WireOutput {
         error: Option<String>,
     },
     AttachOptions(Vec<WireAttachOption>),
+    /// The file is in the trailer.
+    Serialized,
 }
 
 /// An [`AttachOption`] but for its diagrams.
@@ -408,11 +419,42 @@ impl Remote {
         step_delay_ms: u32,
         send_signature: bool,
     ) -> Vec<u8> {
+        self.request_with(Store::default(), proof, work, step_delay_ms, send_signature)
+    }
+
+    /// Whether the executor is known to hold this signature, so that a request need not send
+    /// it.
+    #[must_use]
+    pub fn holds(&self, signature: &Signature) -> bool {
+        self.holds
+            .as_ref()
+            .is_some_and(|(_, held)| held.identical(signature))
+    }
+
+    /// The bytes that give the executor diagrams to hold for the requests that follow, which
+    /// are packed in `store` (see [`Packer`](crate::autosave::Packer)): a signature that has to
+    /// be sent can be sent a piece at a time, ahead of the request, so that no one piece takes
+    /// long to prepare.
+    #[must_use]
+    pub fn preload(store: &Store) -> Vec<u8> {
+        encode(store)
+    }
+
+    /// [`request`](Self::request) with some of the diagrams packed in the store already. What
+    /// has been sent ahead of it with [`preload`](Self::preload) has to have been taken out of
+    /// the store, and has to have reached the executor first.
+    pub fn request_with(
+        &mut self,
+        mut store: Store,
+        proof: &ProofState,
+        work: Work,
+        step_delay_ms: u32,
+        send_signature: bool,
+    ) -> Vec<u8> {
         self.asked = match &work {
             Work::Actions { actions, .. } => actions.clone(),
-            Work::AttachOptions { .. } => vec![],
+            Work::AttachOptions { .. } | Work::Serialize => vec![],
         };
-        let mut store = Store::default();
         let signature = match &self.holds {
             Some((number, held)) if !send_signature && held.identical(&proof.signature) => {
                 SignatureRef::Held(*number)
@@ -485,6 +527,10 @@ impl Remote {
                     .collect::<Option<_>>()
                     .ok_or(CORRUPT)?,
             ),
+            WireOutput::Serialized => {
+                let start = bytes.len().checked_sub(done.trailer).ok_or(CORRUPT)?;
+                Output::Serialized(bytes[start..].to_vec())
+            }
         };
         self.holds = Some((done.holds, signature));
         Ok(Answer::Done {
@@ -501,25 +547,39 @@ impl Remote {
 pub struct Executor {
     /// The last signature seen or made, with its number.
     holds: Option<(u64, Signature)>,
+    /// Diagrams that were sent ahead of a request (see [`Remote::preload`]), for the next
+    /// request to find the rest of the way.
+    preloaded: Store,
 }
 
 impl Executor {
     /// Does the job that the request describes, and gives the bytes to answer with. `before_step`
     /// is told what is going on before each step of the job, which is the only time it can be.
     pub fn run(&mut self, request: &[u8], before_step: &mut dyn FnMut(Step)) -> Vec<u8> {
-        let response = match self.try_run(request, before_step) {
-            Ok(response) => response,
-            Err(message) => Response::Failed(message),
+        let (response, trailer) = match self.try_run(request, before_step) {
+            Ok(done) => done,
+            Err(message) => (Response::Failed(message), vec![]),
         };
         homotopy_core::collect_garbage();
-        encode(&response)
+        let mut bytes = encode(&response);
+        bytes.extend(trailer);
+        bytes
+    }
+
+    /// Takes in diagrams that [`Remote::preload`] made the bytes of. There is no answer: if they
+    /// are garbled the request that comes after them is not understood, and says so.
+    pub fn preload(&mut self, bytes: &[u8]) {
+        match rmp_serde::from_slice::<Store>(bytes) {
+            Ok(store) => self.preloaded.extend(store),
+            Err(error) => tracing::error!("Could not read the diagrams sent ahead: {error}"),
+        }
     }
 
     fn try_run(
         &mut self,
         request: &[u8],
         before_step: &mut dyn FnMut(Step),
-    ) -> Result<Response, String> {
+    ) -> Result<(Response, Vec<u8>), String> {
         let Request {
             mut store,
             signature,
@@ -528,11 +588,13 @@ impl Executor {
             fresh,
             step_delay_ms,
         } = rmp_serde::from_slice(request).map_err(|e| e.to_string())?;
+        // What was sent ahead is for this request; it is not kept for the next.
+        store.extend(std::mem::take(&mut self.preloaded));
 
         let (number, signature) = match signature {
             SignatureRef::Held(number) => match &self.holds {
                 Some((held, signature)) if *held == number => (number, signature.clone()),
-                _ => return Ok(Response::NeedsSignature),
+                _ => return Ok((Response::NeedsSignature, vec![])),
             },
             SignatureRef::Sent(number, wire) => {
                 let signature = unpack_signature(&mut store, wire).ok_or(CORRUPT)?;
@@ -545,6 +607,7 @@ impl Executor {
         let started = Instant::now();
         let mut store = Store::default();
         let mut holds = number;
+        let mut trailer = vec![];
         let output = match work {
             Work::Actions { actions, replay } => {
                 let proof = proof_from_state(state);
@@ -585,13 +648,21 @@ impl Executor {
                         .collect(),
                 )
             }
+            Work::Serialize => {
+                trailer = serialize(state.signature, state.workspace, state.metadata);
+                WireOutput::Serialized
+            }
         };
-        Ok(Response::Done(Box::new(Done {
-            store,
-            holds,
-            output,
-            worked_ms: started.elapsed().as_secs_f64() * 1000.0,
-        })))
+        Ok((
+            Response::Done(Box::new(Done {
+                store,
+                holds,
+                output,
+                worked_ms: started.elapsed().as_secs_f64() * 1000.0,
+                trailer: trailer.len(),
+            })),
+            trailer,
+        ))
     }
 }
 

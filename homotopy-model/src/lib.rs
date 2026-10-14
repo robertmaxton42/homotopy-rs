@@ -1,3 +1,4 @@
+pub mod autosave;
 pub mod history;
 pub mod job;
 pub mod migration;

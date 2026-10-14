@@ -102,7 +102,7 @@ impl Task {
                                         if data.0.len() < SMALL_IMPORT
                                 ))
                     }
-                    Work::AttachOptions { .. } => false,
+                    Work::AttachOptions { .. } | Work::Serialize => false,
                 };
                 worth_it.then_some((state, work))
             }

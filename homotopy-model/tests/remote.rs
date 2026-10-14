@@ -9,6 +9,7 @@ use std::{
 
 use homotopy_core::{Boundary, SliceIndex};
 use homotopy_model::{
+    autosave::Packer,
     history::{proof_from_state, Proof},
     job::{run_to_end, Progress},
     proof::{Action, ActionsJob, ActionsOutcome, AttachOptionsJob, ProofState, REPLAYING},
@@ -43,18 +44,22 @@ fn recorded_actions(json: &str) -> Vec<Action> {
 /// A thread running an executor, which gets requests and gives responses, and what it said
 /// before its steps.
 struct Elsewhere {
-    requests: Option<Sender<Vec<u8>>>,
+    requests: Option<Sender<(bool, Vec<u8>)>>,
     responses: Receiver<(Vec<u8>, Vec<Step>)>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Elsewhere {
     fn new() -> Self {
-        let (request_sender, request_receiver) = channel::<Vec<u8>>();
+        let (request_sender, request_receiver) = channel::<(bool, Vec<u8>)>();
         let (response_sender, responses) = channel();
         let thread = thread::spawn(move || {
             let mut executor = Executor::default();
-            for request in request_receiver {
+            for (preload, request) in request_receiver {
+                if preload {
+                    executor.preload(&request);
+                    continue;
+                }
                 let mut steps = vec![];
                 let response = executor.run(&request, &mut |step| steps.push(step));
                 response_sender.send((response, steps)).unwrap();
@@ -68,8 +73,17 @@ impl Elsewhere {
     }
 
     fn ask(&self, request: Vec<u8>) -> (Vec<u8>, Vec<Step>) {
-        self.requests.as_ref().unwrap().send(request).unwrap();
+        self.requests
+            .as_ref()
+            .unwrap()
+            .send((false, request))
+            .unwrap();
         self.responses.recv().unwrap()
+    }
+
+    /// Gives it diagrams ahead of a request, which has no answer.
+    fn preload(&self, bytes: Vec<u8>) {
+        self.requests.as_ref().unwrap().send((true, bytes)).unwrap();
     }
 
     /// Does the work on the proof there, as `remote` would have it.
@@ -96,7 +110,7 @@ impl Drop for Elsewhere {
 fn actions_output(output: Output) -> ActionsOutcome {
     match output {
         Output::Actions(outcome) => outcome,
-        Output::AttachOptions(_) => panic!("expected actions"),
+        _ => panic!("expected actions"),
     }
 }
 
@@ -315,11 +329,115 @@ fn what_a_job_offers_is_what_it_does() {
             assert_eq!(offered, actions);
             assert!(replay);
         }
-        Work::AttachOptions { .. } => panic!("expected actions"),
+        Work::AttachOptions { .. } | Work::Serialize => panic!("expected actions"),
     }
     // A job that has begun is not one to hand to anyone.
     let mut job = ActionsJob::chain(proof, actions);
     assert!(job.offer().is_some());
     homotopy_model::job::Job::step(&mut job);
     assert!(job.offer().is_none());
+}
+
+/// Saving the project in the worker gives the file that saving it here does, whether the diagrams
+/// of the signature were sent ahead a piece at a time, with the request, or not at all because
+/// the executor has them.
+#[test]
+fn saving_elsewhere_is_saving_here() {
+    use homotopy_model::serialize::serialize;
+
+    let expected_for = |state: &ProofState| {
+        serialize(
+            state.signature.clone(),
+            state.workspace.clone(),
+            state.metadata.clone(),
+        )
+    };
+    let serialized = |output: Output| match output {
+        Output::Serialized(bytes) => bytes,
+        _ => panic!("expected a file"),
+    };
+    for (name, json) in EXAMPLES {
+        let actions = recorded_actions(json);
+        let outcome = run_to_end(ActionsJob::replay(Proof::default(), actions, REPLAYING));
+        let state: ProofState = (**outcome.applied.last().unwrap().1).clone();
+        let expected = expected_for(&state);
+        assert!(state.signature.iter().count() > 1, "{name}");
+
+        // The signature is sent ahead a diagram at a time, and the request has the rest.
+        let elsewhere = Elsewhere::new();
+        let mut remote = Remote::default();
+        assert!(!remote.holds(&state.signature));
+        let mut packer = Packer::new(&state.signature);
+        let mut pieces = 0;
+        while !packer.step() {
+            let piece = packer.take();
+            if !piece.is_empty() {
+                pieces += 1;
+                elsewhere.preload(Remote::preload(&piece));
+            }
+        }
+        assert!(pieces >= 1, "{name}: the signature went ahead");
+        let request = remote.request_with(packer.into_store(), &state, Work::Serialize, 0, false);
+        let (response, _) = elsewhere.ask(request.clone());
+        let Answer::Done { output, .. } = remote.response(&response).unwrap() else {
+            panic!("{name}: the executor was given the signature");
+        };
+        assert_eq!(serialized(output), expected, "{name}");
+        // What was sent ahead was in the request, not in the pieces: they are small.
+        assert!(remote.holds(&state.signature));
+
+        // Again, and with the workspace changed: the signature is held, and left out.
+        let mut other = state.clone();
+        other.workspace = None;
+        let held = remote.request(&other, Work::Serialize, 0, false);
+        assert!(held.len() < request.len(), "{name}");
+        let (response, _) = elsewhere.ask(held);
+        let Answer::Done { output, .. } = remote.response(&response).unwrap() else {
+            panic!("{name}: the executor held the signature");
+        };
+        assert_eq!(serialized(output), expected_for(&other), "{name}");
+
+        // Without sending anything ahead, and from an executor that has been given pieces that
+        // the request does not use, the same.
+        let elsewhere = Elsewhere::new();
+        let mut remote = Remote::default();
+        let mut packer = Packer::new(&state.signature);
+        packer.step();
+        elsewhere.preload(Remote::preload(&packer.take()));
+        let (output, _) = elsewhere.work(&mut remote, &state, &Work::Serialize);
+        assert_eq!(serialized(output), expected, "{name}");
+    }
+}
+
+/// Where there is no worker the page packs the signature a piece at a time and makes the file
+/// itself: it is the file that serialising in one go makes.
+#[test]
+fn saving_in_pieces_is_saving_in_one() {
+    use homotopy_model::serialize::{serialize, serialize_with};
+
+    for (name, json) in EXAMPLES {
+        let actions = recorded_actions(json);
+        let outcome = run_to_end(ActionsJob::replay(Proof::default(), actions, REPLAYING));
+        let state: ProofState = (**outcome.applied.last().unwrap().1).clone();
+        let mut packer = Packer::new(&state.signature);
+        let mut steps = 1;
+        while !packer.step() {
+            steps += 1;
+        }
+        assert!(
+            steps > state.signature.iter().count(),
+            "{name}: it is done in small steps"
+        );
+        let file = serialize_with(
+            packer.into_store(),
+            state.signature.clone(),
+            state.workspace.clone(),
+            state.metadata.clone(),
+        );
+        assert_eq!(
+            file,
+            serialize(state.signature, state.workspace, state.metadata),
+            "{name}"
+        );
+    }
 }

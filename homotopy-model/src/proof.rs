@@ -2,7 +2,9 @@ use std::convert::{Into, TryFrom};
 
 pub use actions_job::{ActionsJob, ActionsOutcome, REPLAYING};
 pub use attach_options::{AttachOptionsJob, NoAttachment};
-pub use completion::{Ambiguity, InferJob, Inference, ReplacementError, Status};
+pub use completion::{
+    Ambiguity, InferJob, Inference, Mismatch, Part, ReplacementError, Status, Uncuttable,
+};
 pub use drafts::{Draft, DraftEdit, Drafts};
 use homotopy::Homotopy;
 use homotopy_core::{

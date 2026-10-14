@@ -13,12 +13,16 @@ use yew::prelude::*;
 
 use self::diagram_gl::GlViewControl;
 use crate::{
+    autosave::{self, Autosave},
     components::{
+        autosave_note::AutosaveNote,
         busy::{self, BusyIndicator},
+        delta::CallbackIdx,
         icon::{Icon, IconSize},
         layout_note::LayoutNote,
         modal::Modal,
         panzoom::PanZoom,
+        restore_notice::RestoreNotice,
         toast::{toast, Toast, ToasterComponent},
     },
     model,
@@ -72,6 +76,8 @@ pub enum Message {
     StartWorker,
     /// The worker (of the given generation) said something.
     Worker(u32, worker::Event),
+    /// Something about saving the project in the background (see [`crate::autosave`]).
+    Autosave(autosave::Message),
 }
 
 /// A task that the worker is doing.
@@ -126,6 +132,9 @@ pub struct App {
     // Hold onto the listeners so that they are dropped when the app is destroyed
     _mouse_buttons: MouseButtons,
     escape: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
+    /// Saving the project in the background, in case the tab is lost.
+    autosave: Autosave,
+    autosave_setting: Vec<CallbackIdx>,
 }
 
 impl Component for App {
@@ -139,7 +148,7 @@ impl Component for App {
         let signature_stylesheet = SignatureStylesheet::new();
         signature_stylesheet.mount();
 
-        Self::load_project_from_url_path(ctx);
+        let opened_from_url = Self::load_project_from_url_path(ctx);
 
         #[cfg(debug_assertions)]
         debug_hooks::install(ctx.link());
@@ -161,7 +170,22 @@ impl Component for App {
             Message::StartWorker
         });
 
+        let autosave = Autosave::new(ctx.link(), state.history.position(), !opened_from_url);
+        // The one setting that is kept from one visit to the next.
+        AppSettings::set_autosave(autosave.enabled());
+        let autosave_setting = AppSettings::subscribe(
+            &[AppSettingsKey::autosave],
+            ctx.link().batch_callback(|msg| match msg {
+                AppSettingsMsg::autosave(on) => {
+                    Some(Message::Autosave(autosave::Message::Setting(on)))
+                }
+                _ => None,
+            }),
+        );
+
         Self {
+            autosave,
+            autosave_setting,
             state,
             job: None,
             next_job: 0,
@@ -175,16 +199,20 @@ impl Component for App {
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         let rerender = self.handle(ctx, msg);
+        // Cheap, and does nothing unless the project has changed.
+        self.autosave.observe(self.state.history.position());
         #[cfg(debug_assertions)]
         debug_hooks::publish(&self.state, self.job.as_ref().map(Running::label));
         rerender
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        Self::render(ctx, &self.state)
+        Self::render(ctx, &self.state, self.autosave.offer())
     }
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
+        AppSettings::unsubscribe(&[AppSettingsKey::autosave], &self.autosave_setting);
+        self.autosave.destroy();
         self.signature_stylesheet.unmount();
         if let Some(escape) = self.escape.take() {
             web_sys::window()
@@ -218,6 +246,7 @@ impl App {
                 false
             }
             Message::Worker(generation, event) => self.worker_said(ctx, generation, event),
+            Message::Autosave(msg) => self.autosave.update(msg, &self.state, self.job.is_some()),
             Message::Escape(in_text_field) => {
                 if self.job.is_some() {
                     self.cancel()
@@ -249,6 +278,7 @@ impl App {
         // Determine if the action needs to reset the panzoom
         // but do not reset it until we have performed the action.
         let resets_panzoom = self.state.resets_panzoom(&action);
+        let exporting = matches!(action, model::Action::ExportProof);
 
         let started = Instant::now();
         let result = self.state.start(action);
@@ -258,7 +288,13 @@ impl App {
         );
 
         match result {
-            Ok(model::Started::Done(changed)) => self.updated(Ok(changed), resets_panzoom),
+            Ok(model::Started::Done(changed)) => {
+                if exporting {
+                    // What is on disk now does not need a backup.
+                    self.autosave.exported(self.state.history.position());
+                }
+                self.updated(Ok(changed), resets_panzoom)
+            }
             Ok(model::Started::Running(task)) => self.start_job(ctx, task, resets_panzoom),
             Err(error) => self.updated(Err(error), resets_panzoom),
         }
@@ -309,6 +345,11 @@ impl App {
         if matches!(result, Ok(true)) {
             // What a crash from here on saves (see `panic`).
             crate::panic::remember(self.state.proof());
+
+            // What a file held is on disk, and needs no backup until it is changed.
+            if self.state.history.at_import() {
+                self.autosave.clean(self.state.history.position());
+            }
 
             // Instantiations in progress may be of what is no longer there.
             let signature = self.state.history.proof().signature.clone();
@@ -728,7 +769,8 @@ impl App {
     }
 
     // TODO: replace this with yew-router
-    fn load_project_from_url_path(ctx: &Context<Self>) {
+    /// Starts to load the project that the address names, if it names one. Returns whether it does.
+    fn load_project_from_url_path(ctx: &Context<Self>) -> bool {
         let path_str = web_sys::window().unwrap().location().pathname().unwrap();
         let path = &path_str.split('/').collect::<Vec<&str>>()[1..];
         if path[0] == "p" && path.len() == 2 {
@@ -738,6 +780,7 @@ impl App {
             ctx.link().send_future_batch(async move {
                 Self::opened_from_url(account::download_published_project(&tag, 1 /* TODO */).await)
             });
+            true
         } else if path[0] == "u" && path.len() == 3 {
             // Personal projects
             let uid = path[1].to_owned();
@@ -746,13 +789,19 @@ impl App {
             ctx.link().send_future_batch(async move {
                 Self::opened_from_url(account::download_personal_project(&uid, &id).await)
             });
+            true
         } else {
             model::update_window_url_path("/");
+            false
         }
     }
 
     #[allow(clippy::let_underscore_untyped, clippy::let_underscore_must_use)]
-    fn render(ctx: &Context<Self>, state: &model::State) -> Html {
+    fn render(
+        ctx: &Context<Self>,
+        state: &model::State,
+        backup: Option<&autosave::Snapshot>,
+    ) -> Html {
         let proof = state.proof();
         let dispatch = ctx.link().callback(Message::Dispatch);
 
@@ -782,6 +831,14 @@ impl App {
             <main class="app">
                 <BusyIndicator on_cancel={ctx.link().callback(|()| Message::Cancel)} />
                 <LayoutNote />
+                <AutosaveNote />
+                if let Some(backup) = backup {
+                    <RestoreNotice
+                        backup={backup.clone()}
+                        on_restore={ctx.link().callback(|()| Message::Autosave(autosave::Message::Restore))}
+                        on_discard={ctx.link().callback(|()| Message::Autosave(autosave::Message::Discard))}
+                    />
+                }
                 <tooltip::HoverTooltip />
                 <Sidebar
                     dispatch={dispatch}

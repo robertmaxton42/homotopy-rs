@@ -43,8 +43,8 @@
 
 use homotopy_common::tex::{seal, to_math};
 use homotopy_core::{
-    rewrite::ConeView, signature::Signature as _, Diagram, Diagram0, DiagramN, Height, Orientation,
-    Rewrite, SliceIndex,
+    rewrite::ConeView, signature::Signature as _, Diagram, Diagram0, DiagramN, Generator, Height,
+    Orientation, Rewrite, SliceIndex,
 };
 
 use super::{
@@ -114,6 +114,43 @@ impl Signature {
         format!("${math}$")
     }
 
+    /// The label of a composite of the given parts, in the order of the diagram, written in the
+    /// [current notation](notation::current) like any other composite (`f ; g`): one formula,
+    /// with a part that is a composite itself in parentheses. A single part is just described.
+    ///
+    /// This is for saying what a composite of the cells of a schema needs to be, where some are
+    /// replaced with diagrams and others are still the cells; the work is bounded as for
+    /// [`describe`](Self::describe).
+    #[must_use]
+    pub fn describe_composite_of(&self, parts: &[CompositePart]) -> String {
+        if let [part] = parts {
+            return match part {
+                CompositePart::Cell(generator) => self.name_sealed(*generator),
+                CompositePart::Diagram(diagram) => self.describe(diagram),
+            };
+        }
+        let mut describer = Describer::new(self);
+        let math: Vec<String> = parts
+            .iter()
+            .map(|part| match part {
+                CompositePart::Cell(generator) => self.generator_info(*generator).map_or_else(
+                    || describer.notation.ellipsis().to_owned(),
+                    |info| to_math(&info.name),
+                ),
+                CompositePart::Diagram(diagram) => {
+                    let atomic = describer.known(diagram).is_some();
+                    let math = describer.diagram(diagram, 0);
+                    if atomic || math == describer.notation.ellipsis() {
+                        math
+                    } else {
+                        describer.notation.group(&math)
+                    }
+                }
+            })
+            .collect();
+        format!("${}$", describer.notation.compose(&math))
+    }
+
     /// The label of a cell, as drawn on a wire or a surface: see
     /// [`describe_point`](Self::describe_point). A wire or a surface is a cell by itself, with
     /// nothing beside it, so this has no whiskers.
@@ -121,6 +158,15 @@ impl Signature {
     pub fn describe_cell(&self, cell: Diagram0) -> String {
         format!("${}$", Describer::new(self).cell(cell))
     }
+}
+
+/// A part of a composite that [`Signature::describe_composite_of`] describes.
+#[derive(Clone, Debug)]
+pub enum CompositePart {
+    /// A cell, by its name.
+    Cell(Generator),
+    /// A diagram, described as by [`Signature::describe`].
+    Diagram(Diagram),
 }
 
 struct Describer<'a> {
@@ -729,6 +775,34 @@ mod tests {
         assert!(long.contains(r"\cdots"), "{long}");
         assert!(long.len() < 100, "{long}");
         assert!(single_formula(&long));
+    }
+
+    #[test]
+    fn a_composite_of_parts_is_one_formula_in_the_notation() {
+        use super::CompositePart::{Cell, Diagram as Part};
+
+        let Fixture { sig, f, g, .. } = fixture();
+        let (fg, gen_f, gen_g) = (
+            f.attach(&g, Boundary::Target, &[]).unwrap(),
+            f.max_generator().generator,
+            g.max_generator().generator,
+        );
+        // A single part is described as it would be alone.
+        assert_eq!(sig.describe_composite_of(&[Cell(gen_f)]), "f");
+        assert_eq!(
+            sig.describe_composite_of(&[Part(fg.clone().into())]),
+            describe(&sig, fg.clone())
+        );
+        // Cells and diagrams are put together in the same notation as a diagram that is a
+        // composite, with a part that is a composite itself grouped.
+        assert_eq!(
+            sig.describe_composite_of(&[Cell(gen_f), Cell(gen_g)]),
+            describe(&sig, fg.clone())
+        );
+        assert_eq!(
+            sig.describe_composite_of(&[Part(g.clone().into()), Part(fg.into()), Cell(gen_f)]),
+            r"$\text{g} \mathbin{;} (\text{f} \mathbin{;} \text{g}) \mathbin{;} \text{f}$"
+        );
     }
 
     /// `a`, `b : x → x`, `α : a ⇒ a`, `β : b ⇒ b`; `a ; b` with `α` and `β` attached to it,

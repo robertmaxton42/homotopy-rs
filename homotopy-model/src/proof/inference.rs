@@ -144,6 +144,56 @@ impl<'a> Pool<'a> {
         })
     }
 
+    /// The diagram of the instance of a generator that mentions placeholders for a (normalised
+    /// and not empty) substitution of them, using the existing instance. Unless `strict`, a
+    /// missing instance is stood in for by the generator with a substituted diagram.
+    ///
+    /// An instance made with replacements that mention placeholders is instantiated by
+    /// instantiating its schema with them substituted.
+    pub(super) fn instance_of(
+        &self,
+        b: Generator,
+        restricted: &[(Generator, Diagram)],
+        strict: bool,
+    ) -> Option<Diagram> {
+        let (schema, restricted) = match &self.signature.generator_info(b)?.instance {
+            Some(made) if self.signature.touches(made, restricted) => {
+                let mut composed = vec![];
+                for (placeholder, replacement) in &made.substitution {
+                    composed.push((
+                        *placeholder,
+                        self.substitute(b, restricted, replacement, strict)?,
+                    ));
+                }
+                composed.extend(self.signature.free_replacements(made, restricted));
+                (made.schema, self.signature.normalise(&composed))
+            }
+            _ => (b, restricted.to_vec()),
+        };
+        if restricted.is_empty() {
+            // Nothing is replaced: the schema itself.
+            return Some(self.signature.generator_info(schema)?.diagram.clone());
+        }
+        match self.signature.find_instance(schema, &restricted) {
+            Some(instance) => Some(self.signature.generator_info(instance)?.diagram.clone()),
+            None if strict => None,
+            None => {
+                let Diagram::DiagramN(own) = &self.signature.generator_info(schema)?.diagram else {
+                    return None;
+                };
+                Some(
+                    DiagramN::from_generator(
+                        schema,
+                        self.substitute(schema, &restricted, &own.source(), false)?,
+                        self.substitute(schema, &restricted, &own.target(), false)?,
+                    )
+                    .ok()?
+                    .into(),
+                )
+            }
+        }
+    }
+
     /// Applies a partial substitution to a diagram mentioned by `generator`, using the existing
     /// instances of the generators it depends on. Unless `strict`, a missing instance is stood in
     /// for by the dependent generator with a substituted diagram, which is enough for a preview:
@@ -157,29 +207,15 @@ impl<'a> Pool<'a> {
     ) -> Option<Diagram> {
         let substitution = self.signature.normalise(substitution);
         let mut replacements = substitution.clone();
-        let mentioned = diagram.generators();
-        for (b, restricted) in self.signature.dependents(generator, &substitution) {
+        for (b, restricted) in self
+            .signature
+            .dependents_in(diagram, Some(generator), &substitution)
+        {
             let restricted = self.signature.normalise(&restricted);
-            if restricted.is_empty() || !mentioned.contains_key(&b) {
+            if restricted.is_empty() {
                 continue;
             }
-            let diagram = match self.signature.find_instance(b, &restricted) {
-                Some(instance) => self.signature.generator_info(instance)?.diagram.clone(),
-                None if strict => return None,
-                None => {
-                    let Diagram::DiagramN(own) = &self.signature.generator_info(b)?.diagram else {
-                        return None;
-                    };
-                    DiagramN::from_generator(
-                        b,
-                        self.substitute(b, &restricted, &own.source(), false)?,
-                        self.substitute(b, &restricted, &own.target(), false)?,
-                    )
-                    .ok()?
-                    .into()
-                }
-            };
-            replacements.push((b, diagram));
+            replacements.push((b, self.instance_of(b, &restricted, strict)?));
         }
         substitute(diagram, self.signature, &|g| {
             replacements

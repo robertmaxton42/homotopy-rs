@@ -45,6 +45,7 @@ use homotopy_core::{
 };
 
 use super::{
+    describe::CompositePart,
     inference::{Cells, Pool, MAX_COMPLETIONS, MAX_COMPLETION_NODES},
     Signature,
 };
@@ -77,25 +78,58 @@ pub enum ReplacementError {
         proposed: Diagram,
         proposed_because: Generator,
     },
-    /// The boundary of the replacement chosen for `because` is not what the type of `owner`
-    /// requires: where the type has `expected` (with placeholders in it), the boundary has `found`.
-    Mismatch {
-        because: Generator,
-        owner: Generator,
-        expected: Diagram,
-        found: Diagram,
-    },
-    /// A diagram of the replacement chosen for `because` has to be cut into the replacements of
-    /// `atoms` (the type of the placeholder says it is their composite), but cannot be cut so that
-    /// the pieces are those already `known` for some of them.
-    Uncuttable {
-        because: Generator,
-        atoms: Vec<Generator>,
-        value: Diagram,
-        /// The atoms that are already replaced, with their replacements and the replacement
-        /// chosen that they follow from.
-        known: Vec<(Generator, Diagram, Generator)>,
-    },
+    /// The replacement chosen for a placeholder has something where the type of another requires
+    /// something else.
+    Mismatch(Box<Mismatch>),
+    /// A diagram of a replacement chosen has to be cut into the replacements of the cells of a
+    /// composite, but cannot be.
+    Uncuttable(Box<Uncuttable>),
+}
+
+/// What is wrong with a replacement: it has `found` where a type requires `expected`.
+///
+/// The replacement `chosen` for `because` has `found` where the type of `owner` requires
+/// `expected` (with placeholders in it), at `path` from `chosen` (which is empty if it is
+/// `chosen` itself, and `[Target]` if it is its target). `bound` is what the placeholders that
+/// `expected` depends on are replaced with so far.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mismatch {
+    pub because: Generator,
+    pub chosen: Diagram,
+    pub path: Vec<Part>,
+    pub owner: Generator,
+    pub expected: Diagram,
+    pub found: Diagram,
+    pub bound: Vec<(Generator, Diagram)>,
+}
+
+/// What is wrong with a replacement: a diagram of it cannot be cut as a type requires.
+///
+/// A diagram of the replacement `chosen` for `because`, at `path` from it, has to be cut into the
+/// replacements of `atoms` (the type of the placeholder says it is their composite), but cannot
+/// be cut so that the pieces are those already `known` for some of them. `bound` is what the
+/// placeholders that `atoms` depend on are replaced with so far.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Uncuttable {
+    pub because: Generator,
+    pub chosen: Diagram,
+    pub path: Vec<Part>,
+    pub bound: Vec<(Generator, Diagram)>,
+    pub atoms: Vec<Generator>,
+    pub value: Diagram,
+    /// The atoms that are already replaced, with their replacements and the replacement chosen
+    /// that they follow from.
+    pub known: Vec<(Generator, Diagram, Generator)>,
+}
+
+/// A step from a diagram to a part of it, for saying where in the replacement chosen for a
+/// placeholder something is wrong.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Part {
+    Source,
+    Target,
+    /// Some of its cells, or what a cell in it was made with.
+    Piece,
 }
 
 /// A requirement that `σ(pattern) = value`.
@@ -107,6 +141,15 @@ struct Constraint {
     root: Generator,
     /// The placeholder whose type this is a part of.
     owner: Generator,
+    /// Where `value` is in the replacement chosen that this follows from.
+    path: Vec<Part>,
+}
+
+/// `path` and one more step.
+fn deeper(path: &[Part], step: Part) -> Vec<Part> {
+    let mut path = path.to_vec();
+    path.push(step);
+    path
 }
 
 /// A whole cell in a vertical composite.
@@ -128,6 +171,7 @@ struct Split {
     value: DiagramN,
     root: Generator,
     owner: Generator,
+    path: Vec<Part>,
 }
 
 #[derive(Clone, Default)]
@@ -138,6 +182,8 @@ struct State {
     splits: Vec<Split>,
     /// The placeholders whose types were not matched exactly: they are checked by substituting.
     inexact: Vec<Generator>,
+    /// The replacements chosen, for messages.
+    roots: Vec<(Generator, Diagram)>,
 }
 
 enum Cuts {
@@ -249,6 +295,7 @@ impl Matcher<'_> {
         placeholder: Generator,
         value: Diagram,
         root: Generator,
+        path: Vec<Part>,
     ) {
         if let Some(own) = self.signature.generator_info(placeholder) {
             state.pending.push(Constraint {
@@ -256,8 +303,52 @@ impl Matcher<'_> {
                 value,
                 root,
                 owner: placeholder,
+                path,
             });
         }
+    }
+
+    /// Requires `value` to replace `placeholder`, as chosen.
+    fn choose(&self, state: &mut State, placeholder: Generator, value: Diagram) {
+        state.roots.push((placeholder, value.clone()));
+        self.require_replacement(state, placeholder, value, placeholder, vec![]);
+    }
+
+    /// The replacement chosen for `root`, or `fallback`.
+    fn chosen(state: &State, root: Generator, fallback: &Diagram) -> Diagram {
+        state
+            .roots
+            .iter()
+            .rev()
+            .find(|(p, _)| *p == root)
+            .map_or_else(|| fallback.clone(), |(_, d)| d.clone())
+    }
+
+    /// What the placeholders that a diagram depends on are bound to so far.
+    fn bindings(&self, state: &State, diagram: &Diagram) -> Vec<(Generator, Diagram)> {
+        self.bindings_of(state, diagram.generators().into_keys())
+    }
+
+    /// What the placeholders that some generators depend on are bound to so far.
+    fn bindings_of(
+        &self,
+        state: &State,
+        generators: impl IntoIterator<Item = Generator>,
+    ) -> Vec<(Generator, Diagram)> {
+        let mut mentioned: Vec<Generator> = vec![];
+        for g in generators {
+            if self.index(g).is_some() {
+                mentioned.push(g);
+            } else {
+                mentioned.extend(self.signature.parameters(g));
+            }
+        }
+        self.parameters
+            .iter()
+            .zip(&state.bound)
+            .filter(|(p, _)| mentioned.contains(*p))
+            .filter_map(|(&p, b)| b.as_ref().map(|(d, _)| (p, d.clone())))
+            .collect()
     }
 
     /// The whole cells that a diagram is a vertical composite of, if it is one.
@@ -299,10 +390,24 @@ impl Matcher<'_> {
     /// which depends on `D`) is replaced by the cell of its instance. If `piece` is one, the
     /// instance says what the placeholders it depends on are replaced with, so that they are
     /// bound without searching.
-    fn match_instance(&self, state: &mut State, atom: &Atom, piece: &DiagramN, root: Generator) {
+    ///
+    /// The cell may itself be an instance of a schema made with replacements that mention
+    /// placeholders, such as `(Ẋη̇)₍₂₎ = η̇₍₂₎[Ḟ ≫ Ẋ/Ḟ, Ġ ≫ Ẋ/Ġ, η̇ ▷ Ẋ/η̇]`. Its replacement is the
+    /// instance of the same schema whose replacements are those with the placeholders replaced, so
+    /// each replacement it was made with is matched with the one of the instance in `piece`.
+    fn match_instance(
+        &self,
+        state: &mut State,
+        atom: &Atom,
+        piece: &DiagramN,
+        root: Generator,
+        owner: Generator,
+        path: &[Part],
+    ) {
         if self.index(atom.generator).is_some() {
             return;
         }
+        let path = deeper(path, Part::Piece);
         let cell = if atom.reflected {
             piece.inverse()
         } else {
@@ -315,12 +420,61 @@ impl Matcher<'_> {
         let Some(made) = &info.instance else {
             return;
         };
-        if made.schema != atom.generator || info.diagram != Diagram::from(cell) {
+        if info.diagram != Diagram::from(cell) {
             return;
         }
-        for (placeholder, replacement) in &made.substitution {
-            if self.index(*placeholder).is_some() {
-                self.require_replacement(state, *placeholder, replacement.clone(), root);
+        if made.schema == atom.generator {
+            for (placeholder, replacement) in &made.substitution {
+                if self.index(*placeholder).is_some() {
+                    self.require_replacement(
+                        state,
+                        *placeholder,
+                        replacement.clone(),
+                        root,
+                        path.clone(),
+                    );
+                }
+            }
+            return;
+        }
+        // The cell is an instance of the schema of `piece` with placeholders in what it was made
+        // with, or it is not an instance of the same schema and nothing is known.
+        let Some(pattern) = self
+            .signature
+            .generator_info(atom.generator)
+            .and_then(|info| info.instance.as_ref())
+            .filter(|pattern| pattern.schema == made.schema)
+            .map(|pattern| &pattern.substitution)
+        else {
+            return;
+        };
+        let replaced = |placeholder: Generator, substitution: &[(Generator, Diagram)]| {
+            substitution
+                .iter()
+                .find(|(p, _)| *p == placeholder)
+                .map(|(_, d)| d.clone())
+                .or_else(|| {
+                    self.signature
+                        .generator_info(placeholder)
+                        .map(|info| info.diagram.clone())
+                })
+        };
+        for (placeholder, replacement) in pattern {
+            if let Some(value) = replaced(*placeholder, &made.substitution) {
+                state.pending.push(Constraint {
+                    pattern: replacement.clone(),
+                    value,
+                    root,
+                    owner,
+                    path: path.clone(),
+                });
+            }
+        }
+        // What the schema's own placeholders that the cell leaves alone are replaced with.
+        for (placeholder, value) in &made.substitution {
+            if self.index(*placeholder).is_some() && !pattern.iter().any(|(p, _)| p == placeholder)
+            {
+                self.require_replacement(state, *placeholder, value.clone(), root, path.clone());
             }
         }
     }
@@ -331,13 +485,19 @@ impl Matcher<'_> {
             value,
             root,
             owner,
+            path,
         } = constraint;
         let (expected, found) = (pattern.clone(), value.clone());
-        let mismatch = move || ReplacementError::Mismatch {
-            because: root,
-            owner,
-            expected: expected.clone(),
-            found: found.clone(),
+        let mismatch = |state: &State| {
+            ReplacementError::Mismatch(Box::new(Mismatch {
+                because: root,
+                chosen: Self::chosen(state, root, &found),
+                path: path.clone(),
+                owner,
+                bound: self.bindings(state, &expected),
+                expected: expected.clone(),
+                found: found.clone(),
+            }))
         };
         match (&pattern, &value) {
             (Diagram::Diagram0(s), Diagram::Diagram0(v)) => {
@@ -356,19 +516,19 @@ impl Matcher<'_> {
                 } else if s == v {
                     Ok(())
                 } else {
-                    Err(mismatch())
+                    Err(mismatch(state))
                 }
             }
             (Diagram::DiagramN(s), Diagram::DiagramN(v)) => {
                 if s.dimension() != v.dimension() {
-                    return Err(mismatch());
+                    return Err(mismatch(state));
                 }
                 let generator = s.max_generator().generator;
                 if let Some(index) = self
                     .index(generator)
                     .filter(|_| generator.dimension == s.dimension())
                 {
-                    let own = self.own(generator).ok_or_else(&mismatch)?;
+                    let own = self.own(generator).ok_or_else(|| mismatch(state))?;
                     let invertible = self
                         .signature
                         .generator_info(generator)
@@ -383,33 +543,38 @@ impl Matcher<'_> {
                     if let Some(bound) = bound {
                         self.bind(state, index, bound.clone().into(), root)?;
                         // The type of the placeholder is matched by its replacement.
-                        for (p, v) in [
-                            (own.source(), bound.source()),
-                            (own.target(), bound.target()),
+                        for (step, p, v) in [
+                            (Part::Source, own.source(), bound.source()),
+                            (Part::Target, own.target(), bound.target()),
                         ] {
                             state.pending.push(Constraint {
                                 pattern: p,
                                 value: v,
                                 root,
                                 owner: generator,
+                                path: deeper(&path, step),
                             });
                         }
                         return Ok(());
                     }
                 }
 
-                for (p, v) in [(s.source(), v.source()), (s.target(), v.target())] {
+                for (step, p, v) in [
+                    (Part::Source, s.source(), v.source()),
+                    (Part::Target, s.target(), v.target()),
+                ] {
                     state.pending.push(Constraint {
                         pattern: p,
                         value: v,
                         root,
                         owner,
+                        path: deeper(&path, step),
                     });
                 }
                 if s.size() == 0 {
                     // The identity of `σ(X)` is an identity.
                     if v.size() != 0 {
-                        return Err(mismatch());
+                        return Err(mismatch(state));
                     }
                     return Ok(());
                 }
@@ -417,16 +582,16 @@ impl Matcher<'_> {
                     Some(atoms) if atoms.len() == 1 => {
                         // One cell that is not a placeholder: its replacement is one height.
                         if v.size() != 1 {
-                            return Err(mismatch());
+                            return Err(mismatch(state));
                         }
                         if atoms[0].plain {
                             // And it is the cell itself.
                             if s != v {
-                                return Err(mismatch());
+                                return Err(mismatch(state));
                             }
                         } else {
                             Self::mark(state, owner);
-                            self.match_instance(state, &atoms[0], v, root);
+                            self.match_instance(state, &atoms[0], v, root, owner, &path);
                         }
                     }
                     Some(atoms) => {
@@ -441,13 +606,14 @@ impl Matcher<'_> {
                             value: v.clone(),
                             root,
                             owner,
+                            path,
                         });
                     }
                     None => Self::mark(state, owner),
                 }
                 Ok(())
             }
-            _ => Err(mismatch()),
+            _ => Err(mismatch(state)),
         }
     }
 
@@ -511,6 +677,7 @@ impl Matcher<'_> {
                     value: piece.into(),
                     root: split.root,
                     owner: split.owner,
+                    path: deeper(&split.path, Part::Piece),
                 });
             }
         }
@@ -526,12 +693,17 @@ impl Matcher<'_> {
                 Some((atom.generator, value, because))
             })
             .collect();
-        ReplacementError::Uncuttable {
+        let value: Diagram = split.value.clone().into();
+        let atoms: Vec<Generator> = split.atoms.iter().map(|atom| atom.generator).collect();
+        ReplacementError::Uncuttable(Box::new(Uncuttable {
             because: split.root,
-            atoms: split.atoms.iter().map(|atom| atom.generator).collect(),
-            value: split.value.clone().into(),
+            chosen: Self::chosen(state, split.root, &value),
+            path: split.path.clone(),
+            bound: self.bindings_of(state, atoms.iter().copied()),
+            atoms,
+            value,
             known,
-        }
+        }))
     }
 
     /// Matches until nothing more is forced: what is left are splits that could be done in
@@ -712,7 +884,7 @@ impl Machine {
                 });
                 return machine;
             }
-            matcher.require_replacement(&mut state, *p, d.clone(), *p);
+            matcher.choose(&mut state, *p, d.clone());
         }
         // What is forced, whichever way the splits go.
         if let Err(error) = matcher.propagate(&mut state) {
@@ -1215,12 +1387,12 @@ impl Signature {
             });
         }
         let mut state = accepted.clone();
-        matcher.require_replacement(&mut state, placeholder, value.clone(), placeholder);
+        matcher.choose(&mut state, placeholder, value.clone());
         matcher.propagate(&mut state)?;
         Ok(state)
     }
 
-    fn name_sealed(&self, g: Generator) -> String {
+    pub(super) fn name_sealed(&self, g: Generator) -> String {
         self.generator_info(g)
             .map_or_else(|| "?".to_owned(), |info| seal(&info.name))
     }
@@ -1251,6 +1423,15 @@ impl Signature {
                     name(placeholder),
                     others.join(", ")
                 )
+            }
+        };
+        // "X conflicts with Y: " if the error is about the replacement of Y, and nothing if it is
+        // about the replacement of X itself.
+        let blame = |others: &[Generator]| {
+            if others.iter().all(|&g| g == placeholder) {
+                String::new()
+            } else {
+                conflicts(others)
             }
         };
         match error {
@@ -1302,56 +1483,150 @@ impl Signature {
                     )
                 }
             }
-            ReplacementError::Mismatch {
-                because,
-                owner,
-                expected,
-                found,
-            } => format!(
-                "{}the boundary of {} has {} where the type of {} has {}",
-                conflicts(&[*because]),
-                name(*because),
-                self.describe(found),
-                name(*owner),
-                self.describe(expected),
-            ),
-            ReplacementError::Uncuttable {
-                because,
-                atoms,
-                value,
-                known,
-            } => {
+            ReplacementError::Mismatch(mismatch) => {
+                let Mismatch {
+                    because,
+                    chosen,
+                    path,
+                    owner,
+                    expected,
+                    found,
+                    bound,
+                } = &**mismatch;
+                format!(
+                    "{}{} := {}: {} is {}, but the type of {} needs {}",
+                    blame(&[*because]),
+                    name(*because),
+                    self.describe(chosen),
+                    Self::describe_place(path),
+                    self.describe(found),
+                    name(*owner),
+                    self.describe_needed(*owner, expected, bound),
+                )
+            }
+            ReplacementError::Uncuttable(uncuttable) => {
+                let Uncuttable {
+                    because,
+                    chosen,
+                    path,
+                    bound,
+                    atoms,
+                    value,
+                    known,
+                } = &**uncuttable;
                 let blamed: Vec<Generator> = std::iter::once(*because)
                     .chain(known.iter().map(|(_, _, b)| *b))
                     .collect();
-                let known_text = known
-                    .iter()
-                    .map(|(g, d, _)| format!("{} is {}", name(*g), self.describe(d)))
-                    .collect::<Vec<_>>()
-                    .join(" and ");
                 format!(
-                    "{}{} needs {} to be {}, but {}",
-                    conflicts(&blamed),
+                    "{}{} := {}: {} is {}, but the type requires {} there",
+                    blame(&blamed),
                     name(*because),
-                    self.describe_composite(atoms),
+                    self.describe(chosen),
+                    Self::describe_place(path),
                     self.describe(value),
-                    if known_text.is_empty() {
-                        "that cannot be done".to_owned()
-                    } else {
-                        known_text
-                    },
+                    self.describe_composite_needed(atoms, bound),
                 )
             }
         }
     }
 
-    /// The cells of a composite, like `μ ≫ η'`.
-    fn describe_composite(&self, cells: &[Generator]) -> String {
-        cells
+    /// Where in a replacement something is, like "its target" or "the target of its source".
+    fn describe_place(path: &[Part]) -> String {
+        let mut place = "it".to_owned();
+        for (i, step) in path.iter().enumerate() {
+            let first = i == 0;
+            place = match (step, first) {
+                (Part::Source, true) => "its source".to_owned(),
+                (Part::Target, true) => "its target".to_owned(),
+                (Part::Piece, true) => "a part of it".to_owned(),
+                (Part::Source, false) => format!("the source of {place}"),
+                (Part::Target, false) => format!("the target of {place}"),
+                (Part::Piece, false) => format!("a part of {place}"),
+            };
+        }
+        place
+    }
+
+    /// What a type requires, with the placeholders in it replaced with what they are replaced with
+    /// so far: "`B`" if nothing is, and otherwise "`A` (`B` with `X := a`)".
+    fn describe_needed(
+        &self,
+        owner: Generator,
+        expected: &Diagram,
+        bound: &[(Generator, Diagram)],
+    ) -> String {
+        let needed = Pool::new(self, [])
+            .substitute(owner, bound, expected, false)
+            .filter(|needed| needed != expected);
+        let Some(needed) = needed else {
+            return self.describe(expected);
+        };
+        let bindings = bound
             .iter()
-            .map(|&g| self.name_sealed(g))
+            .map(|(p, d)| format!("{} := {}", self.name_sealed(*p), self.describe(d)))
             .collect::<Vec<_>>()
-            .join(" \u{226b} ")
+            .join(", ");
+        format!(
+            "{} ({} with {})",
+            self.describe(&needed),
+            self.describe(expected),
+            bindings
+        )
+    }
+
+    /// What a composite of the cells of a schema needs to be, with the replacements so far put in:
+    /// "`B`" if there are none, and otherwise "`A` (`B` with `X := a`)", as for
+    /// [`describe_needed`](Self::describe_needed).
+    fn describe_composite_needed(
+        &self,
+        atoms: &[Generator],
+        bound: &[(Generator, Diagram)],
+    ) -> String {
+        let pool = Pool::new(self, []);
+        let replaced: Vec<CompositePart> = atoms
+            .iter()
+            .map(|&atom| {
+                // A placeholder is replaced with what it is bound to, and a cell that depends on
+                // placeholders with its instance, if there is one.
+                bound
+                    .iter()
+                    .find(|(p, _)| *p == atom)
+                    .map(|(_, d)| d.clone())
+                    .or_else(|| {
+                        let parameters = self.parameters(atom);
+                        let restricted: Vec<_> = bound
+                            .iter()
+                            .filter(|(p, _)| parameters.contains(p))
+                            .cloned()
+                            .collect();
+                        let restricted = self.normalise(&restricted);
+                        if restricted.is_empty() {
+                            None
+                        } else {
+                            pool.instance_of(atom, &restricted, true)
+                        }
+                    })
+                    .map_or(CompositePart::Cell(atom), CompositePart::Diagram)
+            })
+            .collect();
+        let needed = self.describe_composite_of(&replaced);
+        let composite = self.describe_composite(atoms);
+        if needed == composite {
+            return composite;
+        }
+        let bindings = bound
+            .iter()
+            .map(|(p, d)| format!("{} := {}", self.name_sealed(*p), self.describe(d)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{needed} ({composite} with {bindings})")
+    }
+
+    /// The cells of a composite, like `μ ; η'`, written in the notation of names (see
+    /// [`notation`](super::notation)) like the diagrams that are described.
+    fn describe_composite(&self, cells: &[Generator]) -> String {
+        let cells: Vec<_> = cells.iter().map(|&g| CompositePart::Cell(g)).collect();
+        self.describe_composite_of(&cells)
     }
 
     /// A way of filling in placeholders, like `μ = p, η' = ζ[p]`, with names sealed so that it can
@@ -1380,8 +1655,8 @@ impl Signature {
             ),
             Status::Inconsistent(error) => {
                 let blamed = match error {
-                    ReplacementError::Mismatch { because, .. }
-                    | ReplacementError::Uncuttable { because, .. } => Some(*because),
+                    ReplacementError::Mismatch(m) => Some(m.because),
+                    ReplacementError::Uncuttable(u) => Some(u.because),
                     ReplacementError::Conflict {
                         proposed_because, ..
                     } => Some(*proposed_because),
@@ -1419,16 +1694,28 @@ impl Signature {
 
 #[cfg(test)]
 pub(in crate::proof) mod tests {
+    use homotopy_common::tex::to_math;
     use homotopy_core::{
         signature::{Invertibility, Signature as _},
+        typecheck::{typecheck, Mode},
         Boundary, Diagram, DiagramN, Generator,
     };
 
-    use super::{InferJob, ReplacementError, Status};
+    use super::{InferJob, Part, ReplacementError, Status};
     use crate::{
         job::Job,
-        proof::{Signature, SignatureEdit, SignatureItemEdit},
+        proof::{
+            notation::{Notation, Standard},
+            InstantiationError, Signature, SignatureEdit, SignatureItemEdit,
+        },
     };
+
+    /// How a message writes a composite of cells with these names (or labels): as one formula, in
+    /// the notation of names.
+    pub(in crate::proof) fn composite(parts: &[String]) -> String {
+        let math: Vec<String> = parts.iter().map(|part| to_math(part)).collect();
+        format!("${}$", Notation::compose(&Standard, &math))
+    }
 
     /// A commutative square, as in a naturality condition: `x`; placeholders `F, G, F', G' : x → x`,
     /// `η : F ⇒ G`, `η' : F' ⇒ G'`, `μ : F ⇒ F'`, `ν : G ⇒ G'` and `h : μ ≫ η' ⇛ η ≫ ν`; the cells
@@ -1819,7 +2106,7 @@ pub(in crate::proof) mod tests {
             .infer(sq.schema, &[(sq.h, sq.k.clone()), (sq.eta, sq.p.clone())]);
         assert!(matches!(
             inference.status,
-            Status::Inconsistent(ReplacementError::Uncuttable { .. })
+            Status::Inconsistent(ReplacementError::Uncuttable(_))
         ));
         assert!(inference.determined.is_empty() && inference.candidates.is_empty());
 
@@ -1829,15 +2116,20 @@ pub(in crate::proof) mod tests {
         let message = sq.sig.describe_replacement_error(sq.eta, &error);
         let name = |g: Generator| sq.sig.generator_info(g).unwrap().name.clone();
         let (eta, h) = (name(sq.eta), name(sq.h));
+        // It says what `h` was replaced with and where in it the trouble is, and what `η` is.
+        let k_target = DiagramN::try_from(sq.k.clone()).unwrap().target();
         assert!(
-            message.starts_with(&format!(
-                "{eta} conflicts with {h}: {h} needs {eta} \u{226b} {} to be",
-                name(sq.nu)
-            )),
+            message.starts_with(&format!("{eta} conflicts with {h}: {h} := ")),
             "{message}"
         );
         assert!(
-            message.ends_with(&format!("but {eta} is {}", name(generator_of(&sq.p)))),
+            message.contains(&format!(
+                ": its target is {}, but the type requires {} ({} with {eta} := {}) there",
+                sq.sig.describe(&k_target),
+                composite(&[name(generator_of(&sq.p)), name(sq.nu)]),
+                composite(&[eta.clone(), name(sq.nu)]),
+                name(generator_of(&sq.p)),
+            )),
             "{message}"
         );
         // The other way round, it is the earlier choice that is blamed.
@@ -1992,5 +2284,265 @@ pub(in crate::proof) mod tests {
         assert!(check(&[(sq.h, sq.k.clone())], sq.eta, &sq.l).is_ok());
         // And the other way round.
         assert!(check(&[(sq.eta, sq.p.clone())], sq.h, &sq.k).is_err());
+    }
+
+    /// `x`; placeholders `A, X : x → x`; `D : x → x` that depends on `A`; the schema `S : x → x`
+    /// that depends on the placeholder `H : D ≫ X ⇒ E`, where `E = D[A ≫ X]` is the instance of
+    /// `D` made with replacements that mention placeholders, so that it is still a different cell
+    /// for every `A` and `X`. `t, a₀ : x → x` and the instances `D₀ = D[a₀]` and `D₁ = D[a₀ ≫ t]`,
+    /// which is what `E` becomes at `A := a₀` and `X := t`.
+    struct Instance {
+        sig: Signature,
+        schema: Generator,
+        a: Generator,
+        x: Generator,
+        d: Generator,
+        h: Generator,
+        e: Generator,
+        t: Diagram,
+        a0: Diagram,
+        d0: DiagramN,
+        d1: DiagramN,
+    }
+
+    fn instance_at_placeholders() -> Instance {
+        let mut sig = Signature::default();
+        let zero: Diagram = sig.create_generator_zero("x").into();
+        let cell = |sig: &mut Signature, s: Diagram, t: Diagram, name: &str| {
+            sig.create_generator(s, t, name, Invertibility::Directed)
+                .unwrap()
+        };
+        let a = cell(&mut sig, zero.clone(), zero.clone(), "A");
+        let x = cell(&mut sig, zero.clone(), zero.clone(), "X");
+        let d = cell(&mut sig, zero.clone(), zero.clone(), "D");
+        let t = cell(&mut sig, zero.clone(), zero.clone(), "t");
+        let a0 = cell(&mut sig, zero.clone(), zero.clone(), "a");
+        let [a_gen, x_gen, d_gen] = [&a, &x, &d].map(generator);
+        for placeholder in [a_gen, x_gen] {
+            let node = sig.find_node(placeholder).unwrap();
+            sig.update(&SignatureEdit::Edit(
+                node,
+                SignatureItemEdit::MakePlaceholder(true),
+            ))
+            .unwrap();
+        }
+        let node = sig.find_node(d_gen).unwrap();
+        sig.update(&SignatureEdit::Edit(
+            node,
+            SignatureItemEdit::SetDependsOn(vec![a_gen]),
+        ))
+        .unwrap();
+
+        let instance = |sig: &mut Signature, a_replacement: DiagramN| {
+            let generator = sig
+                .instantiate(d_gen, &[(a_gen, a_replacement.into())])
+                .unwrap();
+            let diagram: DiagramN = sig
+                .generator_info(generator)
+                .unwrap()
+                .diagram
+                .clone()
+                .try_into()
+                .unwrap();
+            (generator, diagram)
+        };
+        let ax = a.attach(&x, Boundary::Target, &[]).unwrap();
+        let a0t = a0.attach(&t, Boundary::Target, &[]).unwrap();
+        let (e_gen, e) = instance(&mut sig, ax);
+        let (_, d0) = instance(&mut sig, a0.clone());
+        let (_, d1) = instance(&mut sig, a0t);
+
+        let d_x = d.attach(&x, Boundary::Target, &[]).unwrap();
+        let h = cell(&mut sig, d_x.into(), e.into(), "H");
+        let h_gen = generator(&h);
+        let s = cell(&mut sig, zero.clone(), zero, "S");
+        let s_gen = generator(&s);
+        for (g, edit) in [
+            (h_gen, SignatureItemEdit::MakePlaceholder(true)),
+            (s_gen, SignatureItemEdit::SetDependsOn(vec![h_gen])),
+        ] {
+            let node = sig.find_node(g).unwrap();
+            sig.update(&SignatureEdit::Edit(node, edit)).unwrap();
+        }
+        Instance {
+            sig,
+            schema: s_gen,
+            a: a_gen,
+            x: x_gen,
+            d: d_gen,
+            h: h_gen,
+            e: e_gen,
+            t: t.into(),
+            a0: a0.into(),
+            d0,
+            d1,
+        }
+    }
+
+    #[test]
+    fn an_instance_at_placeholders_depends_on_them() {
+        let it = instance_at_placeholders();
+        // `E` mentions neither `A` nor `X`, but it was made with `A ≫ X`.
+        let mentioned = it.sig.generator_info(it.e).unwrap().diagram.generators();
+        assert!(!mentioned.contains_key(&it.a) && !mentioned.contains_key(&it.x));
+        assert_eq!(it.sig.parameters(it.e), vec![it.a, it.x]);
+        // An instance made with cells that mention none of them depends on none.
+        assert!(it.sig.parameters(generator(&it.d0)).is_empty());
+        assert_eq!(it.sig.parameters(it.schema), vec![it.a, it.x, it.h]);
+
+        // Instantiating it is instantiating `D` with those replaced: `E` at `a₀` and `t` is
+        // `D[a₀ ≫ t]`, the instance that exists.
+        let mut sig = it.sig.clone();
+        let at_a0_t = sig
+            .instantiate(it.e, &[(it.a, it.a0.clone()), (it.x, it.t.clone())])
+            .unwrap();
+        assert_eq!(
+            sig.generator_info(at_a0_t).unwrap().diagram,
+            Diagram::from(it.d1.clone())
+        );
+    }
+
+    #[test]
+    fn a_replacement_that_the_kernel_takes_is_not_refused() {
+        let it = instance_at_placeholders();
+        let d0_t = it
+            .d0
+            .attach(
+                &DiagramN::try_from(it.t.clone()).unwrap(),
+                Boundary::Target,
+                &[],
+            )
+            .unwrap();
+        let mut sig = it.sig.clone();
+        let h0 = sig
+            .create_generator(
+                d0_t.into(),
+                it.d1.clone().into(),
+                "h0",
+                Invertibility::Directed,
+            )
+            .unwrap();
+        let chosen = vec![
+            (it.x, it.t.clone()),
+            (it.a, it.a0.clone()),
+            (it.h, h0.clone().into()),
+        ];
+        // The check goes by the types alone, and agrees with the kernel.
+        assert_eq!(
+            sig.check_replacements(it.schema, &chosen),
+            vec![Ok(()), Ok(()), Ok(())]
+        );
+        let instance = sig.instantiate(it.schema, &chosen).unwrap();
+        let info = sig.generator_info(instance).unwrap();
+        assert!(typecheck(&info.diagram, &sig, Mode::default(), true).is_ok());
+        // And inferring from them has nothing against them.
+        assert_eq!(sig.infer(it.schema, &chosen).status, Status::Complete);
+    }
+
+    #[test]
+    fn a_replacement_the_kernel_refuses_is_refused_and_says_where() {
+        let it = instance_at_placeholders();
+        let mut sig = it.sig.clone();
+        let t = DiagramN::try_from(it.t.clone()).unwrap();
+        // `t ≫ D₀` instead of `D₀ ≫ t`: `D ≫ X` becomes `D₀ ≫ t`.
+        let t_d0: Diagram = t.attach(&it.d0, Boundary::Target, &[]).unwrap().into();
+        let wrong = sig
+            .create_generator(
+                t_d0.clone(),
+                it.d1.clone().into(),
+                "wrong",
+                Invertibility::Directed,
+            )
+            .unwrap();
+        let wrong = generator(&wrong);
+        let chosen = vec![
+            (it.x, it.t.clone()),
+            (it.a, it.a0.clone()),
+            (it.h, sig.generator_info(wrong).unwrap().diagram.clone()),
+        ];
+        let results = sig.check_replacements(it.schema, &chosen);
+        assert_eq!(&results[..2], &[Ok(()), Ok(())]);
+        let Err(error) = &results[2] else {
+            panic!("expected the replacement to be refused");
+        };
+        assert!(matches!(
+            error,
+            ReplacementError::Uncuttable(uncuttable) if uncuttable.path == [Part::Source]
+        ));
+        assert!(matches!(
+            sig.instantiate(it.schema, &chosen),
+            Err(InstantiationError::IllTyped(_))
+        ));
+
+        // The message names the replacement chosen, where in it the trouble is, and what the
+        // type says in terms of the others.
+        let message = sig.describe_replacement_error(it.h, error);
+        let name = |g: Generator| sig.generator_info(g).unwrap().name.clone();
+        let (h, a, x, d) = (name(it.h), name(it.a), name(it.x), name(it.d));
+        let (t_name, d0) = (name(generator(&t)), sig.describe(&it.d0.clone().into()));
+        assert_eq!(
+            message,
+            format!(
+                "{h} conflicts with {x}: {h} := {}: its source is {}, but the type requires {} ({} with {a} := {}, {x} := {t_name}) there",
+                name(wrong),
+                sig.describe(&t_d0),
+                composite(&[d0, t_name.clone()]),
+                composite(&[d, x.clone()]),
+                sig.describe(&it.a0),
+            )
+        );
+    }
+
+    #[test]
+    fn a_mismatch_says_what_the_type_needs_with_the_replacements_so_far() {
+        let it = instance_at_placeholders();
+        let mut sig = it.sig.clone();
+        let t = DiagramN::try_from(it.t.clone()).unwrap();
+        // A loop on `D₀ ≫ t`: its source is right and its target is not a single cell.
+        let d0_t: Diagram = it.d0.attach(&t, Boundary::Target, &[]).unwrap().into();
+        let around = sig
+            .create_generator(d0_t.clone(), d0_t.clone(), "loop", Invertibility::Directed)
+            .unwrap();
+        let around = generator(&around);
+        let chosen = vec![
+            (it.x, it.t.clone()),
+            (it.a, it.a0.clone()),
+            (it.h, sig.generator_info(around).unwrap().diagram.clone()),
+        ];
+        let results = sig.check_replacements(it.schema, &chosen);
+        let Err(error) = &results[2] else {
+            panic!("expected the replacement to be refused");
+        };
+        assert!(matches!(
+            error,
+            ReplacementError::Mismatch(mismatch) if mismatch.path == [Part::Target]
+        ));
+        assert!(matches!(
+            sig.instantiate(it.schema, &chosen),
+            Err(InstantiationError::IllTyped(_))
+        ));
+
+        let message = sig.describe_replacement_error(it.h, error);
+        let name = |g: Generator| sig.generator_info(g).unwrap().name.clone();
+        let (h, a, x) = (name(it.h), name(it.a), name(it.x));
+        assert_eq!(
+            message,
+            format!(
+                "{h} := {}: its target is {}, but the type of {h} needs {} ({} with {a} := {}, {x} := {})",
+                name(around),
+                sig.describe(&d0_t),
+                sig.describe(&it.d1.clone().into()),
+                name(it.e),
+                sig.describe(&it.a0),
+                sig.describe(&it.t),
+            )
+        );
+
+        // On a replacement for a placeholder that is not the one in the way it names only it.
+        let message = sig.describe_replacement_error(it.a, error);
+        assert!(
+            message.starts_with(&format!("{a} conflicts with {h}: {h} := ")),
+            "{message}"
+        );
     }
 }

@@ -11,6 +11,7 @@ use tracing_web::{performance_layer, MakeConsoleWriter};
 use wasm_bindgen::prelude::*;
 
 mod app;
+mod autosave;
 mod components;
 mod layout;
 mod panic;

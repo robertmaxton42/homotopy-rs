@@ -10,10 +10,16 @@
 //!   `__homotopy_worker` does for the other (`"off"`, `"broken"`, `"crash"`, `"garble"`);
 //!   `window.__homotopy_layout_weight` sets the weight up to which diagrams are laid out on the
 //!   page (0 sends all of them to the worker).
+//! - `fillWithGenerator("[schema, placeholder, generator]")` chooses the diagram of a generator
+//!   for a placeholder in the Instantiate panel of a schema (each as `[id, dimension]`).
 //! - `profile(json)` replays recorded actions and times each kind (in milliseconds).
 //! - `window.__homotopy_step_delay_ms`, if set, makes every step of a job take at least that long,
 //!   to make jobs slow enough to test with (also those done in the worker, which is told when
 //!   it is given the job).
+//! - `autosave()` is a JSON summary of saving the project in the background (see `autosave`);
+//!   `window.__homotopy_autosave_idle_ms` sets how long the project is left alone before it is
+//!   saved, and `window.__homotopy_autosave_worker` does for the worker that saves it what
+//!   `__homotopy_worker` does for the other (`"off"`, `"broken"`, `"crash"`, `"garble"`).
 //! - `crash("panic")` panics in the app and `crash("throw")` calls JavaScript that throws and
 //!   nothing catches, to test the crash screen and recovering the project (see `panic`).
 //! - `window.__homotopy_worker` can be set to `"off"` before the app starts to do without the
@@ -145,6 +151,26 @@ pub fn worker_mode() -> String {
         .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_worker".into()).ok())
         .and_then(|mode| mode.as_string())
         .unwrap_or_default()
+}
+
+/// What `window.__homotopy_autosave_worker` says about the worker that saves the project, if
+/// anything: the same as `__homotopy_worker` says about the other (`"off"`, `"broken"`,
+/// `"crash"`, `"garble"`).
+pub fn autosave_worker_mode() -> String {
+    web_sys::window()
+        .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_autosave_worker".into()).ok())
+        .and_then(|mode| mode.as_string())
+        .unwrap_or_default()
+}
+
+/// How long `window.__homotopy_autosave_idle_ms` says to leave the project alone before saving
+/// it, if it is set (in milliseconds).
+pub fn autosave_idle_ms() -> Option<f64> {
+    web_sys::window()
+        .and_then(|window| {
+            js_sys::Reflect::get(&window, &"__homotopy_autosave_idle_ms".into()).ok()
+        })
+        .and_then(|idle| idle.as_f64())
 }
 
 /// What `window.__homotopy_layout_worker` says about the worker that lays diagrams out, if
@@ -300,6 +326,52 @@ fn profile_layouts(state: &model::State) -> String {
     serde_json::to_string(&timings).unwrap()
 }
 
+/// Times what saving the project in the background takes on the page: serialising it whole,
+/// and, for doing that in the worker, building the request that gives it the project (with the
+/// signature, and again without) and copying the bytes that come back.
+fn profile_autosave(state: &model::State) -> String {
+    use homotopy_model::remote::{Remote, Work};
+
+    let performance = web_sys::window().unwrap().performance().unwrap();
+    let proof = state.proof();
+    let timed = |name: &str, bytes: &mut usize, run: &mut dyn FnMut() -> usize| {
+        let start = performance.now();
+        *bytes = run();
+        serde_json::json!({ "what": name, "ms": performance.now() - start, "bytes": *bytes })
+    };
+    let (mut bytes, mut out) = (0, vec![]);
+    let work = || Work::AttachOptions {
+        point: vec![],
+        weak_units: false,
+    };
+    out.push(timed("serialize", &mut bytes, &mut || {
+        serialize::serialize(
+            proof.signature.clone(),
+            proof.workspace.clone(),
+            proof.metadata.clone(),
+        )
+        .len()
+    }));
+    let mut remote = Remote::default();
+    out.push(timed("request with signature", &mut bytes, &mut || {
+        remote.request(proof, work(), 0, false).len()
+    }));
+    out.push(timed(
+        "request with signature held",
+        &mut bytes,
+        &mut || remote.request(proof, work(), 0, false).len(),
+    ));
+    let serialized = serialize::serialize(
+        proof.signature.clone(),
+        proof.workspace.clone(),
+        proof.metadata.clone(),
+    );
+    out.push(timed("copy to a Uint8Array", &mut bytes, &mut || {
+        js_sys::Uint8Array::from(serialized.as_slice()).length() as usize
+    }));
+    serde_json::to_string(&out).unwrap()
+}
+
 #[wasm_bindgen::prelude::wasm_bindgen(
     inline_js = "export function throw_from_js() { throw new Error('thrown by the debug hooks'); }"
 )]
@@ -392,6 +464,32 @@ pub fn install(link: &Scope<App>) {
         .into_js_value(),
     );
 
+    // `fillWithGenerator(schema, placeholder, generator)`, each as `[id, dimension]`: chooses for
+    // the placeholder the diagram of a generator of the signature, as *Use workspace* does with
+    // that cell in the workspace.
+    let fill = link.clone();
+    set(
+        "fillWithGenerator",
+        Closure::<dyn Fn(String) -> Result<(), JsValue>>::new(move |json: String| {
+            use homotopy_core::{signature::Signature as _, Generator};
+            let [schema, placeholder, cell]: [[usize; 2]; 3] =
+                serde_json::from_str(&json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let [schema, placeholder, cell] =
+                [schema, placeholder, cell].map(|[id, dimension]| Generator::new(id, dimension));
+            let diagram = STATE.with(|state| {
+                let state = state.borrow();
+                let info = state.0.proof().signature.generator_info(cell)?;
+                Some(info.diagram.clone())
+            });
+            let diagram = diagram.ok_or_else(|| JsValue::from_str("no such generator"))?;
+            fill.send_message(Message::Dispatch(model::Action::Draft(
+                proof::DraftEdit::Fill(schema, placeholder, diagram),
+            )));
+            Ok(())
+        })
+        .into_js_value(),
+    );
+
     set(
         "crash",
         Closure::<dyn Fn(String)>::new(|kind: String| match kind.as_str() {
@@ -421,6 +519,33 @@ pub fn install(link: &Scope<App>) {
         "profileLayouts",
         Closure::<dyn Fn() -> String>::new(|| {
             STATE.with(|state| profile_layouts(&state.borrow().0))
+        })
+        .into_js_value(),
+    );
+
+    set(
+        "profileAutosave",
+        Closure::<dyn Fn() -> String>::new(|| {
+            STATE.with(|state| profile_autosave(&state.borrow().0))
+        })
+        .into_js_value(),
+    );
+
+    set(
+        "autosave",
+        Closure::<dyn Fn() -> String>::new(|| {
+            let status = crate::autosave::status();
+            serde_json::json!({
+                "enabled": status.enabled,
+                "saving": status.saving,
+                "stage": status.stage,
+                "session": status.session,
+                "saved": status.saved.map(|(time, bytes)| serde_json::json!({"time": time, "bytes": bytes})),
+                "error": status.error,
+                "saves": status.saves,
+                "failures": status.failures,
+            })
+            .to_string()
         })
         .into_js_value(),
     );
