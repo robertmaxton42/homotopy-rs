@@ -16,6 +16,7 @@ use crate::{
     components::{
         busy::{self, BusyIndicator},
         icon::{Icon, IconSize},
+        layout_note::LayoutNote,
         modal::Modal,
         panzoom::PanZoom,
         toast::{toast, Toast, ToasterComponent},
@@ -31,7 +32,7 @@ mod boundary;
 #[cfg(any(debug_assertions, feature = "show_debug_panel"))]
 mod debug;
 #[cfg(debug_assertions)]
-mod debug_hooks;
+pub mod debug_hooks;
 pub mod diagram_gl;
 mod diagram_svg;
 mod image_export;
@@ -147,6 +148,7 @@ impl Component for App {
         let mut worker = WorkerClient::new(
             ctx.link()
                 .callback(|(generation, event)| Message::Worker(generation, event)),
+            worker::SCRIPT,
         );
         #[cfg(debug_assertions)]
         match debug_hooks::worker_mode().as_str() {
@@ -212,6 +214,7 @@ impl App {
             Message::Cancel => self.cancel(),
             Message::StartWorker => {
                 self.worker.ensure();
+                crate::layout::start();
                 false
             }
             Message::Worker(generation, event) => self.worker_said(ctx, generation, event),
@@ -230,6 +233,7 @@ impl App {
     /// Handles an action: does it now, or starts the job that does it.
     fn dispatch(&mut self, ctx: &Context<Self>, action: model::Action) -> bool {
         tracing::info!("Received action: {:?}", action);
+        crate::panic::note_action(&action);
 
         if self.refuse_while_busy(&action) {
             return false;
@@ -281,6 +285,9 @@ impl App {
 
     /// Starts the job for a task that an action began.
     fn start_job(&mut self, ctx: &Context<Self>, task: model::Task, resets_panzoom: bool) -> bool {
+        // What inferring is for was changed to start it (the replacement chosen), and that is
+        // shown while the job runs.
+        let changed_at_start = matches!(task, model::Task::Infer(_));
         self.next_job += 1;
         let job = Running {
             id: self.next_job,
@@ -292,7 +299,7 @@ impl App {
             steps: 0,
             longest_step: Duration::ZERO,
         };
-        self.begin(ctx, job)
+        self.begin(ctx, job) || changed_at_start
     }
 
     /// What follows from the project having been updated, or not.
@@ -300,6 +307,13 @@ impl App {
         homotopy_core::collect_garbage();
 
         if matches!(result, Ok(true)) {
+            // What a crash from here on saves (see `panic`).
+            crate::panic::remember(self.state.proof());
+
+            // Instantiations in progress may be of what is no longer there.
+            let signature = self.state.history.proof().signature.clone();
+            self.state.drafts.retain_valid(&signature);
+
             if resets_panzoom {
                 PanZoom::reset();
                 GlViewControl::reset();
@@ -640,7 +654,9 @@ impl App {
             self.worker.ensure();
         }
         toast(Toast::success(format!("Cancelled: {}", job.label())));
-        false
+        // What the job was started for may be shown differently now (an inference that was
+        // cancelled leaves the replacements chosen and says that nothing was inferred).
+        true
     }
 
     /// Listens for `Esc` anywhere on the page. In the capture phase so that what has focus does
@@ -686,6 +702,31 @@ impl App {
         self.before_unload = Some(before_unload);
     }
 
+    /// What follows from trying to download the project that the page's URL names. If it cannot
+    /// be (Firebase may be blocked, or the person offline), the URL is reset and they are told,
+    /// and the app starts empty as for any other address.
+    fn opened_from_url(
+        result: Result<(account::RemoteProjectMetadata, Vec<u8>), account::CloudError>,
+    ) -> Vec<Message> {
+        match result {
+            Ok((project, blob)) => vec![
+                Message::Dispatch(model::Action::SetRemoteProjectMetadata(Some(project))),
+                Message::Dispatch(model::Action::Proof(model::proof::Action::ImportProof(
+                    blob.into(),
+                ))),
+            ],
+            Err(error) => {
+                tracing::warn!("Could not open the project from the address: {error}");
+                toast(Toast::error(format!(
+                    "Could not open the project at this address: {error}"
+                )));
+                // failed, reset the url
+                model::update_window_url_path("/");
+                Vec::default()
+            }
+        }
+    }
+
     // TODO: replace this with yew-router
     fn load_project_from_url_path(ctx: &Context<Self>) {
         let path_str = web_sys::window().unwrap().location().pathname().unwrap();
@@ -695,20 +736,7 @@ impl App {
             tracing::debug!("Load published project {}", path[1]);
             let tag = path[1].to_owned();
             ctx.link().send_future_batch(async move {
-                if let Some((project, blob)) =
-                    account::download_published_project(&tag, 1 /* TODO */).await
-                {
-                    vec![
-                        Message::Dispatch(model::Action::SetRemoteProjectMetadata(Some(project))),
-                        Message::Dispatch(model::Action::Proof(model::proof::Action::ImportProof(
-                            blob.into(),
-                        ))),
-                    ]
-                } else {
-                    // failed, reset the url
-                    model::update_window_url_path("/");
-                    Vec::default()
-                }
+                Self::opened_from_url(account::download_published_project(&tag, 1 /* TODO */).await)
             });
         } else if path[0] == "u" && path.len() == 3 {
             // Personal projects
@@ -716,18 +744,7 @@ impl App {
             let id = path[2].to_owned();
             tracing::debug!("Load personal project {uid}/{id}");
             ctx.link().send_future_batch(async move {
-                if let Some((project, blob)) = account::download_personal_project(&uid, &id).await {
-                    vec![
-                        Message::Dispatch(model::Action::SetRemoteProjectMetadata(Some(project))),
-                        Message::Dispatch(model::Action::Proof(model::proof::Action::ImportProof(
-                            blob.into(),
-                        ))),
-                    ]
-                } else {
-                    // failed, reset the url
-                    model::update_window_url_path("/");
-                    Vec::default()
-                }
+                Self::opened_from_url(account::download_personal_project(&uid, &id).await)
             });
         } else {
             model::update_window_url_path("/");
@@ -764,11 +781,13 @@ impl App {
         html! {
             <main class="app">
                 <BusyIndicator on_cancel={ctx.link().callback(|()| Message::Cancel)} />
+                <LayoutNote />
                 <tooltip::HoverTooltip />
                 <Sidebar
                     dispatch={dispatch}
                     proof={proof.clone()}
                     options={state.options.clone()}
+                    drafts={state.drafts.clone()}
                     remote_project_metadata={state.remote_project_metadata.clone()}
                 />
                 <div class="toaster">

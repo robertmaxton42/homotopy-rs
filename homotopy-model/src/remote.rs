@@ -17,6 +17,8 @@
 //! and a request says to use that one when it is still the signature of the proof. Diagrams are
 //! sent once each through a [`Store`], whatever the number of proofs that mention them.
 
+pub mod layout;
+
 use homotopy_common::tree::Tree;
 use homotopy_core::{
     common::{Boundary, BoundaryPath, SliceIndex},

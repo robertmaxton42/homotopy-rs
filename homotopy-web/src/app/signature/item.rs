@@ -159,6 +159,10 @@ pub enum ItemViewMessage {
     /// Fill the slot of a placeholder with the diagram in the workspace.
     FillSlot(Generator),
     ClearSlot(Generator),
+    /// Fill in the placeholders of the candidate filling with this position.
+    PickCandidate(usize),
+    /// Infer again, after the inference was cancelled.
+    InferAgain,
     Setting(AppSettingsMsg),
     Noop,
 }
@@ -273,6 +277,18 @@ impl Component for ItemView {
                     ctx.props()
                         .on_draft
                         .emit(DraftEdit::Clear(info.generator, placeholder));
+                }
+            }
+            ItemViewMessage::PickCandidate(index) => {
+                if let SignatureItem::Item(info) = &ctx.props().item {
+                    ctx.props()
+                        .on_draft
+                        .emit(DraftEdit::Pick(info.generator, index));
+                }
+            }
+            ItemViewMessage::InferAgain => {
+                if let SignatureItem::Item(info) = &ctx.props().item {
+                    ctx.props().on_draft.emit(DraftEdit::Infer(info.generator));
                 }
             }
             ItemViewMessage::Setting(AppSettingsMsg::show_previews(_)) => {
@@ -1066,13 +1082,22 @@ impl ItemView {
                 let clear = ctx
                     .link()
                     .callback(move |_| ItemViewMessage::ClearSlot(placeholder));
+                // A replacement that cannot be one is kept, marked with why.
+                let error = ctx
+                    .props()
+                    .draft
+                    .error(placeholder)
+                    .map(|error| signature.describe_replacement_error(placeholder, error));
                 // An inferred replacement can be replaced by choosing another one.
                 let replace = ctx
                     .link()
                     .callback(move |_| ItemViewMessage::FillSlot(placeholder));
                 html! {
                     <>
-                        <TexSpan class="signature__slot-value" raw_tex={description} />
+                        <TexSpan
+                            class={if error.is_some() { "signature__slot-value signature__slot-invalid" } else { "signature__slot-value" }}
+                            raw_tex={description}
+                        />
                         if inferred {
                             <span class="signature__slot-hint" title="Worked out from the other replacements">
                                 {"inferred"}
@@ -1082,6 +1107,9 @@ impl ItemView {
                             </button>
                         }
                         <button title="Clear" onclick={clear}>{"\u{d7}"}</button>
+                        if let Some(error) = error {
+                            <TexSpan class="signature__slot-error" raw_tex={error} />
+                        }
                     </>
                 }
             } else {
@@ -1109,16 +1137,80 @@ impl ItemView {
             .dispatch
             .reform(move |_| proof::Action::Instantiate(schema, substitution.clone()).into());
 
+        let draft = &ctx.props().draft;
+        let invalid = draft.has_errors();
         html! {
             <fieldset style={format!("border: 1px solid {color};")}>
                 <legend>{"Instantiate"}</legend>
                 {for rows}
+                {Self::view_inference(ctx)}
                 <div>
-                    <button disabled={ctx.props().draft.is_empty()} onclick={create}>
+                    <button
+                        disabled={draft.is_empty() || invalid}
+                        title={invalid.then_some("Fix or clear the replacements marked in red first")}
+                        onclick={create}
+                    >
                         {"Create instance"}
                     </button>
                 </div>
             </fieldset>
+        }
+    }
+
+    /// What inference has to say in the Instantiate section besides what it filled in: that it was
+    /// cancelled, why it left something open or gave up, and the ways to fill in the rest when
+    /// there are several, none of which is ever used unasked.
+    fn view_inference(ctx: &Context<Self>) -> Html {
+        /// The most candidate fillings listed.
+        const SHOWN: usize = 10;
+
+        let signature = &ctx.props().signature;
+        let draft = &ctx.props().draft;
+        if draft.needs_inference() {
+            let again = ctx.link().callback(|_| ItemViewMessage::InferAgain);
+            return html! {
+                <div class="signature__infer-note">
+                    {"Inference was cancelled, so nothing is inferred. "}
+                    <button onclick={again}>{"Infer again"}</button>
+                </div>
+            };
+        }
+        let Some(inference) = draft.inference() else {
+            return html! {};
+        };
+        let notes = signature.explain_inference(inference);
+        let candidates = &inference.candidates;
+        let more = candidates.len().saturating_sub(SHOWN);
+        let listed = candidates.iter().take(SHOWN).enumerate().map(|(i, candidate)| {
+            let pick = ctx.link().callback(move |_| ItemViewMessage::PickCandidate(i));
+            html! {
+                <div class="signature__candidate">
+                    <TexSpan class="signature__candidate-value" raw_tex={signature.describe_filling(candidate)} />
+                    <button title="Fill these in (as inferred)" onclick={pick}>{"Use"}</button>
+                </div>
+            }
+        });
+        html! {
+            <div class="signature__infer">
+                {for notes.into_iter().map(|note| html! {
+                    <div class="signature__infer-note"><TexSpan class="" raw_tex={note} /></div>
+                })}
+                if !candidates.is_empty() {
+                    <details class="signature__candidates" open=true>
+                        <summary>
+                            {format!(
+                                "{}{} ways to fill in the rest",
+                                if inference.exhaustive { "" } else { "At least " },
+                                candidates.len()
+                            )}
+                        </summary>
+                        {for listed}
+                        if more > 0 {
+                            <div class="signature__infer-note">{format!("and {more} more")}</div>
+                        }
+                    </details>
+                }
+            </div>
         }
     }
 

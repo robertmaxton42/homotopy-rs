@@ -4,10 +4,18 @@
 //! - `dispatch(json)` does an action, given as JSON (see [`Command`]); `importActions(bytes)`
 //!   and `importProof(bytes)` do the same with a file's contents.
 //! - `state()` is a JSON summary of the project and the job in progress (see [`Summary`]).
+//! - `layouts()` is a JSON summary of the layouts of diagrams that were made and where (see
+//!   `layout::summary`); `window.__homotopy_layout_delay_ms` makes each layout in the worker take
+//!   at least that long, and `window.__homotopy_layout_worker` does for the layout worker what
+//!   `__homotopy_worker` does for the other (`"off"`, `"broken"`, `"crash"`, `"garble"`);
+//!   `window.__homotopy_layout_weight` sets the weight up to which diagrams are laid out on the
+//!   page (0 sends all of them to the worker).
 //! - `profile(json)` replays recorded actions and times each kind (in milliseconds).
 //! - `window.__homotopy_step_delay_ms`, if set, makes every step of a job take at least that long,
 //!   to make jobs slow enough to test with (also those done in the worker, which is told when
 //!   it is given the job).
+//! - `crash("panic")` panics in the app and `crash("throw")` calls JavaScript that throws and
+//!   nothing catches, to test the crash screen and recovering the project (see `panic`).
 //! - `window.__homotopy_worker` can be set to `"off"` before the app starts to do without the
 //!   worker, and to `"crash"` to have the first job given to it panic there, to test falling back.
 
@@ -139,6 +147,34 @@ pub fn worker_mode() -> String {
         .unwrap_or_default()
 }
 
+/// What `window.__homotopy_layout_worker` says about the worker that lays diagrams out, if
+/// anything: the same as `__homotopy_worker` says about the other (`"off"`, `"broken"`,
+/// `"crash"`, `"garble"`).
+pub fn layout_worker_mode() -> String {
+    web_sys::window()
+        .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_layout_worker".into()).ok())
+        .and_then(|mode| mode.as_string())
+        .unwrap_or_default()
+}
+
+/// What `window.__homotopy_layout_weight` says is the weight up to which diagrams are laid out on
+/// the page, if it is set (0 sends everything to the worker).
+pub fn layout_weight() -> Option<usize> {
+    web_sys::window()
+        .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_layout_weight".into()).ok())
+        .and_then(|weight| weight.as_f64())
+        .map(|weight| weight as usize)
+}
+
+/// How long `window.__homotopy_layout_delay_ms` says a layout in the worker is to take at least,
+/// if it is set (in milliseconds).
+pub fn layout_delay_ms() -> u32 {
+    web_sys::window()
+        .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_layout_delay_ms".into()).ok())
+        .and_then(|delay| delay.as_f64())
+        .map_or(0, |delay| delay as u32)
+}
+
 /// Makes a step take as long as `window.__homotopy_step_delay_ms` says, if it is set.
 pub fn artificial_delay() {
     let Some(window) = web_sys::window() else {
@@ -214,6 +250,65 @@ fn profile_drafts(state: &model::State) -> String {
     serde_json::to_string(&timings).unwrap()
 }
 
+/// Times laying out the diagrams of the project (those of the generators, the workspace's and
+/// their slices) in the dimensions of the views that can show them, next to their weight (see
+/// `homotopy_core::layout::weight`), to choose the weight below which this is done on the page.
+fn profile_layouts(state: &model::State) -> String {
+    use homotopy_core::{layout::Layout, Diagram, DiagramN};
+
+    let performance = web_sys::window().unwrap().performance().unwrap();
+    let proof = state.proof();
+    let mut diagrams: Vec<Diagram> = proof.signature.iter().map(|g| g.diagram.clone()).collect();
+    if let Some(workspace) = &proof.workspace {
+        diagrams.push(workspace.diagram.clone());
+    }
+    let mut slices = vec![];
+    for diagram in &diagrams {
+        if let Ok(diagram) = DiagramN::try_from(diagram.clone()) {
+            slices.extend(diagram.slices());
+        }
+    }
+    diagrams.extend(slices);
+    let mut timings = vec![];
+    for diagram in diagrams {
+        let weight = homotopy_core::layout::weight(&diagram, usize::MAX);
+        let mut time = |n: usize, run: &dyn Fn()| {
+            if diagram.dimension() >= n {
+                let start = performance.now();
+                run();
+                timings.push(serde_json::json!({
+                    "n": n, "weight": weight, "dimension": diagram.dimension(),
+                    "ms": performance.now() - start,
+                }));
+            }
+        };
+        time(1, &|| drop(Layout::<1>::new(&diagram)));
+        time(2, &|| drop(Layout::<2>::new(&diagram)));
+        time(3, &|| drop(Layout::<3>::new(&diagram)));
+        // The geometry of the 3D view, which includes the layout.
+        if diagram.dimension() >= 3 {
+            let start = performance.now();
+            drop(homotopy_graphics::geom::CubicalGeometry::new::<3>(
+                &diagram, false,
+            ));
+            timings.push(serde_json::json!({
+                "n": 33, "weight": weight, "dimension": diagram.dimension(),
+                "ms": performance.now() - start,
+            }));
+        }
+    }
+    serde_json::to_string(&timings).unwrap()
+}
+
+#[wasm_bindgen::prelude::wasm_bindgen(
+    inline_js = "export function throw_from_js() { throw new Error('thrown by the debug hooks'); }"
+)]
+extern "C" {
+    /// An import that throws and is not `catch`: what it does to the app is what a binding that
+    /// was not meant to throw does when it does.
+    fn throw_from_js();
+}
+
 pub fn install(link: &Scope<App>) {
     let window = web_sys::window().unwrap();
     let hooks = js_sys::Object::new();
@@ -255,6 +350,57 @@ pub fn install(link: &Scope<App>) {
         .into_js_value(),
     );
 
+    // `fillFromInstance(schema, placeholder, instance, dimension)`, each generator as `[id,
+    // dimension]` and the dimension of the replacement to take: chooses for the placeholder the
+    // replacement of that dimension that the instance was made with, as clicking *Use workspace*
+    // with that diagram in the workspace does (there is no way to put such a diagram, a cell
+    // whiskered by another, in the workspace without a lot of clicking).
+    let fill = link.clone();
+    set(
+        "fillFromInstance",
+        Closure::<dyn Fn(String) -> Result<(), JsValue>>::new(move |json: String| {
+            use homotopy_core::{signature::Signature as _, Generator};
+            let [schema, placeholder, instance, dimension]: [serde_json::Value; 4] =
+                serde_json::from_str(&json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let generator = |v: &serde_json::Value| {
+                Generator::new(
+                    v[0].as_u64().unwrap_or_default() as usize,
+                    v[1].as_u64().unwrap_or_default() as usize,
+                )
+            };
+            let (schema, placeholder, instance) = (
+                generator(&schema),
+                generator(&placeholder),
+                generator(&instance),
+            );
+            let dimension = dimension.as_u64().unwrap_or_default() as usize;
+            let diagram = STATE.with(|state| {
+                let state = state.borrow();
+                let info = state.0.proof().signature.generator_info(instance)?;
+                let made = info.instance.as_ref()?;
+                made.substitution
+                    .iter()
+                    .find(|(p, _)| p.dimension == dimension)
+                    .map(|(_, d)| d.clone())
+            });
+            let diagram = diagram.ok_or_else(|| JsValue::from_str("no such replacement"))?;
+            fill.send_message(Message::Dispatch(model::Action::Draft(
+                proof::DraftEdit::Fill(schema, placeholder, diagram),
+            )));
+            Ok(())
+        })
+        .into_js_value(),
+    );
+
+    set(
+        "crash",
+        Closure::<dyn Fn(String)>::new(|kind: String| match kind.as_str() {
+            "throw" => throw_from_js(),
+            _ => panic!("crash(\"panic\") from the debug hooks"),
+        })
+        .into_js_value(),
+    );
+
     let cancel = link.clone();
     set(
         "cancel",
@@ -264,6 +410,19 @@ pub fn install(link: &Scope<App>) {
     set(
         "state",
         Closure::<dyn Fn() -> String>::new(summary).into_js_value(),
+    );
+
+    set(
+        "layouts",
+        Closure::<dyn Fn() -> String>::new(crate::layout::summary).into_js_value(),
+    );
+
+    set(
+        "profileLayouts",
+        Closure::<dyn Fn() -> String>::new(|| {
+            STATE.with(|state| profile_layouts(&state.borrow().0))
+        })
+        .into_js_value(),
     );
 
     set(

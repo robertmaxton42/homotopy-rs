@@ -2,9 +2,12 @@
 //! inverses, bubbles and reflections of generators. They are shown in the attach menu, as
 //! labels (see [`homotopy_common::tex`]) with the conventional symbol for each: `\mathrm{id}_f`
 //! for the identity on `f`, `f^{-1}` for its inverse, and so on. The name of the generator is
-//! put into the formula whatever it is, whether text or a formula itself.
+//! put into the formula whatever it is, whether text or a formula itself. The symbols and the
+//! shape of each formula are the [notation](super::notation)'s.
 
 use homotopy_common::tex::{seal, to_math};
+
+use super::notation::{self, Notation};
 
 /// A cell that the app derives from a generator (or from a schema, with a substitution).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,40 +44,26 @@ impl Structure {
     }
 
     /// The formula (without dollar signs) for this cell, for the generator with the given name:
-    /// everything but an [instance](Self::Instance), which is a label of its own.
+    /// everything but an [instance](Self::Instance), which is a label of its own. It is written
+    /// in the [current notation](notation::current).
     #[must_use]
     pub fn math(&self, name: &str) -> Option<String> {
-        let f = || format!("{{{}}}", to_math(name));
-        let iterated = |k: &usize| {
-            if *k > 1 {
-                format!("^{{{k}}}")
-            } else {
-                String::new()
-            }
-        };
+        self.math_in(notation::current(), name)
+    }
+
+    /// As [`math`](Self::math), in the given notation.
+    #[must_use]
+    pub fn math_in(&self, notation: &dyn Notation, name: &str) -> Option<String> {
+        let f = to_math(name);
         Some(match self {
-            Self::Identity(k) => format!("\\mathrm{{id}}{}_{}", iterated(k), f()),
-            Self::InverseIdentity(k) => {
-                format!("\\mathrm{{id}}{}_{{{}^{{-1}}}}", iterated(k), f())
-            }
-            Self::Inverse => format!("{}^{{-1}}", f()),
-            Self::Bubble(k) => format!("\\mathrm{{bub}}{}_{}", iterated(k), f()),
-            Self::InverseBubble(k) => {
-                format!("\\mathrm{{bub}}{}_{{{}^{{-1}}}}", iterated(k), f())
-            }
-            Self::Reflection(directions) if directions.as_slice() == [1] => {
-                format!("{}^{{*}}", f())
-            }
-            Self::Reflection(directions) => format!(
-                "\\mathrm{{R}}_{{{}}}({})",
-                directions
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(","),
-                f()
-            ),
-            Self::Symmetry(symmetry) => format!("{}^{{{}}}", f(), to_math(symmetry)),
+            Self::Identity(k) => notation.identity(*k, &f),
+            Self::InverseIdentity(k) => notation.identity(*k, &notation.inverse(&f)),
+            Self::Inverse => notation.inverse(&f),
+            Self::Bubble(k) => notation.bubble(*k, &f),
+            Self::InverseBubble(k) => notation.bubble(*k, &notation.inverse(&f)),
+            Self::Reflection(directions) if directions.as_slice() == [1] => notation.dual(&f),
+            Self::Reflection(directions) => notation.reflection(directions, &f),
+            Self::Symmetry(symmetry) => notation.symmetry(&to_math(symmetry), &f),
             Self::Instance(_) => return None,
         })
     }

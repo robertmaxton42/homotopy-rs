@@ -16,6 +16,10 @@ pub struct SliceControlProps {
     pub number_slices: usize,
     pub descend_slice: Callback<SliceIndex>,
     pub diagram_ref: NodeRef,
+    /// Changes when the diagram has changed its size without the slices changing, so that the
+    /// buttons are sized to it again.
+    #[prop_or_default]
+    pub measure: u32,
     pub on_hover: Callback<Option<SliceIndex>>,
 }
 

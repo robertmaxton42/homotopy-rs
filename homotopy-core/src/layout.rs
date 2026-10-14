@@ -12,8 +12,9 @@ use petgraph::{graph::NodeIndex, visit::EdgeRef, EdgeDirection, Graph};
 
 use crate::{
     common::{DimensionError, SingularHeight},
+    rewrite::Cone,
     scaffold::{Explodable, Scaffold, ScaffoldNode},
-    Boundary, Diagram, DiagramN, Direction, Height, RewriteN, SliceIndex,
+    Boundary, Cospan, Diagram, DiagramN, Direction, Height, Rewrite, RewriteN, SliceIndex,
 };
 
 #[derive(Clone, Debug)]
@@ -62,6 +63,83 @@ impl<const N: usize> Layout<N> {
 
         Ok(Self(positions))
     }
+
+    /// The points of the layout, with the position of each.
+    // Iterators are `must_use` already, which only newer clippies know.
+    #[allow(clippy::must_use_candidate)]
+    pub fn points(&self) -> impl ExactSizeIterator<Item = (&[SliceIndex; N], &[f32; N])> {
+        self.0.iter()
+    }
+
+    /// Reassembles a layout from its points, as given by [`points`](Self::points).
+    pub fn from_points(points: impl IntoIterator<Item = ([SliceIndex; N], [f32; N])>) -> Self {
+        Self(points.into_iter().collect())
+    }
+}
+
+/// A rough measure of how much work it is to go through all of the diagram.
+///
+/// It is the number of distinct diagrams, rewrites, cones and cospans in it, shared parts counted
+/// once. It stops counting past `limit`, so it takes no longer than that however large the
+/// diagram is, and the answer is then `limit` plus something.
+#[must_use]
+#[allow(clippy::mutable_key_type)] // Hash-consed; the caches do not affect `Hash`/`Eq`.
+pub fn weight(diagram: &Diagram, limit: usize) -> usize {
+    enum Item {
+        Diagram(Diagram),
+        Rewrite(Rewrite),
+        Cospan(Cospan),
+        Cone(Cone),
+    }
+
+    let mut weight = 0;
+    let mut diagrams = FastHashSet::<Diagram>::default();
+    let mut rewrites = FastHashSet::<Rewrite>::default();
+    let mut cones = FastHashSet::<Cone>::default();
+    let mut todo = vec![Item::Diagram(diagram.clone())];
+
+    while let Some(item) = todo.pop() {
+        if weight > limit {
+            break;
+        }
+        match item {
+            Item::Diagram(diagram) => {
+                if !diagrams.insert(diagram.clone()) {
+                    continue;
+                }
+                weight += 1;
+                if let Diagram::DiagramN(diagram) = diagram {
+                    todo.push(Item::Diagram(diagram.source()));
+                    todo.extend(diagram.cospans().iter().cloned().map(Item::Cospan));
+                }
+            }
+            Item::Cospan(cospan) => {
+                weight += 1;
+                todo.push(Item::Rewrite(cospan.forward));
+                todo.push(Item::Rewrite(cospan.backward));
+            }
+            Item::Rewrite(rewrite) => {
+                if !rewrites.insert(rewrite.clone()) {
+                    continue;
+                }
+                weight += 1;
+                if let Rewrite::RewriteN(rewrite) = rewrite {
+                    todo.extend(rewrite.cones().iter().cloned().map(Item::Cone));
+                }
+            }
+            Item::Cone(cone) => {
+                if !cones.insert(cone.clone()) {
+                    continue;
+                }
+                weight += 1;
+                todo.extend(cone.source().iter().cloned().map(Item::Cospan));
+                todo.push(Item::Cospan(cone.target().clone()));
+                todo.extend(cone.regular_slices().iter().cloned().map(Item::Rewrite));
+                todo.extend(cone.singular_slices().iter().cloned().map(Item::Rewrite));
+            }
+        }
+    }
+    weight
 }
 
 pub type Point = (NodeIndex, SingularHeight);

@@ -41,9 +41,16 @@ pub struct Props {
 #[function_component]
 pub fn WorkspaceView(props: &Props) -> Html {
     let diagram_ref = NodeRef::default();
+    // Counts the times that a diagram was drawn after waiting for its layout, which makes what is
+    // sized to the diagram (the slice buttons) look at it again.
+    let laid_out = use_state(|| 0_u32);
+    let on_laid_out = {
+        let laid_out = laid_out.clone();
+        Callback::from(move |()| laid_out.set(*laid_out + 1))
+    };
     let workspace = &props.workspace;
     let diagram_view = if workspace.is_some() {
-        view_diagram(props, diagram_ref.clone())
+        view_diagram(props, diagram_ref.clone(), on_laid_out)
     } else {
         // Show onboarding info if workspace and signature is empty
         get_onboarding_message()
@@ -63,6 +70,7 @@ pub fn WorkspaceView(props: &Props) -> Html {
                     number_slices={diagram.size().unwrap()}
                     descend_slice={props.dispatch.reform(Action::Proof).reform(proof::Action::DescendSlice)}
                     diagram_ref={diagram_ref}
+                    measure={*laid_out}
                     on_hover={props.dispatch.reform(Action::HighlightSlice)}
                 />
             }
@@ -100,12 +108,12 @@ pub fn WorkspaceView(props: &Props) -> Html {
     }
 }
 
-fn view_diagram(props: &Props, diagram_ref: NodeRef) -> Html {
+fn view_diagram(props: &Props, diagram_ref: NodeRef, on_laid_out: Callback<()>) -> Html {
     if let Some(ref ws) = props.workspace {
         match ws.view.dimension() {
-            0 => view_diagram_svg::<0>(props, diagram_ref),
-            1 => view_diagram_svg::<1>(props, diagram_ref),
-            2 => view_diagram_svg::<2>(props, diagram_ref),
+            0 => view_diagram_svg::<0>(props, diagram_ref, on_laid_out),
+            1 => view_diagram_svg::<1>(props, diagram_ref, on_laid_out),
+            2 => view_diagram_svg::<2>(props, diagram_ref, on_laid_out),
             _ => {
                 html! {
                     <DiagramGl
@@ -122,7 +130,11 @@ fn view_diagram(props: &Props, diagram_ref: NodeRef) -> Html {
 }
 
 #[allow(clippy::let_underscore_must_use)]
-fn view_diagram_svg<const N: usize>(props: &Props, diagram_ref: NodeRef) -> Html {
+fn view_diagram_svg<const N: usize>(
+    props: &Props,
+    diagram_ref: NodeRef,
+    on_laid_out: Callback<()>,
+) -> Html {
     let on_select = props
         .dispatch
         .reform(|p| Action::SelectPoint(p, AppSettings::get_weak_units()));
@@ -147,6 +159,7 @@ fn view_diagram_svg<const N: usize>(props: &Props, diagram_ref: NodeRef) -> Html
                     on_homotopy={on_homotopy}
                     highlight={highlight}
                     diagram_ref={diagram_ref}
+                    on_laid_out={on_laid_out}
                 />
             </PanZoomComponent>
         }

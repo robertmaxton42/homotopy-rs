@@ -6,6 +6,8 @@
 //! [`MAX_CELLS`] of its cells of the placeholder's dimension, between the placeholder's source and
 //! target. A substitution is kept if the instantiated schema then attaches at the given point.
 
+use std::{cell::OnceCell, rc::Rc};
+
 use homotopy_common::hash::FastHashSet;
 use homotopy_core::{
     signature::{Invertibility, Signature as _},
@@ -16,16 +18,16 @@ use homotopy_core::{
 use super::Signature;
 
 /// The most cells in a composite replacing a placeholder.
-const MAX_CELLS: usize = 3;
+pub(super) const MAX_CELLS: usize = 3;
 /// The most candidates considered for each placeholder.
 const MAX_CANDIDATES: usize = 64;
 /// The most complete substitutions tried.
 const MAX_SUBSTITUTIONS: usize = 512;
 /// The most replacements considered, over the whole search, when completing a substitution.
-const MAX_COMPLETION_NODES: usize = 2048;
+pub(super) const MAX_COMPLETION_NODES: usize = 2048;
 /// The most solutions found when completing a substitution before giving up: that many
 /// solutions means that nothing is determined.
-const MAX_COMPLETIONS: usize = 32;
+pub(super) const MAX_COMPLETIONS: usize = 32;
 
 /// A way of attaching an instance of a schema, found by [`Signature::infer_instances`].
 #[derive(Clone, Debug)]
@@ -39,8 +41,26 @@ pub struct InferredInstance {
 }
 
 /// The cells that the replacements of placeholders are made from.
-struct Pool<'a> {
-    signature: &'a Signature,
+pub(super) struct Pool<'a> {
+    pub(super) signature: &'a Signature,
+    cells: Rc<Cells>,
+}
+
+/// What a [`Pool`] is made of, which can be kept for another pool of the same signature. The
+/// cells are only made when they are wanted, which is not always.
+pub(super) struct Cells {
+    from: From,
+    made: OnceCell<Made>,
+}
+
+enum From {
+    Generators(Vec<Generator>),
+    /// The generators that the diagrams are made of.
+    Diagrams(Vec<Diagram>),
+}
+
+#[derive(Default)]
+struct Made {
     /// The diagrams of the cells (and their inverses where invertible).
     cells: Vec<DiagramN>,
     zero_cells: Vec<Diagram>,
@@ -60,36 +80,75 @@ struct Search<'a> {
 
 impl<'a> Pool<'a> {
     /// The pool of the cells of the given generators.
-    fn new(signature: &'a Signature, generators: impl IntoIterator<Item = Generator>) -> Self {
-        let mut cells = vec![];
-        let mut zero_cells = vec![];
-        for g in generators {
-            match signature
-                .generator_info(g)
-                .map(|info| (&info.diagram, info.invertibility))
-            {
-                Some((Diagram::Diagram0(d), _)) => zero_cells.push((*d).into()),
-                Some((Diagram::DiagramN(d), invertibility)) => {
-                    cells.push(d.clone());
-                    if invertibility != Invertibility::Directed {
-                        cells.push(d.inverse());
-                    }
-                }
-                None => {}
-            }
-        }
+    pub(super) fn new(
+        signature: &'a Signature,
+        generators: impl IntoIterator<Item = Generator>,
+    ) -> Self {
         Self {
             signature,
-            cells,
-            zero_cells,
+            cells: Rc::new(Cells {
+                from: From::Generators(generators.into_iter().collect()),
+                made: OnceCell::new(),
+            }),
         }
+    }
+
+    /// The pool of the cells that the diagrams are made of.
+    pub(super) fn of_diagrams(signature: &'a Signature, diagrams: Vec<Diagram>) -> Self {
+        Self {
+            signature,
+            cells: Rc::new(Cells {
+                from: From::Diagrams(diagrams),
+                made: OnceCell::new(),
+            }),
+        }
+    }
+
+    /// The pool made of these cells, for a signature that has them.
+    pub(super) const fn from_cells(signature: &'a Signature, cells: Rc<Cells>) -> Self {
+        Self { signature, cells }
+    }
+
+    /// What the pool is made of.
+    pub(super) fn cells(&self) -> Rc<Cells> {
+        Rc::clone(&self.cells)
+    }
+
+    fn made(&self) -> &Made {
+        self.cells.made.get_or_init(|| {
+            let generators: Vec<Generator> = match &self.cells.from {
+                From::Generators(generators) => generators.clone(),
+                From::Diagrams(diagrams) => diagrams
+                    .iter()
+                    .flat_map(|d| d.generators().into_keys())
+                    .collect(),
+            };
+            let mut made = Made::default();
+            for g in generators {
+                match self
+                    .signature
+                    .generator_info(g)
+                    .map(|info| (&info.diagram, info.invertibility))
+                {
+                    Some((Diagram::Diagram0(d), _)) => made.zero_cells.push((*d).into()),
+                    Some((Diagram::DiagramN(d), invertibility)) => {
+                        made.cells.push(d.clone());
+                        if invertibility != Invertibility::Directed {
+                            made.cells.push(d.inverse());
+                        }
+                    }
+                    None => {}
+                }
+            }
+            made
+        })
     }
 
     /// Applies a partial substitution to a diagram mentioned by `generator`, using the existing
     /// instances of the generators it depends on. Unless `strict`, a missing instance is stood in
     /// for by the dependent generator with a substituted diagram, which is enough for a preview:
     /// the actual instance is only created when attaching.
-    fn substitute(
+    pub(super) fn substitute(
         &self,
         generator: Generator,
         substitution: &[(Generator, Diagram)],
@@ -134,7 +193,7 @@ impl<'a> Pool<'a> {
     /// The candidate replacements for a placeholder, given replacements for those before it.
     // `DiagramN` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
     #[allow(clippy::mutable_key_type)]
-    fn candidates(
+    pub(super) fn candidates(
         &self,
         placeholder: Generator,
         substitution: &[(Generator, Diagram)],
@@ -148,6 +207,7 @@ impl<'a> Pool<'a> {
         };
         let Diagram::DiagramN(own_n) = &own else {
             return self
+                .made()
                 .zero_cells
                 .iter()
                 .filter(|&d| *d != own)
@@ -163,7 +223,12 @@ impl<'a> Pool<'a> {
         };
 
         let k = own_n.dimension();
-        let cells: Vec<&DiagramN> = self.cells.iter().filter(|c| c.dimension() == k).collect();
+        let cells: Vec<&DiagramN> = self
+            .made()
+            .cells
+            .iter()
+            .filter(|c| c.dimension() == k)
+            .collect();
         let mut seen = FastHashSet::default();
         let mut results = vec![];
         let mut frontier = vec![source.identity()];
@@ -234,21 +299,6 @@ impl Signature {
     }
 }
 
-/// The search for the placeholders determined by replacements chosen for others. A complete
-/// substitution is a solution if the type of each replacement chosen is as expected.
-struct Completion<'a> {
-    pool: Pool<'a>,
-    parameters: Vec<Generator>,
-    chosen: Vec<(Generator, Diagram)>,
-    /// The index in `chosen` of each replacement whose type is checked, and the number of
-    /// parameters that must be replaced for that.
-    checks: Vec<(usize, usize)>,
-    nodes: usize,
-    solutions: Vec<Vec<(Generator, Diagram)>>,
-    /// Whether the search was cut short, so that its solutions are not all of them.
-    cut_short: bool,
-}
-
 impl Signature {
     /// The replacements of the placeholders of a schema that are determined by the replacements
     /// `chosen` for some of them. Each replacement chosen has a type in terms of other
@@ -256,139 +306,19 @@ impl Signature {
     /// replaced with `X₀` and `D₀`.
     ///
     /// A placeholder is determined if every way of replacing the rest of the placeholders so that
-    /// the types of the replacements chosen are right agrees on it. The search is bounded, like
-    /// [`infer_instances`](Self::infer_instances), and finds nothing if it has to stop early.
-    /// Replacements are made from the cells that the replacements chosen are made of, so
-    /// placeholders that those cells say nothing about are left alone. Placeholders that were
-    /// replaced already are never returned.
+    /// the types of the replacements chosen are right agrees on it. The types are matched
+    /// structurally, which takes no search for the placeholders they mention: see the
+    /// [module](super::completion) on how, and on what is left to a bounded search, like
+    /// [`infer_instances`](Self::infer_instances). If that has to stop early, only what matching
+    /// forces is returned. Placeholders that the types do not mention are left alone, and
+    /// placeholders that were replaced already are never returned.
     #[must_use]
     pub fn infer_replacements(
         &self,
         schema: Generator,
         chosen: &[(Generator, Diagram)],
     ) -> Vec<(Generator, Diagram)> {
-        let parameters = self.parameters(schema);
-        let chosen: Vec<_> = chosen
-            .iter()
-            .filter(|(p, _)| parameters.contains(p))
-            .cloned()
-            .collect();
-        if chosen.is_empty() || chosen.len() >= parameters.len() {
-            return vec![];
-        }
-
-        // A replacement can be checked once every placeholder its type mentions is replaced.
-        let checks = chosen
-            .iter()
-            .enumerate()
-            .map(|(i, (p, _))| {
-                let needed = self
-                    .parameters(*p)
-                    .into_iter()
-                    .filter_map(|q| parameters.iter().position(|r| *r == q))
-                    .map(|position| position + 1)
-                    .max()
-                    .unwrap_or(0);
-                (i, needed)
-            })
-            .collect();
-
-        let mut completion = Completion {
-            pool: Pool::new(
-                self,
-                chosen.iter().flat_map(|(_, d)| d.generators().into_keys()),
-            ),
-            parameters,
-            chosen,
-            checks,
-            nodes: 0,
-            solutions: vec![],
-            cut_short: false,
-        };
-        let mut substitution = vec![];
-        if completion.consistent(&substitution) {
-            completion.solve(&mut substitution);
-        }
-        if completion.cut_short {
-            return vec![];
-        }
-        completion.determined()
-    }
-}
-
-impl Completion<'_> {
-    fn solve(&mut self, substitution: &mut Vec<(Generator, Diagram)>) {
-        let Some(&placeholder) = self.parameters.get(substitution.len()) else {
-            self.solutions.push(substitution.clone());
-            self.cut_short |= self.solutions.len() >= MAX_COMPLETIONS;
-            return;
-        };
-        let candidates = match self.chosen.iter().find(|(p, _)| *p == placeholder) {
-            Some((_, replacement)) => vec![replacement.clone()],
-            None => self.pool.candidates(placeholder, substitution),
-        };
-        for candidate in candidates {
-            if self.cut_short || self.nodes >= MAX_COMPLETION_NODES {
-                self.cut_short = true;
-                return;
-            }
-            self.nodes += 1;
-            substitution.push((placeholder, candidate));
-            if self.consistent(substitution) {
-                self.solve(substitution);
-            }
-            substitution.pop();
-        }
-    }
-
-    /// Whether the replacements chosen that can be checked after the first placeholders are
-    /// replaced have the right types.
-    fn consistent(&self, substitution: &[(Generator, Diagram)]) -> bool {
-        self.checks
-            .iter()
-            .filter(|(_, needed)| *needed == substitution.len())
-            .all(|&(i, _)| {
-                let (placeholder, replacement) = &self.chosen[i];
-                let Some(own) = self
-                    .pool
-                    .signature
-                    .generator_info(*placeholder)
-                    .map(|info| info.diagram.clone())
-                else {
-                    return false;
-                };
-                match (own, replacement) {
-                    (Diagram::Diagram0(_), Diagram::Diagram0(_)) => true,
-                    (Diagram::DiagramN(own), Diagram::DiagramN(replacement)) => {
-                        own.dimension() == replacement.dimension()
-                            && self
-                                .pool
-                                .substitute(*placeholder, substitution, &own.source(), true)
-                                == Some(replacement.source())
-                            && self
-                                .pool
-                                .substitute(*placeholder, substitution, &own.target(), true)
-                                == Some(replacement.target())
-                    }
-                    _ => false,
-                }
-            })
-    }
-
-    /// The replacements that all solutions agree on, other than those chosen.
-    fn determined(&self) -> Vec<(Generator, Diagram)> {
-        let Some((first, rest)) = self.solutions.split_first() else {
-            return vec![];
-        };
-        first
-            .iter()
-            .enumerate()
-            .filter(|(i, (p, _))| {
-                !self.chosen.iter().any(|(q, _)| q == p)
-                    && rest.iter().all(|solution| solution[*i] == first[*i])
-            })
-            .map(|(_, replacement)| replacement.clone())
-            .collect()
+        self.infer(schema, chosen).determined
     }
 }
 

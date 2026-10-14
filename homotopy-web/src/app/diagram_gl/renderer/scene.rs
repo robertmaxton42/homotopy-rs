@@ -7,16 +7,20 @@ use homotopy_graphics::{
     geom::{CubicalGeometry, SimplicialGeometry, VertData},
     style::{GeneratorStyle, SignatureStyleData, VertexShape},
 };
+use instant::Instant;
 use ultraviolet::{Vec3, Vec4};
 
 use super::buffers::{
     buffer_cylinder_wireframe, buffer_projected_wireframe, buffer_tetras, buffer_tris,
 };
-use crate::model::proof::View;
 
 pub struct Scene {
     pub diagram: Diagram,
-    pub view: View,
+    /// What the view is drawn from, which is made elsewhere (see [`crate::layout`]) and does not
+    /// change when only the settings do.
+    geometry: Rc<CubicalGeometry>,
+    /// Whether time is a dimension of the geometry (as it is made).
+    pub animated: bool,
     pub components: Vec<Component<VertexArray>>,
     pub wireframe_components: Vec<VertexArray>,
     pub cylinder_components: Vec<Component<VertexArray>>,
@@ -71,8 +75,8 @@ impl Scene {
     pub fn new(
         ctx: &GlCtx,
         diagram: &Diagram,
-        view: View,
-        animated_3d: bool,
+        geometry: Rc<CubicalGeometry>,
+        animated: bool,
         cubical_subdivision: bool,
         smooth_time: bool,
         subdivision_depth: u8,
@@ -83,7 +87,8 @@ impl Scene {
 
         let mut scene = Self {
             diagram,
-            view,
+            geometry,
+            animated,
             components: vec![],
             wireframe_components: vec![],
             cylinder_components: vec![],
@@ -95,7 +100,6 @@ impl Scene {
 
         scene.reload_meshes(
             ctx,
-            animated_3d,
             cubical_subdivision,
             smooth_time,
             subdivision_depth,
@@ -110,7 +114,6 @@ impl Scene {
     pub fn reload_meshes(
         &mut self,
         ctx: &GlCtx,
-        animated_3d: bool,
         cubical_subdivision: bool,
         smooth_time: bool,
         subdivision_depth: u8,
@@ -159,18 +162,12 @@ impl Scene {
             )?));
         }
 
-        let n = self.view.dimension();
-        let animated = n == 4 || n == 3 && animated_3d;
+        let animated = self.animated;
 
-        let mut cubical = match self.view.dimension() {
-            0 => CubicalGeometry::new::<0>(&self.diagram, animated).unwrap(),
-            1 => CubicalGeometry::new::<1>(&self.diagram, animated).unwrap(),
-            2 => CubicalGeometry::new::<2>(&self.diagram, animated).unwrap(),
-            3 => CubicalGeometry::new::<3>(&self.diagram, animated).unwrap(),
-            4 => CubicalGeometry::new::<4>(&self.diagram, animated).unwrap(),
-            _ => unreachable!(),
-        };
-
+        let phase = Instant::now();
+        let mut cubical = (*self.geometry).clone();
+        let geometry_ms = phase.elapsed().as_secs_f64() * 1000.0;
+        let phase = Instant::now();
         if cubical_subdivision {
             cubical.subdivide(smooth_time, subdivision_depth);
         }
@@ -181,6 +178,8 @@ impl Scene {
             simplicial.subdivide(smooth_time, subdivision_depth);
         }
 
+        let subdivision_ms = phase.elapsed().as_secs_f64() * 1000.0;
+        let phase = Instant::now();
         let color_of = |diagram: Diagram0, k: usize| -> Vec3 {
             let d = self.diagram.dimension();
             let n = diagram.generator.dimension;
@@ -319,6 +318,11 @@ impl Scene {
             }
         }
 
+        tracing::info!(
+            "3D scene: {geometry_ms:.1}ms for the geometry (mesh and its points), \
+             {subdivision_ms:.1}ms to subdivide, {:.1}ms to inflate and buffer",
+            phase.elapsed().as_secs_f64() * 1000.0
+        );
         Ok(())
     }
 }

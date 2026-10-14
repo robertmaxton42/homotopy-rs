@@ -15,6 +15,7 @@
   --drawer-foreground-dimmed: #575f6655;
   --drawer-foreground-dimmed-text: #575f66cc;
   --drawer-border: #e1e1e1;
+  --slot-error: #c0392b;
   --drawer-selected: #66aeeb55;
 
   --button-border: #e1e1e1;
@@ -939,6 +940,44 @@ input.signature__item-name {
   font-style: italic;
 }
 
+/* A replacement that cannot be one: kept, so that it can be seen and fixed, with why. */
+.signature__slot-invalid {
+  color: var(--slot-error);
+}
+
+.signature__slot-error {
+  flex: 1 0 100%;
+  font-size: 0.85em;
+  color: var(--slot-error);
+}
+
+/* What inference has to say beyond what it filled in, and the ways to fill in the rest. */
+.signature__infer {
+  margin: var(--space-0) 0;
+  font-size: 0.85em;
+}
+
+.signature__infer-note {
+  margin: 2px 0;
+  color: var(--drawer-foreground-dimmed-text);
+}
+
+.signature__candidates summary {
+  cursor: pointer;
+  color: var(--drawer-foreground-dimmed-text);
+}
+
+.signature__candidate {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0);
+  margin: 2px 0;
+}
+
+.signature__candidate-value {
+  flex: 1 1 auto;
+}
+
 .signature__slot-hint {
   flex: 0 0 auto;
   font-size: 0.8em;
@@ -1343,6 +1382,17 @@ svg {
   color: red;
 }
 
+.account__unavailable p {
+  margin: 0 0 0.75em;
+  line-height: 1.4;
+}
+
+.account__unavailable-detail {
+  opacity: 0.6;
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+
 .account__projects-view-toggles-wrapper {
   display: flex;
 }
@@ -1589,6 +1639,59 @@ svg {
     0%, 100% { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35); }
     30% { box-shadow: 0 0 0 4px #f39c12; }
   }
+}
+
+/* Laying out diagrams */
+
+/*
+ * What is shown while the layout of a new diagram is being made elsewhere is the previous one,
+ * which is dimmed, with a small note at the bottom of the page. Both come in after 150ms (the
+ * delay of .busy, and of LayoutNote in components/layout_note.rs), so that a layout that is done
+ * quickly causes no flicker. They are CSS animations, which the browser keeps going while the
+ * page is busy.
+ */
+.diagram-svg--stale,
+.diagram-gl--stale {
+  animation: layout-note__dim 200ms ease-out 150ms both;
+}
+
+@keyframes layout-note__dim {
+  from { opacity: 1; }
+  to { opacity: 0.45; }
+}
+
+.layout-note {
+  position: fixed;
+  bottom: var(--space-2);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: 999px;
+  background: var(--sidebar-background);
+  color: var(--sidebar-foreground);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  font-size: 14px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1005;
+  animation: busy__in 120ms ease-out 150ms both;
+}
+
+.layout-note__spinner {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .layout-note__spinner { animation-duration: 3s; }
 }
 
 /* Modal */

@@ -35,7 +35,8 @@ place of the generator's name:
 | reflection by the symmetry `σ` | `f^{σ}`, e.g. `f^{op}` |
 | instance of a schema | `A [Q/P]` (the name, then the substitution) |
 
-The conventions are in `homotopy-model/src/proof/structure.rs`.
+The cells are in `homotopy-model/src/proof/structure.rs`; how each is written (the symbols, and
+the shape of the formula) is in `homotopy-model/src/proof/notation.rs`: see "Notation" below.
 
 ## Diagrams that are not generators
 
@@ -50,13 +51,26 @@ of the cells, text or formula, put in as they are):
 | a cell derived from a generator | the labels in the table above: `f^{-1}`, `f^{*}`, `\mathrm{R}_{1,3}(f)`, `f^{op}`, `\mathrm{bub}_{f}` |
 | an identity on any diagram | `\mathrm{id}_{f \mathbin{;} g}`; `\mathrm{id}^{k}_{f}` for `k` identities on top of each other |
 | a composite, from the source to the target of the diagram | `f \mathbin{;} g \mathbin{;} h` (longer ones are cut short with `\cdots`) |
-| a cell with other cells or wires beside it | the name of the cell, `f` (`f^{-1}` if it is the inverse of an invertible one, `f^{*}` for a 1-cell that is only dualisable, `\overline{f}` for other cells that are drawn reversed) |
+| a cell with other cells or wires beside it | the name of the cell, `f` (`f^{-1}` if it is the inverse of an invertible one, `f^{*}` for a 1-cell that is only dualisable, `\overline{f}` for other cells that are drawn reversed), with what is beside it as whiskers, see below: `p \triangleright T`, `S \triangleleft p`, `S \triangleleft p \triangleright T` |
 | an exchange of two cells | `\mathrm{ex}_{f,g}`, with `f` the cell that is lowest in the source |
 | a braid | `\beta_{f,g}`, or `\beta^{-1}_{f,g}` for passing on the other side |
 | a cell cancelled with its reverse | the counit `\varepsilon_{f}` for `f ; f^{*}` becoming nothing, and `\varepsilon_{f^{*}}` for `f^{*} ; f` |
 | a cell created with its reverse | the unit `\eta_{f}` for `f^{*} ; f` created out of nothing, and `\eta_{f^{*}}` for `f ; f^{*}` |
 | any other homotopy | `\mathrm{h}` |
 | anything else | its type, `s \Rightarrow t` (`\to` for a 1-cell, `\Rrightarrow` in higher dimensions), with its source and target described the same way, to a small depth, and `\ldots` below that |
+
+**Whiskers.** A cell of dimension `n` (2 or more) that has other diagrams beside it is named with
+them, in the order of the diagram (the same as `;`, from the source to the target): a whisker that
+comes after the cell is on its right, `p \triangleright T`, and one that comes before it is on its
+left, `S \triangleleft p`; with both, `S \triangleleft p \triangleright T`. The triangle points at
+the whisker. A whisker that is the identity is left out, and one that is a composite is put in
+parentheses: `p \triangleright (F \mathbin{;} G)` (a long one is cut short like any composite). The
+whiskers are diagrams of dimension `n - 1`: what comes before and after the cell in the top
+direction of the slice of its step (for a 2-cell, the 1-cells on its two sides in the string
+diagram; for a 5-cell, 4-diagrams, such as a 4-cell `T`). What is beside the cell in lower
+directions, inside the step, is not part of the name. For example, in the tangent categories
+project the replacement `Tp` for `\dot{\eta}` in `\zeta[Tp]` is `p \triangleright T`: `p` with `T` after
+it. A step of a composite has its own whiskers: `p \triangleright b \mathbin{;} a \triangleleft q`.
 
 An exchange is a braid when the cells are attached to nothing, so that nothing but the
 exchange says on which side of each other they are (such as two scalars, `id ⇒ id` on one
@@ -79,7 +93,11 @@ by KaTeX like the labels everywhere else, and in a muted type where in the diagr
 and target `T`). The tooltip follows the pointer and never takes it, and goes away when the pointer
 leaves the diagram or a button is pressed.
 
-The label of a cell that is drawn as the generator `f` is `f`. The reverse of an invertible `f` is
+The label of a cell that is drawn as the generator `f` is `f`. The cell at a vertex of a 2-diagram
+(the dot where a 2-cell is, which is what the pointer is over) has its whiskers like any other
+cell: `S \triangleleft p \triangleright T`. A wire or a surface is a cell by itself, with nothing
+beside it, so it shows no whiskers; neither does a vertex of a projection of a diagram of
+higher dimension (the cell there has no single place beside others). The reverse of an invertible `f` is
 `f^{-1}`; of a generator that is only dualisable, `f^{*}` (for a 1-cell, where this is the dual in
 the only direction there is) or `\overline{f}` (other cells, which may have been reflected in
 several directions; the tooltip only knows that the cell is drawn reversed). A wire or surface
@@ -91,3 +109,15 @@ projected from higher dimensions: where two strands cross, `\mathrm{ex}_{f,g}` o
 `\beta_{f,g}` (`\beta^{-1}_{f,g}` for the other way of passing), and where a cell is cancelled or
 created, the counit `\varepsilon_{f}` or the unit `\eta_{f}`. A homotopy that is not recognised is
 `\mathrm{h}(f)` if the vertex is drawn as a fold, and the cell as drawn otherwise.
+
+## Notation
+
+Which symbol is used, and how each formula is put together, is decided in one place,
+`homotopy-model/src/proof/notation.rs`: the `Notation` trait has a method for each (identity,
+inverse, dual, bubble, reflection, symmetry, composition and its cut-off, grouping, left and right
+whiskering, exchange, braid, unit and counit, homotopy, types) with the conventional notation
+as its default, and `Standard` is that. The code that makes names decides what is said (that this
+cell is `p` whiskered on the right by `T`) and the notation how it is written, so another
+convention (for example, a notation in which whiskering is written differently) is another
+implementation of the trait that overrides some of the methods, and `notation::current` says which is
+in use. The tables above are those of `Standard`.

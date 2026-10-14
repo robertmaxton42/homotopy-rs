@@ -12,6 +12,7 @@ use wasm_bindgen::prelude::*;
 
 mod app;
 mod components;
+mod layout;
 mod panic;
 mod worker;
 // Model has to be public for tests to work

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds a debug copy of the web app into dist/ for local (headless-browser) testing,
 # without nix. HiGHS (used for diagram layout) comes from the npm `highs` package
-# through a small shim exposing the same window.Highs_* globals as flake.nix's post.js.
+# through a small shim exposing the same self.Highs_* globals as flake.nix's post.js.
 # Serve with: (cd dist && python3 -m http.server 8765)
 set -euo pipefail
 cd "$(dirname "$0")/../.."

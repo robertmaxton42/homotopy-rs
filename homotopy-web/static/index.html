@@ -13,33 +13,95 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.2/dist/katex.min.css" integrity="sha384-bYdxxUwYipFNohQlHt0bjN/LCpueqWz13HufFEV1SUatKs1cm4L6fFgCi1jT643X" crossorigin="anonymous">
     <link rel="stylesheet" type="text/css" href="/styles.css">
     <link rel="stylesheet" type="text/css" href="/keyboard.css">
-    <!-- Compat modules for firebase ui -->
-    <script defer src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
-    <script defer src="https://www.gstatic.com/firebasejs/10.8.0/firebase-analytics-compat.js"></script>
-    <script defer src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
-    <script defer src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
-    <script defer src="https://www.gstatic.com/firebasejs/10.8.0/firebase-functions-compat.js"></script>
-    <script defer src="https://www.gstatic.com/firebasejs/10.8.0/firebase-performance-compat.js"></script>
-    <script defer src="https://www.gstatic.com/firebasejs/10.8.0/firebase-storage-compat.js"></script>
-    <script defer src="https://www.gstatic.com/firebasejs/ui/6.1.0/firebase-ui-auth.js"></script>
-    <link type="text/css" rel="stylesheet" href="https://www.gstatic.com/firebasejs/ui/6.1.0/firebase-ui-auth.css" />
+    <!-- Compat modules for firebase ui. firebase.js starts Firebase if these could be loaded, and
+         offers to load them again if not (see there); the app works without them. -->
+    <script defer data-firebase="app" src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script defer data-firebase="analytics" src="https://www.gstatic.com/firebasejs/10.8.0/firebase-analytics-compat.js"></script>
+    <script defer data-firebase="auth" src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+    <script defer data-firebase="firestore" src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+    <script defer data-firebase="functions" src="https://www.gstatic.com/firebasejs/10.8.0/firebase-functions-compat.js"></script>
+    <script defer data-firebase="performance" src="https://www.gstatic.com/firebasejs/10.8.0/firebase-performance-compat.js"></script>
+    <script defer data-firebase="storage" src="https://www.gstatic.com/firebasejs/10.8.0/firebase-storage-compat.js"></script>
+    <script defer data-firebase="ui" src="https://www.gstatic.com/firebasejs/ui/6.1.0/firebase-ui-auth.js"></script>
+    <link type="text/css" rel="stylesheet" data-firebase="css" href="https://www.gstatic.com/firebasejs/ui/6.1.0/firebase-ui-auth.css" />
     <script defer src="/firebase.js"></script>
   </head>
   <body>
     <script type="module">
-        import('/homotopy_web.js').then(wasm => wasm.default()).catch(console.log);
+        import('/homotopy_web.js').then(wasm => {
+          window.__homotopy_wasm = wasm;
+          return wasm.default();
+        }).catch(console.log);
     </script>
     <script type="module">
         import('/highs.js').then(wasm => wasm.default()).catch(console.log);
     </script>
 	<script>
+		// What follows is the crash screen. The app calls these when it panics (and after a
+		// panic its wasm instance cannot be relied on), so they use nothing but the page.
 		function display_panic_message() {
+			window.__homotopy_crashed = true;
 			setTimeout(() => {
 				window.document.querySelectorAll(".cover-spin").forEach(el => el.remove());
 				window.document.location.href = "#panic";
 			}, 250);
 		};
 		window.help=display_panic_message;
+
+		// Puts the downloads into the crash message: the project as of the last change that went
+		// through (`project`, a .hom file, empty if there is none) and a report for a bug.
+		function offer_recovery(project, report) {
+			const box = document.getElementById("panic-recovery");
+			if (!box) return;
+			// Copies: `project` is a view into memory that is not ours.
+			const files = [];
+			if (project.length > 0) {
+				files.push({
+					name: "homotopy_io_recovered.hom",
+					blob: new Blob([project.slice()], { type: "application/msgpack" }),
+					label: "Download your project",
+				});
+			}
+			files.push({
+				name: "homotopy_io_crash_report.txt",
+				blob: new Blob([report], { type: "text/plain" }),
+				label: "Download the bug report",
+			});
+			box.textContent = "";
+			const say = (text) => { const p = document.createElement("p"); p.textContent = text; box.appendChild(p); };
+			say(project.length > 0
+				? "Your work has been saved: this is the project as it was after the last change that went through. Download it, reload the page and use Import in the Project drawer to continue from there. Only the action that crashed is lost."
+				: "There was no project to save (nothing had been changed yet), or it could not be saved. If you exported your work earlier, import that file after reloading.");
+			for (const file of files) {
+				const button = document.createElement("button");
+				button.textContent = file.label;
+				button.style.marginRight = "0.5em";
+				button.addEventListener("click", () => {
+					const a = document.createElement("a");
+					a.href = URL.createObjectURL(file.blob);
+					a.download = file.name;
+					document.body.appendChild(a);
+					a.click();
+					a.remove();
+				});
+				box.appendChild(button);
+			}
+		}
+
+		// An exception from JavaScript that nothing catches and that went through the app's wasm
+		// (for example, a binding that was not meant to throw) leaves the app stuck, with no panic
+		// to say so. This shows the crash screen for it, and asks the app for the project.
+		window.addEventListener("error", (event) => {
+			if (window.__homotopy_crashed) return;
+			const stack = String((event.error && event.error.stack) || "");
+			if (!/homotopy_web/.test(stack)) return;
+			display_panic_message();
+			try {
+				window.__homotopy_wasm.recover_after_error("uncaught error: " + event.message);
+			} catch (e) {
+				console.log("The project could not be recovered:", e);
+			}
+		});
 	</script>
   </body>
 </html>

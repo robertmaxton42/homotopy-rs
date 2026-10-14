@@ -10,11 +10,14 @@
 
 use std::collections::VecDeque;
 
-use homotopy_core::{Diagram, Height};
+use homotopy_core::{Diagram, Generator, Height};
 use homotopy_graphics::{manim, stl, tikz};
 use homotopy_model::{
     job::{Job, Progress},
-    proof::{ActionsJob, ActionsOutcome, AttachOption, AttachOptionsJob, ProofState, Signature},
+    proof::{
+        ActionsJob, ActionsOutcome, AttachOption, AttachOptionsJob, InferJob, Inference,
+        ProofState, Signature,
+    },
     remote::{Output, Work},
 };
 
@@ -44,6 +47,9 @@ pub enum Task {
         redone: bool,
     },
     AttachOptions(Box<AttachOptionsJob>),
+    /// What follows from the replacements chosen for a schema (see [`Drafts`](homotopy_model::proof::Drafts)):
+    /// stepped, a candidate at a time, in the page.
+    Infer(Box<InferJob>),
     Export(ExportJob),
 }
 
@@ -54,6 +60,8 @@ pub enum TaskOutput {
         redone: bool,
     },
     AttachOptions(Vec<AttachOption>),
+    /// What was inferred for the schema.
+    Infer(Generator, Inference),
     Export(ExportOutput),
 }
 
@@ -64,7 +72,7 @@ impl Task {
     pub fn next_step_may_block(&self) -> bool {
         match self {
             Self::Actions { job, .. } => job.next_step_is_heavy(),
-            Self::AttachOptions(_) => false,
+            Self::AttachOptions(_) | Self::Infer(_) => false,
             Self::Export(job) => job.next_step_is_heavy(),
         }
     }
@@ -104,7 +112,8 @@ impl Task {
                 .then(|| job.offer())
                 .flatten()
                 .map(|work| (proof, work)),
-            Self::Export(_) => None,
+            // A step is one candidate, which is small however long the whole search takes.
+            Self::Infer(_) | Self::Export(_) => None,
         }
     }
 
@@ -134,6 +143,7 @@ impl Job for Task {
         match self {
             Self::Actions { job, .. } => job.label(),
             Self::AttachOptions(job) => job.label(),
+            Self::Infer(job) => job.label(),
             Self::Export(job) => job.label(),
         }
     }
@@ -142,6 +152,7 @@ impl Job for Task {
         match self {
             Self::Actions { job, .. } => job.progress(),
             Self::AttachOptions(job) => job.progress(),
+            Self::Infer(job) => job.progress(),
             Self::Export(job) => job.progress(),
         }
     }
@@ -154,6 +165,11 @@ impl Job for Task {
                 redone: *redone,
             }),
             Self::AttachOptions(job) => job.step().map(TaskOutput::AttachOptions),
+            Self::Infer(job) => {
+                let schema = job.schema();
+                job.step()
+                    .map(|inference| TaskOutput::Infer(schema, inference))
+            }
             Self::Export(job) => job.step().map(TaskOutput::Export),
         }
     }
