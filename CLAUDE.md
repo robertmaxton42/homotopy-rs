@@ -212,10 +212,11 @@ and check it with the debug hooks below.
   worker, cached, cancelled, pending) are for testing. `__homotopy.profileLayouts()` times the
   layout and geometry of every diagram of the project and its slices next to their weight, for
   choosing the thresholds.
-- `.claude/dev/highs-shim.js` and `flake.nix`'s `post.js` now assign `self.Highs_*` instead of
-  `window.Highs_*`. The shim was tested; **the `flake.nix` edit was made by analogy and has not
-  been built** (no nix here): it is a textual replacement of `window.` by `self.` in `post.js`,
-  which goes through the Closure compiler as an extern; `self` is a standard extern there.
+- `.claude/dev/highs-shim.js` and `flake.nix`'s `post.js` assign `self.Highs_*` rather than
+  `window.Highs_*`, so that HiGHS is there in a worker too. The shim was tested here; the `flake.nix`
+  edit (a textual replacement of `window.` by `self.` in `post.js`, which goes through the Closure
+  compiler as an extern; `self` is a standard extern there) has since been built by CI's nix build,
+  and the 3D view was confirmed to work on a nix build of it.
 - Debug builds expose `window.__homotopy` (`app/debug_hooks.rs`): `dispatch(json)` for an action
   (`{"Proof": ...}`, `{"SelectPoint": [[...], false]}`, `{"Select": 0}`, `"Undo"`, ...),
   `importActions(bytes)`, `importProof(bytes)`, `cancel()`, `state()` (busy label, history
@@ -225,7 +226,9 @@ and check it with the debug hooks below.
   replacement of that dimension that an instance was made with, for diagrams that are hard to put
   in the workspace, such as a cell whiskered by another), `fillWithGenerator("[schema,
   placeholder, generator]")` (the same with the diagram of a generator of the signature),
-  `crash("panic"|"throw")` (the crash screen, see below). Setting `window.__homotopy_step_delay_ms = 50` makes
+  `crash("panic"|"throw")` (the crash screen, see below), `autosave()` (see "Autosave") and
+  `profileAutosave()` (times serialising the project on the page, and building the request for the
+  worker with and without the signature, for choosing where it runs). Setting `window.__homotopy_step_delay_ms = 50` makes
   every step of a job spin that long (also in the worker: the value is sent with each job), to
   have something slow to test with in a headless browser (watch `state().busy`, the
   `.busy__pill` element, send `Escape`). Timings of jobs are logged: "<label> took Nms in K steps
@@ -261,12 +264,102 @@ and check it with the debug hooks below.
   trap. What is lost is the action that crashed. Debug builds: `__homotopy.crash("panic")` and
   `__homotopy.crash("throw")` (call it from a `setTimeout` so that the error is not caught by the
   caller).
-- **Autosave (not done)**: writing the project to `localStorage` after each change would also
-  survive a closed tab or a crash of the browser, but it costs a serialisation per change (the 2.5MB
-  tangent categories project takes ~0.35s in the debug build; the optimised build was not measured), which
-  would have to be a debounced job; `localStorage` holds about 5MB of UTF-16, so projects like that
-  need IndexedDB; and a restore-on-load prompt changes what opening the app does. Left for the
-  user to decide.
+- **Autosave** (`homotopy-web/src/autosave.rs`, `autosave/store.js`, `homotopy_model::autosave`,
+  `Work::Serialize` in `homotopy_model::remote`). The project is backed up in the browser a few
+  seconds after the last change, so that a crash, a closed tab or a browser that gives up does not
+  lose what was done since the last export, and the next visit offers to restore it. It is derived
+  work, in the class of layouts: nobody asked for it and there is nothing to cancel or refuse, so it
+  is held to the first two points of the policy (off the main thread, and it says that it is
+  working: the small *Saving a backup...* note in the corner, `components/autosave_note.rs`, fades
+  in after 150ms like the busy pill) and does not use the busy pill.
+  - **Cost** (why it is in a worker). `serialize::serialize` of the 5.4MB tangent categories
+    project: 0.84-0.93s in the debug build, 100-150ms optimised; the 2.5MB one 0.35s and 40ms. Of
+    the debug time ~60% is packing diagrams into the `Store`, ~25% encoding it. That is past
+    ~100ms for a project of that size even optimised, so it cannot be done on the page in one go.
+    Doing it in the job worker was considered and not done: a job in flight would make the save
+    wait or the save a job, `Remote` assumes one outstanding request, and cancelling a job ends the
+    worker with its replica of the signature. So the save has a worker of its own (the same
+    module as the others: `worker::Client` with its own `Remote`), started when the first save is
+    due and kept: a third copy of the wasm module in memory (35MB in the debug build), the price of
+    never making a job wait. It is a `Work::Serialize` request: the worker unpacks the project as
+    for any job, makes the file with `serialize::serialize` and answers with it appended to the
+    message (`trailer`, as a `Vec<u8>` in msgpack would be an array of integers); the file is
+    byte-identical to one made on the page (`homotopy-model/tests/remote.rs`).
+  - **The signature**. The worker holds the signature between saves, so a request after the first
+    is the workspace and metadata only: 1-3ms on the page optimised (10-35ms debug), against 100ms
+    (0.8-0.94s) with the signature. The first save, and the first after the signature has changed,
+    need it sent, which is as expensive as serialising, so it is packed a little at a time on the
+    page (`autosave::Packer`: a diagram's source, then the rewrites of its cospans one at a time,
+    then the diagram) in slices of 10ms (`SLICE`), and what each slice packed goes ahead to the
+    worker as `Store::take_packed` pieces (`Remote::preload`, `Executor::preload`; merged into the
+    next request with `Store::extend`), encoded in the next slice so that the page can respond in
+    between. What is left for the request is the tree of the signature and the workspace
+    (20KB). Measured with the 5.4MB project open in the 2D view. Debug build: the page's longest
+    slice 35-40ms in 73 slices (~850ms in all; 3.5-3.8s from the wait's end to the backup being
+    written), no rAF gap above 67ms (that is the metadata edit that started it), longest long task
+    56ms; a second save, signature held: 3 slices, longest 15ms, 14-25ms in all, 0.9s end to end,
+    no gap. Optimised build with debug assertions: 21 slices, ~135ms in all, longest 14ms, 0.5s end
+    to end; held: 3 slices, 7ms in all, longest 4ms, 0.16-0.2s end to end; no rAF gap or long task
+    (>50ms) in either. Without a worker (it cannot start, is given up on after three
+    crashes, or answered with nonsense) the page packs the same way and makes the file in **one
+    step that cannot be split up** (`serialize_with` over the packed store: encoding it): 160ms for
+    the 2.5MB project in the debug build. That is a known gap, and the file is the same.
+  - **When** (`homotopy_model::autosave::Plan`, a state machine that knows no time but what it is
+    told and compares versions only for equality; tests there). The version is the project's place
+    in the history (`History::position`: a node of the tree, and undoing gives back the number it
+    had), so noticing that the project changed costs a comparison per message. A save is due 5s
+    after the last change, or 60s after the project became unsaved if it keeps changing, or when
+    the tab is hidden (`visibilitychange`, so that leaving does not lose the last few seconds);
+    never while a job runs (it looks again after a second); never for a version that is *clean*:
+    the one the page opened with, those that importing a file made (`History::at_import`, which
+    does not clone the file), those exported, and the one last saved. So nothing is saved for a
+    project nobody has changed, and going back by undo to what was imported does not save over a
+    backup of later work. A save that fails is tried again after 10s, doubling to 5 minutes, and
+    after a failure the store is probed (`store::probe`) before any serialising, so a store that
+    is not there costs nothing; after three failures in a row one toast says that work is not being
+    backed up. A save that the worker did not do (crash, nonsense) is not a failure of the store:
+    it is tried again at once, the worker is restarted, and after three crashes it is given up on
+    and the page makes the file (nonsense: the page makes that one).
+  - **Where** (IndexedDB, `autosave/store.js`; everything in `try`, every binding `catch`, as for
+    Firebase). Two object stores, `meta` (session, time, title, size, clean) and `data` (the
+    bytes), so that listing does not read the files; a save is one transaction, so a backup is
+    replaced whole or not at all, and a tab that is closed while saving leaves the previous one.
+    *Multiple tabs*: each tab has a random session id and keeps one backup under it, replaced as it
+    goes; each holds a Web Lock named for its session for as long as it is open
+    (`navigator.locks`), which is how a tab tells the backups of tabs that are still open (never
+    offered, never deleted by another) from those of tabs that are gone. After a save, the backups
+    of gone tabs are cut to the two newest: the latest and the previous, so that work from before
+    this tab was opened is not lost to the first save of this one. Without Web Locks every other
+    session counts as gone. Last writer wins nowhere: there is one key per tab.
+  - **Restoring.** When the page is opened at `/` (not a project's address) a backup of a gone tab
+    that has not been exported is offered by a small non-modal notice at the bottom
+    (`components/restore_notice.rs`): "Restore unsaved work from <time> (<title>)?" with *Restore*
+    and *Discard*. It is looked for a second after the page starts and nothing waits for it.
+    *Restore* reads the file and imports it as any other import (`ImportProof`: a job, behind the
+    busy pill, in the worker if it is 64KB or more), so it can be undone; nothing is ever restored
+    unasked. *Discard* deletes the backups of gone tabs. The backup is kept after a restore (it is
+    pruned by the next saves), so that closing the tab straight away loses nothing.
+  - **Export.** After *Export* the project is clean at that version, and the tab's backup is marked
+    clean (`store.markClean`) so that it is not offered again: the download cannot be known to
+    have gone through, so it is kept, not deleted, and the next change saves a new one.
+  - **Setting.** *Back up my work in this browser* in the settings drawer, on by default. The
+    settings are not kept between visits (they are thread-locals, `declare_settings!`), except this
+    one, which is kept in `localStorage` when it is off, as a switch that turns itself on again is
+    not one. Turning it off deletes all the backups (the drawer says so) and stops the worker.
+    The drawer shows when the last backup was made, or why they do not work.
+  - **Size.** The optimised build with debug assertions went from 9.92MB to 10.12MB (2.2MB
+    gzipped), with `Work::Serialize`, the packer, the store and the plan.
+  - **Testing.** `window.__homotopy_autosave_idle_ms` (debug builds) sets the wait (retries and
+    the longest wait follow), `window.__homotopy_autosave_worker` (`"off"`, `"broken"`, `"crash"`,
+    `"garble"`) does for the saving worker what `__homotopy_worker` does for the other, and
+    `__homotopy.autosave()` is a JSON summary (stage, saves, failures, last backup, session).
+    Native tests: `Plan` (`homotopy_model::autosave`), and the worker's file against the page's, with
+    the signature sent in pieces, held or not preloaded (`homotopy-model/tests/remote.rs`). In the
+    browser (Playwright): a project survives reload with an identical hash; nothing is saved for an
+    untouched project or an import; nothing while a job runs; turning it off deletes and is
+    remembered; no IndexedDB (`undefined`, throwing, failing to open): the app is unaffected and
+    says so once; a second tab does not offer, or touch, the first tab's backup, and a third offers
+    the newest once both are closed; the cap keeps the two newest of gone tabs.
 
 ## Known gaps against the policy above
 
@@ -327,6 +420,12 @@ assertions, on `homotopy-model/tests/examples` and a project with limits as sche
   - Two workers are two copies of the wasm module in memory (35MB in the debug build) and the
     second one HiGHS too; the optimised build is 0.7MB bigger (8.9 to 9.6MB with debug assertions,
     92KB more gzipped: the wire format, a second path through `CubicalGeometry`).
+- Autosave without a worker makes the file in one step on the page (160ms for the 2.5MB project in
+  the debug build; see "Autosave"); with the worker the page's longest slice is 35-40ms, and
+  the copies of the file (it crosses the worker boundary, into wasm and out to IndexedDB as a
+  `Uint8Array`: three copies of 5MB) are up to ~50ms in the debug build, none measurable optimised. In a background
+  tab, in-page slices (the packing of a signature the worker does not hold yet) are throttled like
+  the other jobs' (`setTimeout(0)`), so the first save there crawls; the worker's part does not.
 - Editing the signature with a recursive typecheck (making a generator less invertible, removing
   a symmetry, removing a generator): under 20ms on the examples, but it grows with the
   signature. These are `EditSignature` actions, so they can be sent to the worker the same way
