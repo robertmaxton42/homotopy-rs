@@ -327,6 +327,55 @@ impl<const N: usize> Depths<N> {
         self.edge_depths[e.id()]
     }
 
+    /// The diagram that is carried by the position `coord` of the projection: what is left of the
+    /// diagram when its first `N` coordinates are fixed (a diagram of `N` dimensions fewer). The
+    /// projection shows one point of it, at the front ([`node_depth`](Self::node_depth)), and its
+    /// other points are hidden behind that one: they are the sheets (see
+    /// [`sheets`](Self::sheets)) of the position.
+    #[must_use]
+    pub fn fibre(&self, coord: Coordinate<N>) -> Option<&Diagram> {
+        let &n = self.coord_to_node.get(&coord)?;
+        Some(&self.graph[n].diagram)
+    }
+
+    /// The sheets at the position `coord`: the singular heights `z` of its [fibre](Self::fibre)
+    /// (the cospans of the first coordinate after the `N` that the projection is of), in order,
+    /// and for each the cell that is there. The sheet that the projection draws is the one with
+    /// [`Sheet::front`] set, if any (the front-most: see [`node_depth`](Self::node_depth)).
+    ///
+    /// The sheets nest: the fibre of a sheet `z` (its slice at the singular height `z`) has
+    /// sheets of its own, for the next coordinate. They are those of `within = [z]`, and so on
+    /// deeper; `within` is empty for the sheets of the position itself. Empty if there is no such
+    /// position or sheet, or no more coordinates. Cheap: it slices the fibre along `within` and
+    /// looks at one slice per height.
+    #[must_use]
+    pub fn sheets(&self, coord: Coordinate<N>, within: &[usize]) -> Vec<Sheet> {
+        let Some(Diagram::DiagramN(fibre)) = self.fibre(coord) else {
+            return vec![];
+        };
+        let mut fibre = fibre.clone();
+        for &z in within {
+            match fibre.slice(Height::Singular(z)) {
+                Some(Diagram::DiagramN(slice)) => fibre = slice,
+                _ => return vec![],
+            }
+        }
+        let front = if within.is_empty() {
+            self.node_depth(coord)
+        } else {
+            None
+        };
+        fibre
+            .singular_slices()
+            .enumerate()
+            .map(|(z, slice)| Sheet {
+                z,
+                generator: slice.max_generator(),
+                front: front == Some(z),
+            })
+            .collect()
+    }
+
     #[must_use]
     pub fn edges_above(&self, depth: usize, to: Coordinate<N>) -> Vec<Coordinate<N>> {
         let to = match self.coord_to_node.get(&to) {
@@ -342,6 +391,18 @@ impl<const N: usize> Depths<N> {
             })
             .collect()
     }
+}
+
+/// A sheet at a position of the projection of a diagram: one singular height of the diagram
+/// that is carried by the position (see [`Depths::sheets`]).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Sheet {
+    /// The singular height, in the first coordinate that the projection is not of.
+    pub z: usize,
+    /// The cell of greatest dimension at that height.
+    pub generator: Diagram0,
+    /// Whether this is the sheet that the projection shows at the position, the front-most.
+    pub front: bool,
 }
 
 fn min_defined<T>(a: Option<T>, b: Option<T>) -> Option<T>
