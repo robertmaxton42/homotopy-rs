@@ -452,6 +452,36 @@ button, .button {
   opacity: 0.6;
 }
 
+/* Where a sheet ends or sheets meet, over the diagram (a pale halo under each). */
+
+.sheet-boundary__halo {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.75);
+  stroke-width: 5px;
+  stroke-linecap: round;
+}
+
+.sheet-boundary {
+  fill: none;
+  stroke-width: 2px;
+  stroke-linecap: round;
+}
+
+.sheet-boundary--stretch {
+  stroke: #c2255c;
+  stroke-width: 3px;
+  stroke-dasharray: 5 4;
+}
+
+.sheet-boundary--end {
+  stroke: #c2255c;
+  stroke-dasharray: 3 3;
+}
+
+.sheet-boundary--meet {
+  stroke: #0b7285;
+}
+
 /* Wires that are not on the sheet that is chosen. */
 
 svg [data-dim="1"] {

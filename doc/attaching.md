@@ -70,6 +70,12 @@ Dragging a wire sideways to expand it (a horizontal drag) acts on the sheet you 
 place the drag starts from, if you chose one there before pressing the button, and else on the
 front one, as before. Contractions act on all the sheets and are the same whatever you chose.
 
+Where a sheet **ends**, or several sheets **meet**, the 2D view marks the place (Settings: *Outline
+where sheets end or meet*, on by default): a dashed ring, with the last stretch of the sheet dashed
+up to it, where a sheet ends, and a double ring where three or more meet (a cell where lines are
+joined), and the tooltip there says so. A line that simply runs along a wire, or two strands that
+cross, are not marked: only the places where the sheet itself stops or meets another.
+
 Choose no sheet (leave the position and come back, or Shift + Tab all the way) and a click is
 what it has always been. The 3D view has no sheets.
 

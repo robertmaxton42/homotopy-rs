@@ -38,8 +38,8 @@ use self::{
 };
 use super::{attach_target, tooltip};
 use crate::{
-    app::settings::AppSettings,
-    components::{read_touch_list_abs, Finger},
+    app::settings::{AppSettings, AppSettingsKey},
+    components::{delta::CallbackIdx, read_touch_list_abs, Finger},
     layout::{self, Asked, Ticket},
     model::proof::{
         homotopy::{Contract, Expand, Homotopy},
@@ -81,7 +81,12 @@ pub struct DiagramSvg<const N: usize> {
     hovering: bool,
     /// The keys that choose a sheet.
     keys: sheets::Keys,
+    /// The settings that change what is drawn on the diagram, which draw it again.
+    settings: Vec<CallbackIdx>,
 }
+
+/// The settings that the drawing of the diagram depends on.
+const DRAWING_SETTINGS: &[AppSettingsKey] = &[AppSettingsKey::sheet_outlines];
 
 #[derive(Clone, PartialEq, Properties)]
 pub struct DiagramSvgProps<const N: usize> {
@@ -136,6 +141,8 @@ pub enum DiagramSvgMessage<const N: usize> {
     OnDrop(Generator, Point2D<f32>),
     /// Something to do about the sheets: a key, the wheel, or a debug hook.
     Sheet(SheetCommand<N>),
+    /// A setting that changes the drawing was changed.
+    Setting,
 }
 
 /// The computed properties of a diagram that are potentially expensive to compute but can be
@@ -250,6 +257,10 @@ impl<const N: usize> Component for DiagramSvg<N> {
             pointer: (0.0, 0.0),
             hovering: false,
             keys: sheets::Keys::default(),
+            settings: AppSettings::subscribe(
+                DRAWING_SETTINGS,
+                ctx.link().callback(|_| DiagramSvgMessage::Setting),
+            ),
         };
         this.install_sheets(ctx);
         this.prepare(ctx);
@@ -273,6 +284,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
             DiagramSvgMessage::Sheet(command) => {
                 self.sheet_command(ctx, command);
             }
+            DiagramSvgMessage::Setting => return true,
             DiagramSvgMessage::OnMouseUp => {
                 self.pointer_stop(ctx);
             }
@@ -377,6 +389,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
     fn destroy(&mut self, _ctx: &Context<Self>) {
         self.hide_tooltip();
         self.keys.remove();
+        AppSettings::unsubscribe(DRAWING_SETTINGS, &self.settings);
         if let Some(ticket) = self.pending.take() {
             layout::cancel(ticket);
         }
@@ -579,6 +592,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
             >
                 {Self::view_placeholder_hatch(ctx, prepared)}
                 {prepared.graphic.iter().enumerate().map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
+                {Self::view_sheet_outlines(ctx, prepared)}
                 {self.view_highlight(ctx)}
                 {self.view_drop_target(prepared)}
             </svg>
@@ -820,6 +834,86 @@ impl<const N: usize> DiagramSvg<N> {
                     },
                 }
             }
+        }
+    }
+
+    /// Marks where sheets end or meet (see `Depths::sheet_boundaries`), over the diagram: for a
+    /// sheet that ends, the last stretch of it and a dashed ring where it ends; for sheets that
+    /// meet, a double ring. Each kind is one path, with a pale halo under it so that it shows on
+    /// any colour. Nothing for a diagram with no more dimensions than the view, or if it is off.
+    fn view_sheet_outlines(ctx: &Context<Self>, prepared: &PreparedDiagram<N>) -> Html {
+        use std::fmt::Write as _;
+
+        use homotopy_core::projection::SheetBoundaryKind::{BeginsOrEnds, MergesOrSplits};
+
+        if !ctx.props().sheets || !AppSettings::get_sheet_outlines() {
+            return html! {};
+        }
+        let boundaries = prepared.depths.sheet_boundaries();
+        if boundaries.is_empty() {
+            return html! {};
+        }
+        let at = |coordinate: &[SliceIndex; N]| {
+            prepared
+                .transform
+                .transform_point(Point::from(project_2d(prepared.layout[coordinate])))
+        };
+        let radius = ctx.props().style.point_radius;
+        let ring = |path: &mut String, centre: Point, r: f32| {
+            write!(
+                path,
+                "M{} {}a{r} {r} 0 1 0 {} 0a{r} {r} 0 1 0 {} 0",
+                centre.x - r,
+                centre.y,
+                2.0 * r,
+                -2.0 * r
+            )
+            .ok();
+        };
+        let (mut stretches, mut ends, mut meets) = (String::new(), String::new(), String::new());
+        let (mut ends_count, mut meets_count) = (0, 0);
+        let mut seen = homotopy_common::hash::FastHashSet::default();
+        for b in boundaries {
+            let to = at(&b.to);
+            match b.kind {
+                BeginsOrEnds => {
+                    let from = at(&b.from);
+                    ends_count += 1;
+                    write!(stretches, "M{} {}L{} {}", from.x, from.y, to.x, to.y).ok();
+                    ring(&mut ends, to, radius * 1.9);
+                }
+                MergesOrSplits => {
+                    // (Several sheets can meet at the one place.)
+                    if seen.insert(b.to) {
+                        meets_count += 1;
+                        ring(&mut meets, to, radius * 1.9);
+                        ring(&mut meets, to, radius * 2.7);
+                    }
+                }
+            }
+        }
+        let layer = |class: &'static str, d: &String| {
+            if d.is_empty() {
+                return html! {};
+            }
+            html! {
+                <>
+                    <path d={d.clone()} class="sheet-boundary__halo" />
+                    <path d={d.clone()} class={classes!("sheet-boundary", class)} />
+                </>
+            }
+        };
+        html! {
+            <g
+                class="sheet-boundaries"
+                pointer-events="none"
+                data-ends={ends_count.to_string()}
+                data-meets={meets_count.to_string()}
+            >
+                {layer("sheet-boundary--stretch", &stretches)}
+                {layer("sheet-boundary--end", &ends)}
+                {layer("sheet-boundary--meet", &meets)}
+            </g>
         }
     }
 
@@ -1082,10 +1176,39 @@ impl<const N: usize> DiagramSvg<N> {
             Simplex::Point(_) => props.signature.describe_point(&prepared.diagram, &p, d),
             Simplex::Wire(_) | Simplex::Surface(_) => props.signature.describe_cell(d),
         };
+        let mut detail = format!("@ {}", p.map(|si| si.to_string()).join(", "));
+        if let Some(note) = Self::boundary_note(ctx, prepared, p) {
+            detail.push_str(" · ");
+            detail.push_str(note);
+        }
         tooltip::Content {
             label,
-            detail: format!("@ {}", p.map(|si| si.to_string()).join(", ")),
+            detail,
             sheets: self.sheet_stack(ctx, prepared),
+        }
+    }
+}
+
+impl<const N: usize> DiagramSvg<N> {
+    /// What to say of the place, if a sheet ends or sheets meet there (when they are outlined).
+    fn boundary_note(
+        ctx: &Context<Self>,
+        prepared: &PreparedDiagram<N>,
+        position: [SliceIndex; N],
+    ) -> Option<&'static str> {
+        use homotopy_core::projection::SheetBoundaryKind::{BeginsOrEnds, MergesOrSplits};
+
+        if !ctx.props().sheets || !AppSettings::get_sheet_outlines() {
+            return None;
+        }
+        let boundaries = prepared.depths.sheet_boundaries_at(position);
+        let meets = boundaries.iter().any(|b| b.kind == MergesOrSplits);
+        let ends = boundaries.iter().any(|b| b.kind == BeginsOrEnds);
+        match (ends, meets) {
+            (_, true) if ends => Some("sheets begin, end, merge or split here"),
+            (_, true) => Some("sheets merge or split here"),
+            (true, false) => Some("a sheet begins or ends here"),
+            (false, false) => None,
         }
     }
 }

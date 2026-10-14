@@ -509,6 +509,26 @@ indicator: see "Laying out diagrams" below.
       is kept. Tested against the scaffold with every edge (`leaving_out_regular_slices_loses_no_unit_cone`).
       Identity is checked on kept edges only: across the diagonals it differs where the way round passes a
       junction, which cuts the sheet.
+  - **Outlines of sheet boundaries** (`Depths::sheet_boundaries`, `DiagramSvg::view_sheet_outlines`, setting
+    *Outline where sheets end or meet*, `sheet_outlines`, on by default; workspace diagram only, like the rest of
+    the sheet features). A boundary is an *end* (`BeginsOrEnds`: of the edges into a (position, height), one
+    carries a sheet into it, and the sheet reaches positions of a higher dimension elsewhere, so it stops
+    here) or a *junction* (`MergesOrSplits`: three or more heights carried into one). It is **not** simply
+    "a cone with `source_len() == 0`": every edge goes from a position to one of a dimension less, so a
+    sheet that lies along a wire (a line) has such a cone on every edge from the regions beside it, and one
+    where several rows of the grid collapse into one (a crossing) has them from each row; both are what it is
+    to be that sheet, not places it begins, and listing them put a boundary along both sides of every wire
+    (32 for `crossing`, which has none). The carried-in count and the dimension of the position
+    (`stratum_dimension`: coordinates that are not singular) are what tell them apart; `crossing`,
+    `touching` and `half_braid` have no boundaries, `stacks`/`matchsticks`/`monoid_unit` have ends, the
+    associator and snake have junctions. Drawn as one path per kind in a `g.sheet-boundaries` (counts in
+    `data-ends`/`data-meets`) over the surfaces, under the highlight: for an end the last stretch of the sheet
+    (dashed) from the neighbour that carries it and a dashed ring, for a junction a double ring; a pale halo
+    under each so they show on any colour; `pointer-events: none`. The tooltip's detail says "a sheet begins
+    or ends here" / "sheets merge or split here" at such a position. The set of boundaries is made on first
+    use and does not change `GraphicElement`. Gaps: a boundary is drawn along the scaffold edge, not along
+    a curve of the layout; an end is only found where the sheet reaches higher dimensions elsewhere, so a
+    sheet that is a point or a line that runs along one coordinate all through has none; the 3D view has none.
   - **The heuristic** (off by default; `InferenceLimits::narrow_to_sheet`, setting *Heuristic: infer instances
     only from cells near the chosen sheet*, kept with the inference settings): with a sheet chosen, the pool of
     cells for the replacements of placeholders (`Pool::new` in `AttachOptionsJob::new`) is the generators in

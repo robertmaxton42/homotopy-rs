@@ -12,6 +12,8 @@ declare_settings! {
         animated_3d: bool = false,
         contraction_step: u32 = 1,
         merge_exchanges: bool = false,
+        // In the 2D view of a diagram of more dimensions: mark where a sheet ends or sheets meet.
+        sheet_outlines: bool = true,
         autosave: bool = true,
         infer_instances: bool = true,
         // Seconds one generator may take when searching for attachments; 0 for no limit.
@@ -109,6 +111,14 @@ impl Component for SettingsView {
                             AppSettings::set_merge_exchanges,
                         )
                     }
+                    {
+                        Self::view_checkbox(
+                            "Outline where sheets end or meet",
+                            AppSettings::get_sheet_outlines(),
+                            AppSettings::set_sheet_outlines,
+                        )
+                    }
+                    <div class="settings__note">{"In the 2D view of a diagram of more than two dimensions, draws a dashed ring where a sheet (what is hidden behind the cell the view shows) ends, and a double ring where several meet, with the last stretch of the sheet that ends. Hovering over such a place says so. Sheets are found from the cells' rewrites, so this is what the diagram has and not a guess."}</div>
                     {
                         Self::view_checkbox(
                             "Back up my work in this browser",
