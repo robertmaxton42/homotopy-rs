@@ -45,6 +45,7 @@ use homotopy_core::{
 };
 
 use super::{
+    describe::CompositePart,
     inference::{Cells, Pool, MAX_COMPLETIONS, MAX_COMPLETION_NODES},
     Signature,
 };
@@ -1391,7 +1392,7 @@ impl Signature {
         Ok(state)
     }
 
-    fn name_sealed(&self, g: Generator) -> String {
+    pub(super) fn name_sealed(&self, g: Generator) -> String {
         self.generator_info(g)
             .map_or_else(|| "?".to_owned(), |info| seal(&info.name))
     }
@@ -1582,7 +1583,7 @@ impl Signature {
         bound: &[(Generator, Diagram)],
     ) -> String {
         let pool = Pool::new(self, []);
-        let replaced: Vec<String> = atoms
+        let replaced: Vec<CompositePart> = atoms
             .iter()
             .map(|&atom| {
                 // A placeholder is replaced with what it is bound to, and a cell that depends on
@@ -1605,10 +1606,10 @@ impl Signature {
                             pool.instance_of(atom, &restricted, true)
                         }
                     })
-                    .map_or_else(|| self.name_sealed(atom), |d| self.describe(&d))
+                    .map_or(CompositePart::Cell(atom), CompositePart::Diagram)
             })
             .collect();
-        let needed = replaced.join(" \u{226b} ");
+        let needed = self.describe_composite_of(&replaced);
         let composite = self.describe_composite(atoms);
         if needed == composite {
             return composite;
@@ -1621,13 +1622,11 @@ impl Signature {
         format!("{needed} ({composite} with {bindings})")
     }
 
-    /// The cells of a composite, like `μ ≫ η'`.
+    /// The cells of a composite, like `μ ; η'`, written in the notation of names (see
+    /// [`notation`](super::notation)) like the diagrams that are described.
     fn describe_composite(&self, cells: &[Generator]) -> String {
-        cells
-            .iter()
-            .map(|&g| self.name_sealed(g))
-            .collect::<Vec<_>>()
-            .join(" \u{226b} ")
+        let cells: Vec<_> = cells.iter().map(|&g| CompositePart::Cell(g)).collect();
+        self.describe_composite_of(&cells)
     }
 
     /// A way of filling in placeholders, like `μ = p, η' = ζ[p]`, with names sealed so that it can
@@ -1695,6 +1694,7 @@ impl Signature {
 
 #[cfg(test)]
 pub(in crate::proof) mod tests {
+    use homotopy_common::tex::to_math;
     use homotopy_core::{
         signature::{Invertibility, Signature as _},
         typecheck::{typecheck, Mode},
@@ -1704,8 +1704,18 @@ pub(in crate::proof) mod tests {
     use super::{InferJob, Part, ReplacementError, Status};
     use crate::{
         job::Job,
-        proof::{InstantiationError, Signature, SignatureEdit, SignatureItemEdit},
+        proof::{
+            notation::{Notation, Standard},
+            InstantiationError, Signature, SignatureEdit, SignatureItemEdit,
+        },
     };
+
+    /// How a message writes a composite of cells with these names (or labels): as one formula, in
+    /// the notation of names.
+    pub(in crate::proof) fn composite(parts: &[String]) -> String {
+        let math: Vec<String> = parts.iter().map(|part| to_math(part)).collect();
+        format!("${}$", Notation::compose(&Standard, &math))
+    }
 
     /// A commutative square, as in a naturality condition: `x`; placeholders `F, G, F', G' : x → x`,
     /// `η : F ⇒ G`, `η' : F' ⇒ G'`, `μ : F ⇒ F'`, `ν : G ⇒ G'` and `h : μ ≫ η' ⇛ η ≫ ν`; the cells
@@ -2114,11 +2124,10 @@ pub(in crate::proof) mod tests {
         );
         assert!(
             message.contains(&format!(
-                ": its target is {}, but the type requires {} \u{226b} {} ({eta} \u{226b} {} with {eta} := {}) there",
+                ": its target is {}, but the type requires {} ({} with {eta} := {}) there",
                 sq.sig.describe(&k_target),
-                name(generator_of(&sq.p)),
-                name(sq.nu),
-                name(sq.nu),
+                composite(&[name(generator_of(&sq.p)), name(sq.nu)]),
+                composite(&[eta.clone(), name(sq.nu)]),
                 name(generator_of(&sq.p)),
             )),
             "{message}"
@@ -2474,9 +2483,11 @@ pub(in crate::proof) mod tests {
         assert_eq!(
             message,
             format!(
-                "{h} conflicts with {x}: {h} := {}: its source is {}, but the type requires {d0} \u{226b} {t_name} ({d} \u{226b} {x} with {a} := {}, {x} := {t_name}) there",
+                "{h} conflicts with {x}: {h} := {}: its source is {}, but the type requires {} ({} with {a} := {}, {x} := {t_name}) there",
                 name(wrong),
                 sig.describe(&t_d0),
+                composite(&[d0, t_name.clone()]),
+                composite(&[d, x.clone()]),
                 sig.describe(&it.a0),
             )
         );

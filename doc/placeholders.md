@@ -11,7 +11,7 @@ of the substitution in your proofs.
    drawn in a style that ordinary generators can't have.
 2. Use it like any other generator when building further generators. An axiom whose diagram
    mentions a placeholder is a schema. So is anything that depends on one: if `e : P ⇒ P` and
-   `A : e ≫ e ⇛ e`, both `e` and `A` are schemas in `P`.
+   `A : e ; e ⇛ e`, both `e` and `A` are schemas in `P`.
 3. To instantiate a schema, open its settings. Put the diagram that should replace each
    placeholder in the workspace, click *Use workspace* in that placeholder's slot, then click
    *Create instance*. Replacements that follow from the ones you choose are filled in for you:
@@ -51,7 +51,7 @@ A height that does several things at once, such as `f ◫ g` with two cells side
 
 - **kept as it is**, if nothing in or around it is replaced, so the instance keeps the schema's
   layout where substitution doesn't care;
-- **separated first**, if something in it is replaced. `f ◫ g` becomes `f ▷ _ ≫ _ ◁ g` (or the
+- **separated first**, if something in it is replaced. `f ◫ g` becomes `f ▷ _ ; _ ◁ g` (or the
   other order) by an expansion, which is an invertible homotopy, so the instance is still
   derivable from the schema. In that case the instance's boundary is drawn separated, even
   though the schema's was drawn contracted.
@@ -65,7 +65,7 @@ would need new homotopies.
 
 You usually don't need to instantiate by hand. When you click a point in the workspace, the
 attach menu also offers instances of schemas whose placeholders can be filled in so that they
-fit there. These are tagged with the substitution, e.g. `A [Q ≫ R/P]`. Choosing one creates the
+fit there. These are tagged with the substitution, e.g. `A [Q ; R/P]`. Choosing one creates the
 instance and attaches it in one step, which is undone in one step too.
 
 The search tries replacements made from the cells of the diagram you click on:
@@ -91,17 +91,17 @@ found by matching the types, not by trying replacements:
   `p : T ⇒ U` makes `F` be `T` and `G` be `U`), and then the type of that placeholder is matched
   in turn with the boundary of what it was matched with, and so on down, until nothing new is
   bound. A long chain of placeholders, each the type of the next, is filled in from the top;
-- otherwise the boundaries are matched, down the dimensions (`h : μ ≫ η' ⇛ η ≫ ν`, replaced by
-  a cell from `p ≫ z` to `l ≫ l`, matches the boundaries of `μ ≫ η'` with those of `p ≫ z`,
-  so `F` and `G'` are the ends of `p ≫ z` and `l ≫ l`);
-- a composite of whole cells, like `μ ≫ η'`, is matched with the diagram cut at some heights. If
+- otherwise the boundaries are matched, down the dimensions (`h : μ ; η' ⇛ η ; ν`, replaced by
+  a cell from `p ; z` to `l ; l`, matches the boundaries of `μ ; η'` with those of `p ; z`,
+  so `F` and `G'` are the ends of `p ; z` and `l ; l`);
+- a composite of whole cells, like `μ ; η'`, is matched with the diagram cut at some heights. If
   there is only one way to cut it the pieces replace `μ` and `η'`. Otherwise each way is tried:
-  a diagram `p ≫ z` can be `μ ≫ η'` in three ways (`μ` or `η'` may be an identity);
+  a diagram `p ; z` can be `μ ; η'` in three ways (`μ` or `η'` may be an identity);
 - a cell that depends on placeholders (the limit `L` of a diagram `D`), matched with an
   instance of it (`L[D₀]`), binds what the instance was made with (`D := D₀`). The inverse of
   an invertible cell is matched like the cell. If the cell is itself an instance made with
   placeholders (`(Ẋη̇)₍₂₎`, see below), what it was made with is matched with what the instance of
-  the same schema was made with (`Ḟ ≫ Ẋ` with `T ≫ T`, and so on).
+  the same schema was made with (`Ḟ ; Ẋ` with `T ; T`, and so on).
 
 A placeholder is filled in if every way that makes the chosen replacements well typed agrees on it.
 The matching is bounded, and when it has to stop early only what it has forced so far is filled
@@ -115,19 +115,21 @@ in, and the panel lists the ways as *candidates*, each with a *Use* button, the 
 identities among the cells that the diagram is cut into first. Using one fills in its
 placeholders, marked *inferred* like the others: they can be overridden or cleared, and what
 follows from them is filled in. Nothing is ever picked for you: a square may well have an
-identity in it. Under the list the panel says where the choice is: "`μ ≫ η'` can be cut 3 ways
-to make `p ≫ ζ[p]`; choose `μ` or `η'` to decide". Choosing one of those placeholders yourself
+identity in it. Under the list the panel says where the choice is: "`μ ; η'` can be cut 3 ways
+to make `p ; ζ[p]`; choose `μ` or `η'` to decide". Choosing one of those placeholders yourself
 decides the cut, and then the others follow.
 
 **Checking as you go.** A replacement is checked when it is chosen, against the replacements
 chosen before it, on the types alone and without searching: its dimension first, and then its
 boundaries against what the others require. If it does not fit, it is kept, in red, with what is
 wrong and what it clashes with ("`Ḟ` conflicts with `η̇`: `η̇` needs `Ḟ` to be `T`, not `Ġ`"; "`η̇`
-conflicts with `ḣ`: `ḣ := k`: its target is `l ≫ l`, but the type requires `p ≫ ν̇` (`η̇ ≫ ν̇` with
+conflicts with `ḣ`: `ḣ := k`: its target is `l ; l`, but the type requires `p ; ν̇` (`η̇ ; ν̇` with
 `η̇ := p`) there"). A message names the replacement and says where in it the trouble is (its
 source, its target, the target of its source, ...) and what the type requires there, with the
-replacements chosen so far put in ("`ḣ := w`: its target is `D₀ ≫ t`, but the type of `ḣ` needs
-`D[a ≫ t]` (`(Ẋη̇)₍₂₎` with `Ẋ := t`, `η̇ := a`)"). It is kept because it
+replacements chosen so far put in ("`ḣ := w`: its target is `D₀ ; t`, but the type of `ḣ` needs
+`D[a ; t]` (`(Ẋη̇)₍₂₎` with `Ẋ := t`, `η̇ := a`)"). Composites in a message are written like those
+in the names of diagrams (`f ; g`, see `doc/labels.md`), each as one formula whatever it is made
+of, with a part that is a composite itself in parentheses. It is kept because it
 is what you asked for, so you can see what is wrong with it and fix it or what it clashes with;
 it takes no part in the inference, and *Create instance* waits until it is fixed or cleared. Of
 two replacements that clash, the one chosen first counts.
@@ -143,12 +145,12 @@ depends on mention, so a cell that depends on `α` is also instantiated at `X` a
 ## Instances that still depend on placeholders
 
 An instance can be made with replacements that are themselves made of placeholders, such as
-`(Ẋη̇)₍₂₎ = η̇₍₂₎[Ḟ ≫ Ẋ/Ḟ, Ġ ≫ Ẋ/Ġ, η̇ ▷ Ẋ/η̇]`: the cell `η̇₍₂₎` at the images of a cell `η̇` under
+`(Ẋη̇)₍₂₎ = η̇₍₂₎[Ḟ ; Ẋ/Ḟ, Ġ ; Ẋ/Ġ, η̇ ▷ Ẋ/η̇]`: the cell `η̇₍₂₎` at the images of a cell `η̇` under
 a functor `Ẋ`. Its diagram mentions none of those placeholders, but it is still a different cell
 for every replacement of `Ẋ` and `η̇`, so it depends on the placeholders that the replacements it
 was made with mention (its [`parameters`](../homotopy-model/src/proof/instances.rs)). Replacing
 them gives the instance of the schema made with the replacements substituted: `(Ẋη̇)₍₂₎` at
-`Ẋ := T`, `η̇ := p` is `η̇₍₂₎[T ≫ T/Ḟ, T/Ġ, p ▷ T/η̇]`, which is `(Tp)₍₂₎` if that exists. Without
+`Ẋ := T`, `η̇ := p` is `η̇₍₂₎[T ; T/Ḟ, T/Ġ, p ▷ T/η̇]`, which is `(Tp)₍₂₎` if that exists. Without
 this a schema whose placeholder has `(Ẋη̇)₍₂₎` in its type, like `ḣ : Ẋ(η̇₍₂₎) ≅ (Ẋη̇)₍₂₎`, would
 treat it as a fixed cell that no replacement could have in its boundary.
 
@@ -178,19 +180,19 @@ as 2-cells. Write `1` for the terminal category and `! : J → 1`. Then everythi
 |---|---|---|
 | `D` | `J → C` | placeholder: the diagram |
 | `L` | `1 → C` | depends on `D`: its limit |
-| `π` | `! ≫ L ⇒ D` | the limit cone |
+| `π` | `! ; L ⇒ D` | the limit cone |
 | `X` | `1 → C` | placeholder: an apex |
-| `α` | `! ≫ X ⇒ D` | placeholder: a cone |
+| `α` | `! ; X ⇒ D` | placeholder: a cone |
 | `u` | `X ⇒ L` | depends on `α`: the mediating map |
-| `β` | `α ⇛ (! ◁ u) ≫ π` | the factorisation |
+| `β` | `α ⇛ (! ◁ u) ; π` | the factorisation |
 
-Uniqueness is one more schema with placeholders `v : X ⇒ L` and `γ : α ⇛ (! ◁ v) ≫ π`: an
+Uniqueness is one more schema with placeholders `v : X ⇒ L` and `γ : α ⇛ (! ◁ v) ; π`: an
 invertible cell `v ⇛ u` (compatible with `γ` and `β` if you want it strict).
 
 To say "`C` has all limits of shape `J`", state these as axioms. To say that one particular
 `L` is a limit of one particular `D`, make `D` an ordinary generator instead of a placeholder.
 
-To use the axioms, click a cone `α₀ : ! ≫ X₀ ⇒ D₀` in your diagram. The attach menu offers
+To use the axioms, click a cone `α₀ : ! ; X₀ ⇒ D₀` in your diagram. The attach menu offers
 `β [D₀/D, X₀/X, α₀/α]`. Choosing it creates `L[D₀]`, `π[D₀]` and the mediating map `u[…α₀…]`,
 and factors the cone through the limit. `L[D₀]` is shared by all cones over `D₀`, while each
 cone gets its own mediating map. This example is a test in
