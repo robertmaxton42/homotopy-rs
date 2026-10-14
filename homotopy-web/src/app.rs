@@ -21,7 +21,7 @@ use crate::{
         busy::{self, BusyIndicator},
         delta::CallbackIdx,
         icon::{Icon, IconSize},
-        inference_notice::InferenceNotice,
+        inference_notice::{InferenceNotice, NoticeLine},
         layout_note::LayoutNote,
         modal::Modal,
         panzoom::PanZoom,
@@ -55,7 +55,7 @@ mod sidebar;
 mod signature;
 mod signature_stylesheet;
 mod stash;
-mod tex;
+pub mod tex;
 mod tooltip;
 mod workspace;
 
@@ -169,7 +169,7 @@ pub struct App {
     autosave_setting: Vec<CallbackIdx>,
     /// What the last search for attachments had to say about inferring instances, until it is
     /// dismissed (see [`attach_inference`]).
-    inference_notice: Vec<String>,
+    inference_notice: Vec<NoticeLine>,
     /// Keeps the settings about inferring instances in this browser when they change.
     inference_setting: Vec<CallbackIdx>,
 }
@@ -1023,7 +1023,7 @@ impl App {
         ctx: &Context<Self>,
         state: &model::State,
         backup: Option<&autosave::Snapshot>,
-        inference_notice: &[String],
+        inference_notice: &[NoticeLine],
     ) -> Html {
         let proof = state.proof();
         let dispatch = ctx.link().callback(Message::Dispatch);

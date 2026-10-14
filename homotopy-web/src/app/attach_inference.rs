@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use super::settings::AppSettings;
+use crate::components::inference_notice::NoticeLine;
 
 #[wasm_bindgen(module = "/src/app/attach_inference.js")]
 extern "C" {
@@ -145,20 +146,20 @@ pub fn set_enabled(on: bool) {
     AppSettings::set_infer_instances(on);
 }
 
-/// What there is to tell the person about the inference in a search that has just finished, one
-/// line for each thing, if anything.
-pub fn notice(report: &InferenceReport) -> Vec<String> {
+/// What there is to tell the person about the search in one that has just finished, one line for
+/// each thing, if anything.
+pub fn notice(report: &InferenceReport) -> Vec<NoticeLine> {
     let mut lines = vec![];
     if let Some(dimension) = report.too_high {
         // Once: every click on the diagram would say it otherwise.
         if !TOLD_DIMENSION.with(|told| told.replace(true)) {
-            lines.push(format!(
+            lines.push(NoticeLine::Text(format!(
                 "Instances of schemas are not inferred for diagrams of dimension {dimension}, \
                  which is above the limit of {} that the search is stopped at (Settings, \
                  \"Infer instances up to dimension\"). Everything else is still offered. \
                  This is said once.",
                 AppSettings::get_infer_max_dimension()
-            ));
+            )));
         }
     }
     let seconds = format!("{} s", (u64::from(report.budget_ms) + 500) / 1000);
@@ -172,63 +173,68 @@ pub fn notice(report: &InferenceReport) -> Vec<String> {
     };
     if report.plain.timed_out() {
         let plain = &report.plain;
-        let mut parts = vec![];
         if !plain.cut_short.is_empty() {
-            parts.push(format!(
-                "Gave up on {} {} (Settings, \"Give up on a generator after\"): {}.",
-                generators(plain.cut_short.len()),
-                after(plain.cut_short.len()),
-                plain.cut_short.join(", ")
-            ));
+            lines.push(NoticeLine::Names {
+                text: format!(
+                    "Gave up on {} {} (Settings, \"Give up on a generator after\")",
+                    generators(plain.cut_short.len()),
+                    after(plain.cut_short.len()),
+                ),
+                names: plain.cut_short.clone(),
+            });
         }
         if !plain.not_tried.is_empty() {
-            parts.push(format!("Not tried: {}.", plain.not_tried.join(", ")));
+            lines.push(NoticeLine::Names {
+                text: format!("Not tried: {}", generators(plain.not_tried.len())),
+                names: plain.not_tried.clone(),
+            });
         }
-        parts.push(
+        lines.push(NoticeLine::Text(
             "What was found is valid but may be missing some. To look for one generator, drag it \
              onto the diagram or pick it with the pointing hand; choosing a sheet narrows the search to it."
                 .to_owned(),
-        );
-        let line = parts.join(" ");
-        lines.push(line);
+        ));
         if report.forced && !report.timed_out() {
-            lines.push(FORCED.to_owned());
+            lines.push(NoticeLine::Text(FORCED.to_owned()));
         }
     }
     if let Some(narrowed) = report.narrowed {
-        lines.push(format!(
+        lines.push(NoticeLine::Text(format!(
             "Heuristic: instances of schemas were only looked for among the {} of the diagram's {} \
              cells that are near the chosen sheet. Instances that use other cells are not offered. \
              Turn this off in Settings, or choose no sheet, to look at all of them.",
             narrowed.kept, narrowed.of
-        ));
+        )));
     }
     if report.timed_out() {
-        let names = |names: &[String]| names.join(", ");
         if !report.cut_short.is_empty() {
-            lines.push(format!(
-                "Instance inference gave up on {} {}: {}. What it had found for \
-                 {} is offered. You can give generators more time, or turn the inference off, \
-                 in Settings.",
-                if report.cut_short.len() == 1 {
-                    "a schema".to_owned()
-                } else {
-                    format!("{} schemas", report.cut_short.len())
-                },
-                after(report.cut_short.len()),
-                names(&report.cut_short),
-                if report.cut_short.len() == 1 {
-                    "it"
-                } else {
-                    "them"
-                }
+            let count = report.cut_short.len();
+            lines.push(NoticeLine::Names {
+                text: format!(
+                    "Instance inference gave up on {} {}",
+                    if count == 1 {
+                        "a schema".to_owned()
+                    } else {
+                        format!("{count} schemas")
+                    },
+                    after(count)
+                ),
+                names: report.cut_short.clone(),
+            });
+            lines.push(NoticeLine::Text(
+                "What it had found for them is offered. You can give generators more time, or \
+                 turn the inference off, in Settings."
+                    .to_owned(),
             ));
         }
         if !report.not_tried.is_empty() {
-            lines.push(format!("Not tried: {}.", names(&report.not_tried)));
+            lines.push(NoticeLine::Names {
+                text: format!("Not tried: {}", generators(report.not_tried.len())),
+                names: report.not_tried.clone(),
+            });
         }
         if report.forced {
-            lines.push(FORCED.to_owned());
+            lines.push(NoticeLine::Text(FORCED.to_owned()));
         }
     }
     if gave_up_on_all(report) {
@@ -238,12 +244,12 @@ pub fn notice(report: &InferenceReport) -> Vec<String> {
         });
         if timeouts >= TIMEOUTS_BEFORE_SUSPENDING {
             AppSettings::set_infer_suspended(true);
-            lines.push(
+            lines.push(NoticeLine::Text(
                 "Instances are no longer inferred for the rest of this session, as the search \
                  gave up on every schema it looked at, twice in a row. Turn \"Infer instances \
                  of schemas\" off and on in Settings to start again."
                     .to_owned(),
-            );
+            ));
         }
     } else if report.too_high.is_none() && !report.targeted {
         TIMEOUTS.with(|timeouts| timeouts.set(0));

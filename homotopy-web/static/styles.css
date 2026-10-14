@@ -2104,3 +2104,33 @@ input[type="color"]::-webkit-color-swatch {
 .attach__option--grouped .attach__option-name {
   padding-left: calc(var(--space-1) * 3);
 }
+
+/* The lists in the notice about the search: shut until opened. */
+.inference-notice {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.inference-notice__names {
+  margin: 0 0 var(--space-0);
+}
+
+.inference-notice__toggle {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.inference-notice__toggle:hover,
+.inference-notice__toggle:focus-visible {
+  text-decoration: underline;
+}
+
+.inference-notice__list {
+  margin: var(--space-0) 0 0;
+  padding-left: var(--space-2);
+}
