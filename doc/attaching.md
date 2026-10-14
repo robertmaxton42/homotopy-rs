@@ -72,9 +72,16 @@ front one, as before. Contractions act on all the sheets and are the same whatev
 
 Where a sheet **ends**, or several sheets **meet**, the 2D view marks the place (Settings: *Outline
 where sheets end or meet*, on by default): a dashed ring, with the last stretch of the sheet dashed
-up to it, where a sheet ends, and a double ring where three or more meet (a cell where lines are
-joined), and the tooltip there says so. A line that simply runs along a wire, or two strands that
-cross, are not marked: only the places where the sheet itself stops or meets another.
+up to it, where a sheet ends at a cell, and a double ring where three or more meet at one (the cell
+where lines are joined), and the tooltip there says so. Only cells (points of the picture) are
+marked: a line that simply runs along a wire, two strands that cross, or surfaces that are joined
+along a line, are not, as the wire is drawn.
+
+The 2D view also shades each **surface** by the number of sheets that pass through it
+(Settings: *Shade surfaces by the sheets behind them*, on by default): the surface that has the
+fewest in the diagram is drawn as it always was, and the others a little darker (in up to three
+steps) the more they have, so that you can see where a lot is hidden behind a region. Hatched
+(placeholder) surfaces keep their stripes.
 
 Choose no sheet (leave the position and come back, or Shift + Tab all the way) and a click is
 what it has always been. The 3D view has no sheets.

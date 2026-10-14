@@ -179,9 +179,10 @@ fn sheet_ids<const N: usize>(depths: &Depths<N>, position: [SliceIndex; N]) -> V
 }
 
 /// Along every edge of the scaffold that `Depths` keeps, a height goes to the height of the same
-/// sheet, unless that is a junction. (Along those it leaves out, the diagonals, it does too,
-/// unless the way round through the edges that are kept goes through a junction, which cuts the
-/// sheet: so they are not checked here, only for their cones, below.)
+/// sheet if the cell is the same there, and to another if it is not. (Along those it leaves out,
+/// the diagonals, it does too unless the way round through the edges that are kept passes a
+/// height where the cell changes, which cuts the sheet: so they are not checked here, only for
+/// their cones, below.)
 fn check_identity<const N: usize>(name: &str, diagram: &DiagramN) -> usize {
     let diagram: Diagram = diagram.clone().into();
     let depths = Depths::<N>::new(&diagram).unwrap();
@@ -201,17 +202,16 @@ fn check_identity<const N: usize>(name: &str, diagram: &DiagramN) -> usize {
         };
         let (ids_from, ids_to) = (sheet_ids(&depths, from.key), sheet_ids(&depths, to.key));
         assert_eq!(ids_to.len(), target.size(), "{name} {:?}", to.key);
-        let junctions: Vec<usize> = depths
-            .sheet_boundaries_at(to.key)
-            .iter()
-            .filter(|b| b.kind == SheetBoundaryKind::MergesOrSplits)
-            .map(|b| b.z)
-            .collect();
+        let (sheets_from, sheets_to) = (depths.sheets(from.key, &[]), depths.sheets(to.key, &[]));
         for (z, image) in images(size, &edge.weight().rewrite) {
             edges_checked += 1;
-            assert!(
-                ids_from[z] == ids_to[image] || junctions.contains(&image),
-                "{name}: height {z} of {:?} is not the sheet of height {image} of {:?}",
+            let same_cell =
+                sheets_from[z].generator.generator == sheets_to[image].generator.generator;
+            // The same cell is the same sheet; a different one never is.
+            assert_eq!(
+                ids_from[z] == ids_to[image],
+                same_cell,
+                "{name}: height {z} of {:?} and height {image} of {:?}",
                 from.key,
                 to.key,
             );
@@ -349,8 +349,8 @@ fn boundaries_are_ends_and_junctions_with_a_sheet_and_a_neighbour() {
                 SheetBoundaryKind::BeginsOrEnds => {
                     ends += 1;
                     assert_eq!(b.branches, 1);
-                    // The sheet is at the neighbour it comes from.
-                    assert!(sheet_ids(&depths, b.from).contains(&(b.sheet.0 as usize)));
+                    // It comes from a neighbour that has sheets.
+                    assert!(!sheet_ids(&depths, b.from).is_empty());
                 }
                 SheetBoundaryKind::MergesOrSplits => {
                     junctions += 1;

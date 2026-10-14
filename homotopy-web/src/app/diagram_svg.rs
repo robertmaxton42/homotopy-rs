@@ -13,7 +13,7 @@ use homotopy_core::{
     complex::{make_complex, Simplex},
     contraction::Bias,
     layout::Layout,
-    projection::{Depths, Projection},
+    projection::{thickness_step, Depths, Projection},
     rewrite::RewriteN,
     signature::Signature as _,
     Boundary, Diagram, DiagramN, Generator, Height, SliceIndex,
@@ -86,7 +86,13 @@ pub struct DiagramSvg<const N: usize> {
 }
 
 /// The settings that the drawing of the diagram depends on.
-const DRAWING_SETTINGS: &[AppSettingsKey] = &[AppSettingsKey::sheet_outlines];
+const DRAWING_SETTINGS: &[AppSettingsKey] = &[
+    AppSettingsKey::sheet_outlines,
+    AppSettingsKey::sheet_shading,
+];
+
+/// How many steps of shading there are for the number of sheets behind a surface (0 is none).
+const SHADING_STEPS: usize = 4;
 
 #[derive(Clone, PartialEq, Properties)]
 pub struct DiagramSvgProps<const N: usize> {
@@ -151,6 +157,11 @@ struct PreparedDiagram<const N: usize> {
     /// The diagram that this is for.
     diagram: Diagram,
     graphic: Vec<GraphicElement<N>>,
+    /// For each of `graphic`, how many steps its surface is shaded (0: not at all). All 0 if the
+    /// surfaces are not shaded (`shaded`).
+    steps: Vec<usize>,
+    /// Whether it was prepared for the surfaces to be shaded by the sheets behind them.
+    shaded: bool,
     actions: Vec<(Simplex<N>, Shape)>,
     depths: Depths<N>,
     projection: Projection<N>,
@@ -171,7 +182,7 @@ struct PreparedDiagram<const N: usize> {
 impl<const N: usize> PreparedDiagram<N> {
     /// Prepares the diagram for rendering, given its layout, which is the part that can take
     /// long (see [`layout`]).
-    fn new(diagram: &Diagram, layout: Rc<Layout<N>>, style: RenderStyle) -> Self {
+    fn new(diagram: &Diagram, layout: Rc<Layout<N>>, style: RenderStyle, shade: bool) -> Self {
         assert!(diagram.dimension() >= N);
 
         let performance = web_sys::window().unwrap().performance().unwrap();
@@ -180,7 +191,40 @@ impl<const N: usize> PreparedDiagram<N> {
         let complex = make_complex(diagram);
         let depths = Depths::new(diagram).unwrap();
         let projection = Projection::new(diagram, &layout, &depths).unwrap();
-        let graphic = GraphicElement::build(&complex, &layout, &projection, &depths);
+        // How many sheets pass through a surface: the fewest of its corners (those on wires and
+        // vertices have the sheets of the wire or vertex as well).
+        let thickness = |corners: &[[SliceIndex; N]; 3]| {
+            corners
+                .iter()
+                .map(|corner| depths.thickness(*corner))
+                .min()
+                .unwrap_or(0)
+        };
+        let (min, max) = shade
+            .then(|| {
+                let counts = complex
+                    .iter()
+                    .filter_map(|(simplex, visible)| match simplex {
+                        Simplex::Surface(corners) if *visible => Some(thickness(corners)),
+                        _ => None,
+                    });
+                counts.fold(None, |range: Option<(usize, usize)>, count| {
+                    Some(range.map_or((count, count), |(lo, hi)| (lo.min(count), hi.max(count))))
+                })
+            })
+            .flatten()
+            .unwrap_or_default();
+        let varies = max > min;
+        let (graphic, steps): (Vec<_>, Vec<_>) =
+            GraphicElement::build_shaded(&complex, &layout, &projection, &depths, |corners| {
+                if varies {
+                    thickness_step(thickness(corners), min, max, SHADING_STEPS)
+                } else {
+                    0
+                }
+            })
+            .into_iter()
+            .unzip();
         let actions = ActionRegion::build(&complex, &layout, &projection);
 
         let dimensions = Point::from(project_2d(layout[&[Boundary::Target.into(); N]]))
@@ -229,6 +273,8 @@ impl<const N: usize> PreparedDiagram<N> {
         Self {
             diagram: diagram.clone(),
             graphic,
+            steps,
+            shaded: shade,
             actions,
             depths,
             projection,
@@ -284,7 +330,17 @@ impl<const N: usize> Component for DiagramSvg<N> {
             DiagramSvgMessage::Sheet(command) => {
                 self.sheet_command(ctx, command);
             }
-            DiagramSvgMessage::Setting => return true,
+            DiagramSvgMessage::Setting => {
+                // The surfaces are kept apart by their shading when the diagram is prepared.
+                if self
+                    .current()
+                    .is_some_and(|p| p.shaded != Self::shading(ctx))
+                {
+                    self.hide_tooltip();
+                    self.prepare(ctx);
+                }
+                return true;
+            }
             DiagramSvgMessage::OnMouseUp => {
                 self.pointer_stop(ctx);
             }
@@ -345,6 +401,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
                     &ctx.props().diagram,
                     layout,
                     ctx.props().style,
+                    Self::shading(ctx),
                 ));
                 return true;
             }
@@ -372,6 +429,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
                     &ctx.props().diagram,
                     layout,
                     ctx.props().style,
+                    Self::shading(ctx),
                 ));
             }
         }
@@ -614,7 +672,12 @@ impl<const N: usize> DiagramSvg<N> {
         });
         match layout::ask::<N>(&props.diagram, on_layout) {
             Asked::Ready(layout) => {
-                self.prepared = Some(PreparedDiagram::new(&props.diagram, layout, props.style));
+                self.prepared = Some(PreparedDiagram::new(
+                    &props.diagram,
+                    layout,
+                    props.style,
+                    Self::shading(ctx),
+                ));
             }
             Asked::Pending(ticket) => self.pending = Some(ticket),
         }
@@ -736,13 +799,18 @@ impl<const N: usize> DiagramSvg<N> {
         match element {
             GraphicElement::Surface(d, path) => {
                 let path = path_to_svg(&path.clone().transformed(&prepared.transform));
+                // How many sheets are behind the surface, in steps, for the stylesheet to shade
+                // (and not set at all for the thinnest, which is as it always was).
+                let thickness = Some(prepared.steps[index])
+                    .filter(|&step| step > 0)
+                    .map(|step| step.to_string());
                 if Self::is_placeholder(ctx, d.generator) {
                     // Placeholders are translucent (by their stylesheet) and also hatched, in
                     // stripes that show on their colour.
                     let stripes = Self::stripes_of(ctx, element, prepared.diagram.dimension());
                     html! {
                         <>
-                            <path d={path.clone()} class={class} />
+                            <path d={path.clone()} class={class} data-thickness={thickness} />
                             <path
                                 d={path}
                                 fill={format!("url(#{})", Self::hatch_id(ctx, stripes))}
@@ -752,7 +820,7 @@ impl<const N: usize> DiagramSvg<N> {
                     }
                 } else {
                     html! {
-                        <path d={path} class={class} />
+                        <path d={path} class={class} data-thickness={thickness} />
                     }
                 }
             }
@@ -835,6 +903,11 @@ impl<const N: usize> DiagramSvg<N> {
                 }
             }
         }
+    }
+
+    /// Whether the surfaces are to be shaded by the sheets behind them.
+    fn shading(ctx: &Context<Self>) -> bool {
+        ctx.props().sheets && AppSettings::get_sheet_shading()
     }
 
     /// Marks where sheets end or meet (see `Depths::sheet_boundaries`), over the diagram: for a

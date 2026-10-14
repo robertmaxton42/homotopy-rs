@@ -2,30 +2,34 @@
 //!
 //! A *sheet* at a position of the projection of a diagram (see
 //! [`Depths::sheets`](super::Depths::sheets)) is one singular height of what the position
-//! carries. The rewrite along an edge of the scaffold, between the fibres of two neighbouring
-//! positions, maps each height at the start to one at the end (its singular image), and when
-//! that is the sheet continuing it is the same sheet at both ends. So a sheet is a class of
-//! (position, height) pairs, made with a union-find over the edges, and the number of a class is
-//! its [`SheetId`].
+//! carries, and there is a cell there. The rewrite along an edge of the scaffold, between the
+//! fibres of two neighbouring positions, maps each height at the start to one at the end (its
+//! singular image). When the cell is the same at both ends it is the same sheet continuing, and
+//! when it is not, something happens there (a cell is formed from the sheets that meet at it, a
+//! line ends on a point). So a sheet is a class of (position, height) pairs that are joined by an
+//! edge and have the same cell, made with a union-find over the edges, and the number of a class
+//! is its [`SheetId`].
 //!
-//! *Where it is not one sheet*: the heights that an edge carries into one height of its target
-//! are `e`, counted over all the edges into that (position, height). One carried in is the end of
-//! a sheet, two are a sheet passing through (straight, or turning a corner, or a cap: a sheet
-//! that comes back to the same position at another height), and three or more are a junction,
-//! where sheets meet: such as the point of a 3-cell where four lines meet, or a line splitting
-//! in two. A junction is not joined to the sheets that meet at it (it is a sheet of its own, a
-//! point), because then every line that meets another would be the same sheet as it.
+//! This is what keeps the lines that meet at a 3-cell different sheets (they are different cells
+//! from it), and makes a line that lies along a wire one sheet from one end to the other, whatever
+//! the positions that it passes through do beside it.
 //!
 //! # Boundaries
 //!
-//! The *boundaries* of sheets are the ends (`e` is 1) and the junctions (`e` is 3 or more).
-//! Every edge of the scaffold goes from a position to one of a dimension less (a regular height
-//! becomes a singular one), and a sheet that lies along a wire is not at the regions beside it:
-//! the rewrites into the wire have a cone with no source heights for it, which is what it is to
-//! be a wire, not a place where it begins. So those are not looked at: a sheet only ends at a
-//! position of a lower dimension than the highest it reaches (a line is of dimension one in
-//! the picture and its ends are points; a surface of two, and its ends are wires). Where the
-//! sheet comes from is the position of the one edge that carries it.
+//! A *boundary* is a place where the sheets that there are change (see [`SheetBoundary`]), at a
+//! point of the picture (a position with every coordinate singular, where the cells of the
+//! diagram are) and a height `z` there. Count the heights that the edges into the position carry
+//! into it (`arms`): where one is carried in, a sheet ends or begins there; where three or
+//! more are, sheets meet at the cell (two are a sheet that passes through, with a cell on it).
+//!
+//! This is not "a cone with no source heights", which is not what a sheet's end is: every edge
+//! of the scaffold goes from a position to one of a dimension less (a regular height becomes a
+//! singular one), and a sheet that lies along a wire is not at the regions beside it, so the
+//! rewrites into the wire have such a cone for it on every edge from them. That is what it is to
+//! be a line, not a place where it begins, and listing them would put a boundary along both
+//! sides of every wire. Sheets that end or meet along a wire (surfaces joined along a line) are
+//! not boundaries of the picture either: the wire is drawn. At a point, though, there is
+//! nothing else to say that the sheet is there.
 //!
 //! The scaffold of [`Depths`](super::Depths) leaves out the regular slices of the later
 //! coordinates (the edges from a regular height to a singular one of the next position). Such
@@ -45,7 +49,7 @@
 use petgraph::{graph::NodeIndex, unionfind::UnionFind, visit::EdgeRef};
 
 use super::{Coordinate, Depths};
-use crate::{common::SliceIndex, rewrite::RewriteN, Diagram, Height, Rewrite};
+use crate::{common::SliceIndex, rewrite::RewriteN, Diagram, Generator, Height, Rewrite};
 
 /// A sheet of the diagram that a [`Depths`] is for: the same at every position that it passes
 /// through (see the [module](self)). Only meaningful for the `Depths` that made it.
@@ -60,14 +64,15 @@ impl SheetId {
     }
 }
 
-/// What happens to a sheet at a boundary.
+/// What happens to a sheet at a boundary (see the [module](self)).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SheetBoundaryKind {
-    /// A sheet ends here: only one of the edges into the position carries it, and it is of a
-    /// lower dimension than the sheet reaches elsewhere. Seen from the other side, it begins.
+    /// A sheet ends here, at a point of the picture: one height is carried into this one. Seen
+    /// from the other side, it begins.
     BeginsOrEnds,
-    /// Sheets meet here: three or more of the edges into the position carry heights into the
-    /// same one. Several merge into one or, seen from the other side, one splits.
+    /// Sheets meet here, at a point of the picture: three or more of the edges into the position
+    /// carry heights into the same one. Several merge into one or, seen from the other side, one
+    /// splits.
     MergesOrSplits,
 }
 
@@ -95,6 +100,8 @@ pub(super) struct SheetData<const N: usize> {
     sizes: Vec<usize>,
     /// The sheet of each (node, height).
     ids: Vec<SheetId>,
+    /// How many heights the edges into each (node, height) carry into it.
+    carried: Vec<usize>,
     /// Whether each sheet is foremost.
     foremost: Vec<bool>,
     boundaries: Vec<SheetBoundary<N>>,
@@ -163,31 +170,39 @@ impl<const N: usize> SheetData<N> {
             total += size;
         }
 
+        // The cell at each height.
+        let generators: Vec<Generator> = graph
+            .node_indices()
+            .flat_map(|n| match &graph[n].diagram {
+                Diagram::DiagramN(d) => d
+                    .singular_slices()
+                    .map(|slice| slice.max_generator().generator)
+                    .collect(),
+                Diagram::Diagram0(_) => vec![],
+            })
+            .collect();
+
         // How many heights are carried into each, and from where (the first).
         let mut carried = vec![0_usize; total];
         let mut carried_from = vec![NodeIndex::end(); total];
         // Every edge carries each height of its source to one of its target.
-        let mut carries = vec![];
+        let mut union = UnionFind::new(total);
         if total > 0 {
             for (from, to, rewrite) in edges(depths) {
                 for_each_image(sizes[from.index()], rewrite, |z, image| {
-                    if image < sizes[to.index()] {
-                        let target = offsets[to.index()] + image;
-                        carried[target] += 1;
-                        if carried_from[target] == NodeIndex::end() {
-                            carried_from[target] = from;
-                        }
-                        carries.push((offsets[from.index()] + z, target));
+                    if image >= sizes[to.index()] {
+                        return;
+                    }
+                    let (source, target) = (offsets[from.index()] + z, offsets[to.index()] + image);
+                    carried[target] += 1;
+                    if carried_from[target] == NodeIndex::end() {
+                        carried_from[target] = from;
+                    }
+                    // It is the same sheet when it is the same cell.
+                    if generators[source] == generators[target] {
+                        union.union(source, target);
                     }
                 });
-            }
-        }
-
-        // Join what is carried along, but not into a junction.
-        let mut union = UnionFind::new(total);
-        for &(source, target) in &carries {
-            if carried[target] <= 2 {
-                union.union(source, target);
             }
         }
 
@@ -205,17 +220,6 @@ impl<const N: usize> SheetData<N> {
                 SheetId(numbers[class])
             })
             .collect();
-
-        // How far each sheet reaches in the picture, as the highest dimension of a position that
-        // it passes through.
-        let mut reach = vec![0_usize; count as usize];
-        for n in graph.node_indices() {
-            let dimension = stratum_dimension(&graph[n].key);
-            for z in 0..sizes[n.index()] {
-                let id = ids[offsets[n.index()] + z].0 as usize;
-                reach[id] = reach[id].max(dimension);
-            }
-        }
 
         // Which sheets are foremost: see the module.
         let mut visible = vec![0_u32; count as usize];
@@ -245,21 +249,23 @@ impl<const N: usize> SheetData<N> {
         for n in graph.node_indices() {
             for z in 0..sizes[n.index()] {
                 let at = offsets[n.index()] + z;
+                if stratum_dimension(&graph[n].key) != 0 {
+                    continue;
+                }
                 let kind = match carried[at] {
-                    1 if stratum_dimension(&graph[n].key) < reach[ids[at].0 as usize] => {
-                        SheetBoundaryKind::BeginsOrEnds
-                    }
+                    1 => SheetBoundaryKind::BeginsOrEnds,
                     3.. => SheetBoundaryKind::MergesOrSplits,
                     _ => continue,
                 };
+                let (from, branches) = (carried_from[at], carried[at]);
                 boundaries_to[n.index()].push(boundaries.len() as u32);
                 boundaries.push(SheetBoundary {
-                    from: graph[carried_from[at]].key,
+                    from: graph[from].key,
                     to: graph[n].key,
                     z,
                     sheet: ids[at],
                     kind,
-                    branches: carried[at],
+                    branches,
                 });
             }
         }
@@ -268,6 +274,7 @@ impl<const N: usize> SheetData<N> {
             offsets,
             sizes,
             ids,
+            carried,
             foremost,
             boundaries,
             boundaries_to,
@@ -276,6 +283,14 @@ impl<const N: usize> SheetData<N> {
 
     pub(super) fn id(&self, node: NodeIndex, z: usize) -> Option<SheetId> {
         (z < self.sizes[node.index()]).then(|| self.ids[self.offsets[node.index()] + z])
+    }
+
+    pub(super) fn arms(&self, node: NodeIndex, z: usize) -> usize {
+        if z < self.sizes[node.index()] {
+            self.carried[self.offsets[node.index()] + z]
+        } else {
+            0
+        }
     }
 
     pub(super) const fn count(&self) -> usize {
@@ -305,36 +320,47 @@ fn fibre_size(fibre: &Diagram) -> usize {
     }
 }
 
-/// How thick each surface is, in a few steps.
+/// How thick one surface is, in a few steps.
 ///
-/// `counts` are the numbers of sheets that pass through the surfaces, and the result is, for
-/// each, a step from 0 (as few as the thinnest surface has, which is not shaded) to `levels - 1`
-/// (as many as the thickest). With a range that fits in the steps they are the differences from
-/// the minimum; with a wider range they are that difference scaled to fit, rounded, so that the
-/// thickest is the last step and anything above the minimum is at least the first.
+/// `count` sheets pass through it, and the thinnest and thickest surfaces of the diagram have
+/// `min` and `max`. The step is from 0 (as few as the
+/// thinnest, which is not shaded) to `levels - 1` (as many as the thickest). With a range that
+/// fits in the steps they are the differences from the minimum; with a wider range that
+/// difference is scaled to fit and rounded, so that the thickest is the last step and anything
+/// above the minimum is at least the first.
+///
+/// # Panics
+///
+/// If `levels` is 0.
+#[must_use]
+pub fn thickness_step(count: usize, min: usize, max: usize, levels: usize) -> usize {
+    assert!(levels > 0, "there is at least one step");
+    let top = levels - 1;
+    let above = count.saturating_sub(min);
+    let range = max.saturating_sub(min);
+    if above == 0 || top == 0 {
+        0
+    } else if range <= top {
+        above
+    } else {
+        ((above * top + range / 2) / range).clamp(1, top)
+    }
+}
+
+/// [`thickness_step`] of each of `counts`, with the thinnest and thickest of them for `min` and
+/// `max`.
 ///
 /// # Panics
 ///
 /// If `levels` is 0.
 #[must_use]
 pub fn thickness_steps(counts: &[usize], levels: usize) -> Vec<usize> {
-    assert!(levels > 0, "there is at least one step");
     let (Some(&min), Some(&max)) = (counts.iter().min(), counts.iter().max()) else {
+        assert!(levels > 0, "there is at least one step");
         return vec![];
     };
-    let top = levels - 1;
     counts
         .iter()
-        .map(|&count| {
-            let above = count - min;
-            let range = max - min;
-            if above == 0 || top == 0 {
-                0
-            } else if range <= top {
-                above
-            } else {
-                ((above * top + range / 2) / range).max(1)
-            }
-        })
+        .map(|&count| thickness_step(count, min, max, levels))
         .collect()
 }

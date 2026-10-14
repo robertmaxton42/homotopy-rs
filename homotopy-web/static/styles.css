@@ -482,6 +482,21 @@ button, .button {
   stroke: #0b7285;
 }
 
+/* Surfaces with more sheets behind them (in steps from the thinnest, which is not shaded). The
+   hatching of a placeholder is a path of its own over the surface, so it is not shaded. */
+
+svg path[data-thickness="1"] {
+  filter: brightness(0.92) saturate(1.1);
+}
+
+svg path[data-thickness="2"] {
+  filter: brightness(0.84) saturate(1.2);
+}
+
+svg path[data-thickness="3"] {
+  filter: brightness(0.75) saturate(1.3);
+}
+
 /* Wires that are not on the sheet that is chosen. */
 
 svg [data-dim="1"] {

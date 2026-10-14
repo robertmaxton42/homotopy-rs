@@ -30,7 +30,9 @@ use crate::{
 mod sheets;
 
 use self::sheets::SheetData;
-pub use self::sheets::{thickness_steps, SheetBoundary, SheetBoundaryKind, SheetId};
+pub use self::sheets::{
+    thickness_step, thickness_steps, SheetBoundary, SheetBoundaryKind, SheetId,
+};
 
 type Coordinate<const N: usize> = [SliceIndex; N];
 
@@ -379,6 +381,7 @@ impl<const N: usize> Depths<N> {
             .then(|| self.coord_to_node.get(&coord).copied())
             .flatten();
         let data = node.map(|_| self.sheet_data());
+        let arms = |z: usize| node.zip(data).map_or(0, |(n, data)| data.arms(n, z));
         fibre
             .singular_slices()
             .enumerate()
@@ -390,6 +393,7 @@ impl<const N: usize> Depths<N> {
                     front: front == Some(z),
                     id,
                     foremost: id.zip(data).is_some_and(|(id, data)| data.foremost(id)),
+                    arms: arms(z),
                 }
             })
             .collect()
@@ -464,6 +468,12 @@ pub struct Sheet {
     /// `None` for the sheets *inside* a sheet (`within` of [`Depths::sheets`] not empty): only
     /// the identity of the sheets of the first coordinate after the position's is followed.
     pub id: Option<SheetId>,
+    /// How many heights of the neighbouring positions the edges into this position carry into
+    /// this one (see the `sheets` module): 1 where a sheet ends (at a point of the picture), 2
+    /// where it passes through, 3 or more where sheets meet at a cell, and 0 for a sheet that
+    /// lies in the position and not in the ones beside it, such as a line along a wire. 0 for
+    /// sheets inside a sheet.
+    pub arms: usize,
     /// Whether the sheet is in front along its whole length, which is not what [`front`](Self::front)
     /// says: it is not hidden by another sheet, or is hidden at fewer of the positions that it
     /// shares with others than it is the front-most at (see the `sheets` module).

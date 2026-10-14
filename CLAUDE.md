@@ -491,13 +491,16 @@ indicator: see "Laying out diagrams" below.
     first question (`OnceCell` in `Depths`), so a diagram that nobody asks about pays nothing: one pass
     over the edges of the scaffold (1 to 60 microseconds on the examples).
     - *Identity*: a union-find over (position, singular height) pairs, joined along every edge of the
-      scaffold `Depths` keeps by the singular image of the rewrite (`cone_views`, `for_each_image`:
-      each height of the source goes to one of the target; a cone with several source heights takes them
-      all to one). **Not joined into a junction**: when three or more heights are carried into the same
-      (position, height) it stays a sheet of its own (a point), because otherwise all four lines that meet at
-      the 3-cell of the associator would be one sheet, and the user's case (a convex outer path and a concave
-      inner path are *different* sheets) would not come out. A sheet that comes back to the same position
-      (a cup, a U-turn along the projection) is one sheet at two heights.
+      scaffold `Depths` keeps by the singular image of the rewrite (`cone_views`, `for_each_image`: each height
+      of the source goes to one of the target; a cone with several source heights takes them all to one),
+      **when the cell (`max_generator().generator`) is the same at both ends**. A different cell means
+      something happens there (surfaces end on a line, lines meet at a 3-cell), so the associator's four lines
+      and its 3-cell point are different sheets, and a line is one sheet along all of its length whatever
+      its neighbours do (checked in the browser: the 2-cell `m` has the same `S9` at `[T,S0]` and `[R1,S0]`).
+      Tried first and dropped: joining everything that is carried one to one and cutting only where three or
+      more heights are carried into one: that cut every line that has surfaces ending on it (a line is a
+      junction of the surfaces at every one of its positions) into one sheet per position. A cup is then two
+      sheets (the two arms) and the cell of the cup between them.
     - *Foremost*: the sheet is not hidden by another anywhere (`hidden == 0`), or is the drawn one at more of
       the positions it shares with others than it is hidden at. A sheet alone everywhere is foremost; of two
       strands that overlap on only a part of their length (`crossing`, `half_braid`) one is foremost along
@@ -511,24 +514,39 @@ indicator: see "Laying out diagrams" below.
       junction, which cuts the sheet.
   - **Outlines of sheet boundaries** (`Depths::sheet_boundaries`, `DiagramSvg::view_sheet_outlines`, setting
     *Outline where sheets end or meet*, `sheet_outlines`, on by default; workspace diagram only, like the rest of
-    the sheet features). A boundary is an *end* (`BeginsOrEnds`: of the edges into a (position, height), one
-    carries a sheet into it, and the sheet reaches positions of a higher dimension elsewhere, so it stops
-    here) or a *junction* (`MergesOrSplits`: three or more heights carried into one). It is **not** simply
-    "a cone with `source_len() == 0`": every edge goes from a position to one of a dimension less, so a
-    sheet that lies along a wire (a line) has such a cone on every edge from the regions beside it, and one
-    where several rows of the grid collapse into one (a crossing) has them from each row; both are what it is
-    to be that sheet, not places it begins, and listing them put a boundary along both sides of every wire
-    (32 for `crossing`, which has none). The carried-in count and the dimension of the position
-    (`stratum_dimension`: coordinates that are not singular) are what tell them apart; `crossing`,
-    `touching` and `half_braid` have no boundaries, `stacks`/`matchsticks`/`monoid_unit` have ends, the
-    associator and snake have junctions. Drawn as one path per kind in a `g.sheet-boundaries` (counts in
-    `data-ends`/`data-meets`) over the surfaces, under the highlight: for an end the last stretch of the sheet
-    (dashed) from the neighbour that carries it and a dashed ring, for a junction a double ring; a pale halo
-    under each so they show on any colour; `pointer-events: none`. The tooltip's detail says "a sheet begins
-    or ends here" / "sheets merge or split here" at such a position. The set of boundaries is made on first
-    use and does not change `GraphicElement`. Gaps: a boundary is drawn along the scaffold edge, not along
-    a curve of the layout; an end is only found where the sheet reaches higher dimensions elsewhere, so a
-    sheet that is a point or a line that runs along one coordinate all through has none; the 3D view has none.
+    the sheet features). Only at *points* of the picture (every coordinate singular: where the cells are): a
+    height there that **one** edge carries a height into is where a sheet *ends* (`BeginsOrEnds`; `matchsticks`,
+    `stacks`, `monoid_unit`), and one that **three or more** carry heights into is where sheets *meet*
+    (`MergesOrSplits`; the 3-cell of the associator: 10, of the snake: 6; `Sheet::arms` is the carried-in count).
+    It is **not** "a cone with `source_len() == 0`" as first specified: every edge goes from a position to one of
+    a dimension less, so a sheet that lies along a wire (a line) has such a cone on every edge from the regions
+    beside it, and where several rows of the grid collapse into one (a crossing) each row's edge lacks the
+    other's sheets: 32 of them for `crossing`, which has none, a boundary along both sides of every wire; and
+    the junction rule applied at every position rang every vertex of the associator's wires (11, against the 1
+    now). Sheets that end or meet along a wire are not marked: the wire is drawn. Drawn as one path per kind
+    in a `g.sheet-boundaries` (counts in `data-ends`/`data-meets`) over the surfaces and under the highlight:
+    for an end the last stretch of the sheet (dashed) from the neighbour that carries it and a dashed ring, for
+    a meeting a double ring; a pale halo under each so they show on any colour; `pointer-events: none`. The
+    tooltip's detail says "a sheet begins or ends here" / "sheets merge or split here". Made on first use;
+    `GraphicElement` is not changed. Gaps: a stretch is drawn along the scaffold edge, not a curve of the
+    layout; sheets that are joined along a wire or end along it are not marked; the 3D view has none.
+  - **Thickness shading** (`thickness_step(s)` in `projection/sheets.rs`, `GraphicElement::build_shaded`,
+    `DiagramSvg`, setting *Shade surfaces by the sheets behind them*, `sheet_shading`, on by default; workspace
+    diagram only). A surface's thickness is the number of sheets through it: `Depths::thickness`, the number
+    of singular heights of the fibre, the fewest of the three corners of the surface (the corners on wires have
+    the wire's sheets too). It is normalised to the thinnest *surface drawn* (0, as it always was), scaled into
+    `SHADING_STEPS` = 4 steps (0 to 3: differences from the minimum when the range fits, else scaled and
+    rounded so that anything thicker than the thinnest is at least 1 and the thickest is 3; tested). Surfaces
+    of the same generator and step are merged as before, so the elements are those of `build` split by
+    step (`build_shaded` returns each with its step; `build` is the same with step 0): no extra DOM. The
+    step is `data-thickness` on the colour path, and `styles.css` has `filter: brightness() saturate()` for
+    steps 1 to 3 (0.92, 0.84, 0.75): darker and a little more saturated. **Placeholders**: the hatching is a
+    separate path over the surface, so the filter does not touch it, and both stripe colours stay visible
+    (the light stripes on black are over a path that is already as dark as it goes). Changing the setting
+    prepares the diagram again (the grouping is made then); a diagram whose surfaces all have as many sheets
+    has no steps. On by default because the steps are subtle (about 8% each); the exports (`GraphicElement::build`)
+    do not shade. Gaps: a CSS filter per shaded path (one per generator and step, not per surface); the 3D
+    view is not shaded; a surface whose sheets are all hidden by a wire is still counted.
   - **The heuristic** (off by default; `InferenceLimits::narrow_to_sheet`, setting *Heuristic: infer instances
     only from cells near the chosen sheet*, kept with the inference settings): with a sheet chosen, the pool of
     cells for the replacements of placeholders (`Pool::new` in `AttachOptionsJob::new`) is the generators in
@@ -571,7 +589,14 @@ indicator: see "Laying out diagrams" below.
   - Gaps: only the first chosen
     `z` dims wires; surfaces and vertices are not dimmed; the 3D view has no sheets; the native drag gives no
     keys, so a drop uses a choice made before the drag (only when the pointer comes back to the same shape);
-    `Stack` lists the sheets of the shapes of one kind (the regions behind a wire cannot be chosen).
+    `Stack` lists the sheets of the shapes of one kind (the regions behind a wire cannot be chosen). Identity of
+    sheets (`SheetId`) is only followed for the first coordinate after the position's (the sheets inside a
+    sheet have none and are never `foremost`); sheets of the same cell that are never linked by an edge stay
+    different sheets (two separate wires of one generator), and one that is cut by a different cell on it is two
+    (a line with a bead on it is `S1`, the bead, `S2`); "front" is a count (hidden at more positions than drawn),
+    so two strands that cross over each other in turn are one front and one behind, or neither, by their
+    majority; `Stack`'s default sheet is still the one drawn (`front`), not the foremost one; the outlines mark
+    points only, and shading counts heights (a sheet that comes back to the position counts twice).
 
 New expensive work: write it as a job (or give an existing job another kind of step), label it,
 and check it with the debug hooks below.
