@@ -284,6 +284,9 @@ impl App {
 
     /// Starts the job for a task that an action began.
     fn start_job(&mut self, ctx: &Context<Self>, task: model::Task, resets_panzoom: bool) -> bool {
+        // What inferring is for was changed to start it (the replacement chosen), and that is
+        // shown while the job runs.
+        let changed_at_start = matches!(task, model::Task::Infer(_));
         self.next_job += 1;
         let job = Running {
             id: self.next_job,
@@ -295,7 +298,7 @@ impl App {
             steps: 0,
             longest_step: Duration::ZERO,
         };
-        self.begin(ctx, job)
+        self.begin(ctx, job) || changed_at_start
     }
 
     /// What follows from the project having been updated, or not.
@@ -303,6 +306,10 @@ impl App {
         homotopy_core::collect_garbage();
 
         if matches!(result, Ok(true)) {
+            // Instantiations in progress may be of what is no longer there.
+            let signature = self.state.history.proof().signature.clone();
+            self.state.drafts.retain_valid(&signature);
+
             if resets_panzoom {
                 PanZoom::reset();
                 GlViewControl::reset();
@@ -643,7 +650,9 @@ impl App {
             self.worker.ensure();
         }
         toast(Toast::success(format!("Cancelled: {}", job.label())));
-        false
+        // What the job was started for may be shown differently now (an inference that was
+        // cancelled leaves the replacements chosen and says that nothing was inferred).
+        true
     }
 
     /// Listens for `Esc` anywhere on the page. In the capture phase so that what has focus does
@@ -773,6 +782,7 @@ impl App {
                     dispatch={dispatch}
                     proof={proof.clone()}
                     options={state.options.clone()}
+                    drafts={state.drafts.clone()}
                     remote_project_metadata={state.remote_project_metadata.clone()}
                 />
                 <div class="toaster">

@@ -1,7 +1,7 @@
 //! Tasks are what the app runs in the background, a slice at a time, and may cancel: they have
 //! to give what doing the action straight away does, and leave the state alone until finished.
 
-use homotopy_core::{Boundary, SliceIndex};
+use homotopy_core::{signature::Invertibility, Boundary, Diagram, Generator, SliceIndex};
 use homotopy_model::{
     history::UndoState,
     job::{Job, Progress},
@@ -229,6 +229,7 @@ fn what_may_be_done_while_busy_does_not_touch_the_project() {
         Action::Select(0),
         Action::SelectPoint(vec![], false),
         Action::ClearSelections,
+        Action::Draft(proof::DraftEdit::Infer(Generator::new(0, 0))),
     ];
     for action in refused {
         assert!(!action.allowed_while_busy(), "{action:?}");
@@ -357,4 +358,114 @@ fn only_what_is_heavy_is_for_a_worker() {
         panic!("importing is a task");
     };
     assert!(task.offer(&**state.proof()).is_none());
+}
+
+fn node_of(sig: &proof::Signature, generator: Generator) -> homotopy_common::tree::Node {
+    sig.as_tree()
+        .iter()
+        .find(|(_, item)| {
+            matches!(item.inner(), proof::SignatureItem::Item(info) if info.generator == generator)
+        })
+        .map(|(node, _)| node)
+        .unwrap()
+}
+
+/// A schema `s` in the placeholder `η : F ⇒ G` of `F, G : x → x`, and `p : T ⇒ U`.
+fn schema_state() -> (State, Generator, Generator, Diagram) {
+    use homotopy_core::signature::Signature as _;
+    use homotopy_model::proof::{SignatureEdit, SignatureItemEdit};
+
+    let mut sig = proof::Signature::default();
+    let x: Diagram = sig.create_generator_zero("x").into();
+    let mut cell = |sig: &mut proof::Signature, s: Diagram, t: Diagram, name: &str| {
+        sig.create_generator(s, t, name, Invertibility::Directed)
+            .unwrap()
+    };
+    let f = cell(&mut sig, x.clone(), x.clone(), "F");
+    let g = cell(&mut sig, x.clone(), x.clone(), "G");
+    let t = cell(&mut sig, x.clone(), x.clone(), "T");
+    let u = cell(&mut sig, x.clone(), x.clone(), "U");
+    let ends = [f.clone(), g.clone()].map(|d| d.max_generator().generator);
+    let eta = cell(&mut sig, f.into(), g.into(), "eta");
+    let p = cell(&mut sig, t.into(), u.into(), "p");
+    let s = cell(&mut sig, x.clone(), x, "s");
+    let (eta, s) = (eta.max_generator().generator, s.max_generator().generator);
+    let node = node_of(&sig, eta);
+    sig.update(&SignatureEdit::Edit(
+        node,
+        SignatureItemEdit::MakePlaceholder(true),
+    ))
+    .unwrap();
+    let node = node_of(&sig, s);
+    sig.update(&SignatureEdit::Edit(
+        node,
+        SignatureItemEdit::SetDependsOn(vec![eta]),
+    ))
+    .unwrap();
+    // `F` and `G` are mentioned by the placeholder, so they are placeholders as well.
+    for generator in ends {
+        let node = node_of(&sig, generator);
+        sig.update(&SignatureEdit::Edit(
+            node,
+            SignatureItemEdit::MakePlaceholder(true),
+        ))
+        .unwrap();
+    }
+    let data = serialize::serialize(sig, None, Default::default());
+    let mut state = State::default();
+    state
+        .update(Action::Proof(proof::Action::ImportProof(SerializedData(
+            data,
+        ))))
+        .unwrap();
+    (state, s, eta, p.into())
+}
+
+#[test]
+fn inferring_what_a_replacement_determines_is_a_task_that_can_be_dropped() {
+    let (mut state, schema, eta, p) = schema_state();
+    let before = summary(&state);
+    let edit = proof::DraftEdit::Fill(schema, eta, p.clone());
+    assert!(Action::Draft(edit.clone()).heavy_label().is_some());
+
+    // What is chosen is kept at once, and what follows comes with the task.
+    let Started::Running(mut task) = state.start(Action::Draft(edit.clone())).unwrap() else {
+        panic!("inferring is a task");
+    };
+    assert_eq!(task.label(), "Inferring replacements");
+    assert!(!task.next_step_may_block());
+    assert!(
+        task.offer(state.proof()).is_none(),
+        "it is done a step at a time, here"
+    );
+    assert_eq!(state.drafts.get(schema).get(eta), Some(&p));
+    assert!(state.drafts.get(schema).needs_inference());
+    assert!(task.step().is_none() || state.drafts.get(schema).needs_inference());
+    // Cancelling is dropping it: the choice stays, nothing is inferred, the project is as it was.
+    drop(task);
+    let draft = state.drafts.get(schema);
+    assert_eq!(draft.substitution(), vec![(eta, p.clone())]);
+    assert!(draft.needs_inference());
+    assert_eq!(summary(&state), before);
+
+    // Asking again finishes it.
+    run_in_steps(&mut state, Action::Draft(proof::DraftEdit::Infer(schema)));
+    let draft = state.drafts.get(schema);
+    assert_eq!(
+        draft.substitution().len(),
+        3,
+        "the ends of `p` are inferred"
+    );
+    assert!(!draft.needs_inference());
+    assert_eq!(
+        summary(&state),
+        before,
+        "choosing is not changing the project"
+    );
+
+    // And doing it in one go is the same.
+    let mut other = state.clone();
+    other.drafts = Default::default();
+    other.update(Action::Draft(edit)).unwrap();
+    assert_eq!(other.drafts.get(schema), draft);
 }

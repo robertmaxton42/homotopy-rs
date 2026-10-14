@@ -59,6 +59,10 @@ pub struct Draft {
     declined: Vec<Generator>,
     /// What the last inference found, if it was finished.
     inference: Option<Inference>,
+    /// What the last inference started from: the replacements chosen or picked that were well
+    /// typed. A change that leaves them as they were (choosing what does not fit, say) needs no
+    /// new inference.
+    inferred_from: Vec<(Generator, Diagram)>,
 }
 
 impl Draft {
@@ -170,7 +174,6 @@ impl Draft {
     /// infer from.
     fn infer(&mut self, signature: &Signature, schema: Generator) -> Option<InferJob> {
         self.revalidate(signature, schema);
-        self.inference = None;
         // Picks only count while there is a replacement chosen that they were picked for.
         let chosen = self
             .slots
@@ -179,12 +182,24 @@ impl Draft {
         if !chosen {
             self.declined.clear();
             self.slots.retain(|slot| slot.origin == Origin::Chosen);
+            self.inference = None;
+            self.inferred_from.clear();
             return None;
         }
+        let constraints = self.constraints();
+        if self.inferred_from == constraints {
+            if let Some(inference) = self.inference.take() {
+                // Nothing that it depends on changed.
+                self.finished(inference);
+                return None;
+            }
+        }
+        self.inference = None;
+        self.inferred_from = constraints;
         Some(InferJob::new(
             signature.clone(),
             schema,
-            &self.constraints(),
+            &self.inferred_from,
         ))
     }
 
@@ -314,7 +329,11 @@ impl Drafts {
                     }
                 }
             }
-            DraftEdit::Infer(_) => {}
+            DraftEdit::Infer(_) => {
+                if let Some(draft) = self.drafts.get_mut(&schema) {
+                    draft.inference = None;
+                }
+            }
         }
         let draft = self.drafts.get_mut(&schema)?;
         let job = draft.infer(signature, schema);
@@ -444,7 +463,11 @@ mod tests {
         assert!(draft.is_inferred(sq.f) && draft.is_inferred(sq.g));
 
         // `F := U` is chosen over the inferred `T`, and is wrong because of `η`.
-        drafts.apply(sig, DraftEdit::Fill(sq.schema, sq.f, sq.u.clone()));
+        let job = drafts.start(sig, DraftEdit::Fill(sq.schema, sq.f, sq.u.clone()));
+        assert!(
+            job.is_none(),
+            "it takes no part in the inference, which stands"
+        );
         let draft = drafts.get(sq.schema);
         assert_eq!(draft.get(sq.f), Some(&sq.u));
         assert!(!draft.is_inferred(sq.f));

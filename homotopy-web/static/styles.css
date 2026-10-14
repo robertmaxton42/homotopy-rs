@@ -15,6 +15,7 @@
   --drawer-foreground-dimmed: #575f6655;
   --drawer-foreground-dimmed-text: #575f66cc;
   --drawer-border: #e1e1e1;
+  --slot-error: #c0392b;
   --drawer-selected: #66aeeb55;
 
   --button-border: #e1e1e1;
@@ -937,6 +938,44 @@ input.signature__item-name {
 .signature__slot-inferred .signature__slot-value {
   opacity: 0.7;
   font-style: italic;
+}
+
+/* A replacement that cannot be one: kept, so that it can be seen and fixed, with why. */
+.signature__slot-invalid {
+  color: var(--slot-error);
+}
+
+.signature__slot-error {
+  flex: 1 0 100%;
+  font-size: 0.85em;
+  color: var(--slot-error);
+}
+
+/* What inference has to say beyond what it filled in, and the ways to fill in the rest. */
+.signature__infer {
+  margin: var(--space-0) 0;
+  font-size: 0.85em;
+}
+
+.signature__infer-note {
+  margin: 2px 0;
+  color: var(--drawer-foreground-dimmed-text);
+}
+
+.signature__candidates summary {
+  cursor: pointer;
+  color: var(--drawer-foreground-dimmed-text);
+}
+
+.signature__candidate {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0);
+  margin: 2px 0;
+}
+
+.signature__candidate-value {
+  flex: 1 1 auto;
 }
 
 .signature__slot-hint {

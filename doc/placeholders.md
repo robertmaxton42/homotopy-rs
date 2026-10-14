@@ -88,29 +88,48 @@ so replacing `α` with `α₀` is only well typed for certain replacements of `X
 found by matching the types, not by trying replacements:
 
 - a type that is a placeholder is matched with the diagram chosen (`η : F ⇒ G` replaced by
-  `p : T ⇒ U` makes `F` be `T` and `G` be `U`);
+  `p : T ⇒ U` makes `F` be `T` and `G` be `U`), and then the type of that placeholder is matched
+  in turn with the boundary of what it was matched with, and so on down, until nothing new is
+  bound. A long chain of placeholders, each the type of the next, is filled in from the top;
 - otherwise the boundaries are matched, down the dimensions (`h : μ ≫ η' ⇛ η ≫ ν`, replaced by
   a cell from `p ≫ z` to `l ≫ l`, matches the boundaries of `μ ≫ η'` with those of `p ≫ z`,
   so `F` and `G'` are the ends of `p ≫ z` and `l ≫ l`);
 - a composite of whole cells, like `μ ≫ η'`, is matched with the diagram cut at some heights. If
   there is only one way to cut it the pieces replace `μ` and `η'`. Otherwise each way is tried:
-  a diagram `p ≫ z` can be `μ ≫ η'` in three ways (`μ` or `η'` may be an identity).
+  a diagram `p ≫ z` can be `μ ≫ η'` in three ways (`μ` or `η'` may be an identity);
+- a cell that depends on placeholders (the limit `L` of a diagram `D`), matched with an
+  instance of it (`L[D₀]`), binds what the instance was made with (`D := D₀`). The inverse of
+  an invertible cell is matched like the cell.
 
 A placeholder is filled in if every way that makes the chosen replacements well typed agrees on it.
-If there are several ways, or none, only what they agree on is filled in. The matching is
-bounded, and when it has to stop early only what it has forced so far is filled in. Placeholders
-that the types of the replacements chosen do not mention are left empty. The search is redone each
-time a replacement is chosen or cleared, so inferred replacements never go out of date.
+The matching is bounded, and when it has to stop early only what it has forced so far is filled
+in, and the panel says so. Placeholders that the types of the replacements chosen do not mention
+are left empty. The search is redone each time a replacement is chosen or cleared, so inferred
+replacements never go out of date; what was inferred is only given up when it no longer follows,
+and the panel says why if nothing fits.
 
-A replacement is also checked as it is chosen (`Drafts::check`), before anything is searched
-for: its dimension, and then its boundaries against what the other replacements chosen require,
-so that `Ḟ := p` for a cell `Ḟ` is refused for its dimension, and `Ḟ := G` is refused when the
-`η̇ := p` chosen needs `Ḟ` to be `T`.
+**Ambiguity.** When the types leave several ways to fill in the rest, nothing of them is filled
+in, and the panel lists the ways as *candidates*, each with a *Use* button, the ones without
+identities among the cells that the diagram is cut into first. Using one fills in its
+placeholders, marked *inferred* like the others: they can be overridden or cleared, and what
+follows from them is filled in. Nothing is ever picked for you: a square may well have an
+identity in it. Under the list the panel says where the choice is: "`μ ≫ η'` can be cut 3 ways
+to make `p ≫ ζ[p]`; choose `μ` or `η'` to decide". Choosing one of those placeholders yourself
+decides the cut, and then the others follow.
 
-What the matching does not reach is still searched for, among the composites of up to three of the
-cells that the replacements chosen are made of (as when attaching), but only for the placeholders
-that the types mention. Types that mention generators that depend on placeholders are checked by
-substituting.
+**Checking as you go.** A replacement is checked when it is chosen, against the replacements
+chosen before it, on the types alone and without searching: its dimension first, and then its
+boundaries against what the others require. If it does not fit, it is kept, in red, with what is
+wrong and what it clashes with ("`Ḟ` conflicts with `η̇`: `η̇` needs `Ḟ` to be `T`, not `Ġ`"; "`η̇`
+conflicts with `ḣ`: `ḣ` needs `η̇ ≫ ν̇` to be `l ≫ Tp`, but `η̇` is `p`"). It is kept because it
+is what you asked for, so you can see what is wrong with it and fix it or what it clashes with;
+it takes no part in the inference, and *Create instance* waits until it is fixed or cleared. Of
+two replacements that clash, the one chosen first counts.
+
+**It can be cancelled.** What follows from a replacement is worked out as a job (see `CLAUDE.md`):
+a step at a time, behind the busy indicator if it takes long, and `Esc` or a click on the
+indicator cancels it. The replacements chosen are kept and nothing is inferred; the panel says
+so and offers to infer again.
 
 The placeholders a cell can be instantiated at include those that the types of the placeholders it
 depends on mention, so a cell that depends on `α` is also instantiated at `X` and `D`.

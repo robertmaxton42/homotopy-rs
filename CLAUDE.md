@@ -32,7 +32,8 @@ indicator: see "Laying out diagrams" below.
   works on a *copy* of what it needs, does a small `step` at a time, reports a `label` and
   `progress`, and ends in an output that is committed in one go. Dropping a job changes nothing.
   `ActionsJob` (a sequence of proof actions, with `MergeExchanges` split into one step per
-  cospan) and `AttachOptionsJob` (one step per generator, including its `infer_instances`) live
+  cospan), `AttachOptionsJob` (one step per generator, including its `infer_instances`) and
+  `InferJob` (what the replacements chosen in the Instantiate panel determine, see below) live
   in `homotopy-model`; `ExportJob` in `homotopy-web`. A job holds no references into the app's
   state, only its own copy of its input, so it can run in the page a slice at a time or in the
   Web Worker (below) without changing its callers.
@@ -44,6 +45,20 @@ indicator: see "Laying out diagrams" below.
 - The app (`App::dispatch`/`work` in `app.rs`) runs a task ~10ms at a time (`SLICE`), yielding
   with `TimeoutFuture(0)`; a task that finishes in the first slice never shows anything.
   `Message::Slice(id)` carries the job's id, so slices of a cancelled job do nothing.
+- **Instantiate panel**: the drafts (the replacements being chosen for each schema, with what
+  was inferred) are `State::drafts`, owned by the app like the rest of the state, and a choice is
+  `Action::Draft(DraftEdit)`. `State::start` makes the choice (it is kept in red if it does not
+  fit its type, see `doc/placeholders.md`) and returns a `Task::Infer` holding an `InferJob`,
+  which `State::finish` takes in; the job is the search for what follows from the choices, as a
+  stack of things to try (`Machine` in `proof/completion.rs`), one cut or one candidate a step,
+  so a step is 0.1 to 5ms (debug build) whatever the whole search takes, and the page runs it a
+  slice at a time and does not need the worker. Cancelling drops the job: the choices stay, nothing
+  is inferred (`Draft::needs_inference`, the panel says so and offers *Infer again*). Typical cases
+  take 1 to 130ms in the debug build (the commutative square of the tangent categories project:
+  130ms in 179 steps for the inverse of `l;Tp = p;0` alone, under 5ms with one more choice), so
+  the indicator rarely shows; the search is bounded (`MAX_COMPLETION_NODES`), after which only
+  what matching forced is filled in, and the panel says so. Choosing is not changing the project:
+  `finish` returns `Done(false)`, so no unload warning.
 - **Indicator**: `components/busy.rs`, a pill at the top centre. It is put on the page when a
   job starts but fades in after 150ms with a CSS animation (so quick jobs do not flicker, and a
   step that blocks the page still gets it on screen: the browser keeps compositor animations
@@ -205,7 +220,10 @@ and check it with the debug hooks below.
   (`{"Proof": ...}`, `{"SelectPoint": [[...], false]}`, `{"Select": 0}`, `"Undo"`, ...),
   `importActions(bytes)`, `importProof(bytes)`, `cancel()`, `state()` (busy label, history
   length, a hash of the serialized project, crash log size), `profile(json)` (replays recorded
-  actions, timing each), `profileDrafts()`. Setting `window.__homotopy_step_delay_ms = 50` makes
+  actions, timing each), `profileDrafts()`, `fillFromInstance("[schema, placeholder, instance,
+  dimension]")` (each generator as `[id, dimension]`: chooses, as *Use workspace* does, the
+  replacement of that dimension that an instance was made with, for diagrams that are hard to put
+  in the workspace, such as a cell whiskered by another). Setting `window.__homotopy_step_delay_ms = 50` makes
   every step of a job spin that long (also in the worker: the value is sent with each job), to
   have something slow to test with in a headless browser (watch `state().busy`, the
   `.busy__pill` element, send `Escape`). Timings of jobs are logged: "<label> took Nms in K steps
@@ -217,7 +235,7 @@ and check it with the debug hooks below.
 Done (behind the indicator, cancellable, input refused meanwhile): attach options for a click in
 the workspace (`SelectPoint`), `MergeExchanges` and the automatic merging after a homotopy (one
 cancellable unit with the homotopy), replaying actions (`ImportActions`), multi-slice and other
-text exports. Done in the Web Worker, so that the page stays responsive however long they take
+text exports, and the inference in the Instantiate panel (a job of small steps in the page). Done in the Web Worker, so that the page stays responsive however long they take
 and `Esc` takes effect at once (the page's longest gap while a 1.5s homotopy ran was 40ms, against
 1.4s in the page; cancelling took 33ms): a single homotopy (`Expand`/`Contract`, with its
 typecheck; 10ms to 1.5s in the debug build), `Theorem` (20-260ms), `Squash` (10-230ms),
@@ -271,11 +289,6 @@ assertions, on `homotopy-model/tests/examples` and a project with limits as sche
   - Two workers are two copies of the wasm module in memory (35MB in the debug build) and the
     second one HiGHS too; the optimised build is 0.7MB bigger (8.9 to 9.6MB with debug assertions,
     92KB more gzipped: the wire format, a second path through `CubicalGeometry`).
-- `Signature::infer_replacements`, called when a replacement is chosen or cleared in the
-  Instantiate panel (`Drafts::apply` in `homotopy-model/src/proof/drafts.rs`): at most 5ms on
-  the limits project, bounded by `MAX_COMPLETION_NODES`, but it runs inside the sidebar
-  component, outside the app's job machinery. To fix: turn `Completion::solve` into an
-  explicit-stack job and have the app own the drafts.
 - Editing the signature with a recursive typecheck (making a generator less invertible, removing
   a symmetry, removing a generator): under 20ms on the examples, but it grows with the
   signature. These are `EditSignature` actions, so they can be sent to the worker the same way

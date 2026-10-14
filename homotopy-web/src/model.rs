@@ -7,7 +7,7 @@ use homotopy_graphics::{manim, stl, svg, tikz};
 pub use homotopy_model::{history, job, migration, proof, serialize};
 use homotopy_model::{
     job::run_to_end,
-    proof::{ActionsJob, AttachOption, AttachOptionsJob, NoAttachment},
+    proof::{ActionsJob, AttachOption, AttachOptionsJob, DraftEdit, Drafts, NoAttachment},
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -38,6 +38,9 @@ pub enum Action {
     SelectPoint(Vec<SliceIndex>, bool),
     HighlightAttachment(Option<AttachOption>),
     HighlightSlice(Option<SliceIndex>),
+
+    /// Change an instantiation in progress (see [`Drafts`]). Not part of the project.
+    Draft(DraftEdit),
 
     SetRemoteProjectMetadata(Option<account::RemoteProjectMetadata>),
 
@@ -108,6 +111,7 @@ impl Action {
             Self::Proof(action) => action.work_label(),
             Self::ImportActions(_) => Some(proof::REPLAYING),
             Self::SelectPoint(_, _) => Some("Finding what can be attached"),
+            Self::Draft(_) => Some("Inferring replacements"),
             Self::ExportImage(
                 ImageFormat::Stl(_) | ImageFormat::Tikz(_) | ImageFormat::Manim(_),
                 _,
@@ -176,6 +180,9 @@ pub struct State {
     pub options: Option<Selectables>,
     pub attachment_highlight: Option<AttachOption>,
     pub slice_highlight: Option<SliceIndex>,
+    /// The instantiations in progress, which are not part of the project: neither undo nor redo
+    /// touches them, and what they infer is a job like the others.
+    pub drafts: Drafts,
 }
 
 impl State {
@@ -413,6 +420,14 @@ impl State {
                     Err(NoAttachment::NoBoundary) => Err(ModelError::NoAttachment),
                 };
             }
+            Action::Draft(edit) => {
+                let signature = &self.history.proof().signature;
+                if let Some(job) = self.drafts.start(signature, edit) {
+                    return Ok(Started::Running(Task::Infer(Box::new(job))));
+                }
+                // Choosing is not changing the project.
+                return Ok(Started::Done(false));
+            }
             Action::HighlightAttachment(option) => self.highlight_attachment(option),
             Action::HighlightSlice(slice) => self.highlight_slice(slice),
             Action::ClearSelections => self.clear_selections(),
@@ -497,6 +512,10 @@ impl State {
                     }
                 }
                 Ok(Started::Done(true))
+            }
+            TaskOutput::Infer(schema, inference) => {
+                self.drafts.finish(schema, inference);
+                Ok(Started::Done(false))
             }
             TaskOutput::Export(ExportOutput {
                 files,

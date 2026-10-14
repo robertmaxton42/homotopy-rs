@@ -339,6 +339,48 @@ pub fn install(link: &Scope<App>) {
         .into_js_value(),
     );
 
+    // `fillFromInstance(schema, placeholder, instance, dimension)`, each generator as `[id,
+    // dimension]` and the dimension of the replacement to take: chooses for the placeholder the
+    // replacement of that dimension that the instance was made with, as clicking *Use workspace*
+    // with that diagram in the workspace does (there is no way to put such a diagram, a cell
+    // whiskered by another, in the workspace without a lot of clicking).
+    let fill = link.clone();
+    set(
+        "fillFromInstance",
+        Closure::<dyn Fn(String) -> Result<(), JsValue>>::new(move |json: String| {
+            use homotopy_core::{signature::Signature as _, Generator};
+            let [schema, placeholder, instance, dimension]: [serde_json::Value; 4] =
+                serde_json::from_str(&json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let generator = |v: &serde_json::Value| {
+                Generator::new(
+                    v[0].as_u64().unwrap_or_default() as usize,
+                    v[1].as_u64().unwrap_or_default() as usize,
+                )
+            };
+            let (schema, placeholder, instance) = (
+                generator(&schema),
+                generator(&placeholder),
+                generator(&instance),
+            );
+            let dimension = dimension.as_u64().unwrap_or_default() as usize;
+            let diagram = STATE.with(|state| {
+                let state = state.borrow();
+                let info = state.0.proof().signature.generator_info(instance)?;
+                let made = info.instance.as_ref()?;
+                made.substitution
+                    .iter()
+                    .find(|(p, _)| p.dimension == dimension)
+                    .map(|(_, d)| d.clone())
+            });
+            let diagram = diagram.ok_or_else(|| JsValue::from_str("no such replacement"))?;
+            fill.send_message(Message::Dispatch(model::Action::Draft(
+                proof::DraftEdit::Fill(schema, placeholder, diagram),
+            )));
+            Ok(())
+        })
+        .into_js_value(),
+    );
+
     let cancel = link.clone();
     set(
         "cancel",
