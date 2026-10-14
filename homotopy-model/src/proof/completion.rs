@@ -2299,7 +2299,7 @@ pub(in crate::proof) mod tests {
     fn instance_at_placeholders() -> Instance {
         let mut sig = Signature::default();
         let zero: Diagram = sig.create_generator_zero("x").into();
-        let mut cell = |sig: &mut Signature, s: Diagram, t: Diagram, name: &str| {
+        let cell = |sig: &mut Signature, s: Diagram, t: Diagram, name: &str| {
             sig.create_generator(s, t, name, Invertibility::Directed)
                 .unwrap()
         };
