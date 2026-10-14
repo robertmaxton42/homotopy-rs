@@ -226,7 +226,7 @@ indicator: see "Laying out diagrams" below.
     attaching* (on); *Stop inferring after N s* (20, 0 for no limit; one schema gets a quarter of it,
     at least a second, so that one that has no end does not use the time of the rest); *Infer instances up
     to dimension N* (7, the dimension of the diagram being attached to; 12 for no limit). Plain cells and
-    their reflections are always offered. A search that went over its time offers what it found and says,
+    their reflections are always offered (within their own time limit, see "A time limit on the plain passes"). A search that went over its time offers what it found and says,
     in a notice that stays until it is dismissed (`components/inference_notice.rs`), "Instance inference took
     too long and was skipped for this search (N s). You can turn it off in Settings.", which schemas it
     gave up on and which it did not get to. Two searches in a row that run out of time turn the inference
@@ -274,8 +274,8 @@ indicator: see "Laying out diagrams" below.
       checkpoint (1.75s asked for: the page's timers are late while it renders the 3D view) and
       9 options and the notice were committed. `window.__homotopy_infer_grace_ms` sets the grace
       (high, to see the search keep its time by itself).
-    - The limit is for the inference. The plain cells and their reflections are not limited
-      (they are always offered): on the full workspace of the fixture they are most of the time of
+    - The limit is for the inference. The plain cells and their reflections are not limited by it
+      (they have a limit of their own, see "A time limit on the plain passes", added after these measurements): on the full workspace of the fixture they are most of the time of
       a search in the debug wasm build (about 31s of 35s for a click at `[R3, R2]` with a 3s
       limit; 12 to 14s on the workspace `start`).
   - Debug hooks: `__homotopy.dispatch` takes `{"SelectPoint": [point, weak_units]}` (limits from the
@@ -300,6 +300,48 @@ indicator: see "Laying out diagrams" below.
     clock stops it, but the page does not respond meanwhile) and the search is stepped in slices as
     the others; the searches that do not finish are cut, not made quick; the options a cut schema
     would have had are not there (use the setting to give it more time).
+
+- **A time limit on the plain passes** (`InferenceLimits::plain_budget_ms`, `PlainReport` in the
+  `InferenceReport`, setting *Stop searching for plain attachments after N s*, kept with the inference settings in
+  `localStorage`, `0` for no limit, default `DEFAULT_PLAIN_BUDGET_MS` = 10 s; `homotopy-model/tests/plain_limit.rs`).
+  The plain passes are the cells of the signature, their inverses, the cells raised from them (weak units,
+  bubbles) and their reflections: found by matching, never inferred, and not covered by the inference limit. In the
+  debug wasm build a click at a vertex of the fixture took 74.5 s, nearly all of it these passes (native release: 3.1 s
+  of 8.1 s; the whole diagram `[]` 5.9 s), which is why the default is 10 s: over what the optimised build needs on the
+  largest project there is a fixture of, well under what the debug build does.
+  - The time is for the plain and reflection passes together; one generator gets half of it, at least a second
+    (`plain_each`; all of it for a search for one generator, `only`, whose pieces are the steps). A step is run
+    under `deadline::until` (`plain_step`); when the clock runs out in the middle of one the generator is
+    *cut short* (what it found stays: valid, and among what the whole search finds, in the same order), and
+    when the time is used up before a generator's turn it is *not tried*. Both are in `PlainReport` and the notice
+    ("Plain search stopped after N s: not tried: ...; cut short: ...", with the suggestion to drag the generator
+    onto the diagram, pick it, or choose a sheet). The schemas that the inference would have looked at, when the
+    plain passes ended the search, are in `not_tried` of the plain report and not the inference's, so that
+    they do not count towards turning the inference off.
+  - **Order**: the generators are looked at cheapest first (`cheapest_first`: those with no end that can be in the
+    diagram first, then by `layout::weight` of their diagram, which costs the same whatever the size), for the plain
+    pass and for the reflections. The options are put back in the order of the generators by `outcome`, so the list is
+    as before (tested: no limit and a far one give the same options, and the whole-vs-`only` equivalence tests).
+  - **Hard limit**: as for the inference. The clock is looked at in `embeddings`/`embeddings_through` and between the
+    variants and the reflection candidates, and in `typecheck` (`TypeError::TimedOut`, which the reflections'
+    typecheck gets: it is the one stretch that took long, 2.5 s natively for one reflection of `lc=l` that is
+    ill typed anyway, spent in `is_allowed_reflection`, up to `2^n` collapses of 180 ms each; it is checked between
+    them and between the two collapses of `typecheck_worker`, which are not interrupted). A timed-out typecheck
+    says the reflection is not known to be well typed, so it is not offered. Measured native release,
+    `only` `lc=l` with a 100/300/1000 ms limit: 122/1190/1240 ms (2.5 s without), the click at `[S1,S2]` with 500/2000
+    ms: 0.56/1.86 s (2.8 s without). The debug wasm build is 20 times slower in the stretches that are not
+    checked, so it does not keep the limit by itself: the **backstop** (`Job::checkpoint`, `time_allowed`) takes
+    over. The first checkpoint is made before the first step, with nothing found and everything listed as cut short
+    or not tried, so that the page starts its timer (`time_allowed` = the plain time plus the inference time, when
+    both are limited; the plain time alone when there are no schemas; the inference time alone when the plain
+    passes have no limit); later ones are as for the inference. Measured in the debug wasm, the fixture, the worker:
+    a click at `[S1,S2]` 74.5 s -> 20 s with a 10 s limit (cut by the search itself, 5 s inference after); with `z=1`
+    chosen the worker was ended by the backstop at 18 s and what it had was committed; a drop of `lc=l` ended by the
+    backstop at 11.5 s (the match it had found at 1 s was offered, applied), and with `__homotopy_step_delay_ms = 4000`
+    (steps that spin and cannot be interrupted) at 5 s for a 3 s limit.
+  - Gaps: the collapses in `typecheck` and the construction of the variants (inverses, bubbles) are not
+    interrupted, so the limit is exceeded by one of them (180 ms natively, several seconds in the debug wasm);
+    `Proof` generators with no name show as "Proof N" in the notice.
 
 - **Attaching one generator** (`AttachOptionsJob::new(.., only)`, `can_attach`, `Action::AttachGenerator`
   and `Action::Arm`, `app/attach_target.rs`, `app/armed_chip.rs`; user-facing text in

@@ -45,6 +45,12 @@ struct Kept {
     max_dimension: u32,
     #[serde(default)]
     narrow_to_sheet: bool,
+    #[serde(default = "default_plain_budget")]
+    plain_budget_seconds: u32,
+}
+
+const fn default_plain_budget() -> u32 {
+    homotopy_model::proof::DEFAULT_PLAIN_BUDGET_MS / 1000
 }
 
 thread_local! {
@@ -67,6 +73,7 @@ pub fn limits() -> InferenceLimits {
             max_dimension
         },
         narrow_to_sheet: AppSettings::get_infer_narrow_to_sheet(),
+        plain_budget_ms: AppSettings::get_plain_budget().saturating_mul(1000),
     }
 }
 
@@ -80,6 +87,7 @@ pub fn load() {
     AppSettings::set_infer_budget(kept.budget_seconds);
     AppSettings::set_infer_max_dimension(kept.max_dimension.clamp(1, NO_DIMENSION_LIMIT));
     AppSettings::set_infer_narrow_to_sheet(kept.narrow_to_sheet);
+    AppSettings::set_plain_budget(kept.plain_budget_seconds);
 }
 
 /// Keeps the settings.
@@ -89,6 +97,7 @@ pub fn store() {
         budget_seconds: AppSettings::get_infer_budget(),
         max_dimension: AppSettings::get_infer_max_dimension(),
         narrow_to_sheet: AppSettings::get_infer_narrow_to_sheet(),
+        plain_budget_seconds: AppSettings::get_plain_budget(),
     };
     if let Ok(json) = serde_json::to_string(&kept) {
         write_settings(&json);
@@ -116,6 +125,33 @@ pub fn notice(report: &InferenceReport) -> Vec<String> {
                  This is said once.",
                 AppSettings::get_infer_max_dimension()
             ));
+        }
+    }
+    if report.plain.timed_out() {
+        let plain = &report.plain;
+        let seconds = (plain.spent_ms + 500) / 1000;
+        let mut line = format!("Plain search stopped after {seconds} s (Settings, \"Stop searching for plain attachments after\").");
+        if !plain.not_tried.is_empty() {
+            line.push_str(" Not tried: ");
+            line.push_str(&plain.not_tried.join(", "));
+            line.push('.');
+        }
+        if !plain.cut_short.is_empty() {
+            line.push_str(" Cut short: ");
+            line.push_str(&plain.cut_short.join(", "));
+            line.push('.');
+        }
+        line.push_str(
+            " What was found is valid but may be missing some. To look for one generator, drag it \
+             onto the diagram or pick it with the pointing hand; choosing a sheet narrows the search to it.",
+        );
+        lines.push(line);
+        if report.forced && !report.timed_out() {
+            lines.push(
+                "The search did not stop when its time was up, so it was ended and what it had \
+                 found before then is offered."
+                    .to_owned(),
+            );
         }
     }
     if let Some(narrowed) = report.narrowed {

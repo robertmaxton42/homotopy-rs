@@ -86,7 +86,10 @@ fn a_sheet_keeps_the_options_whose_embedding_contains_it() {
                 continue;
             }
             for weak_units in [false, true] {
-                let limits = InferenceLimits::default();
+                let limits = InferenceLimits {
+                    plain_budget_ms: 0,
+                    ..InferenceLimits::default()
+                };
                 for (point, fibre) in clicks(&workspace.diagram, n) {
                     let Diagram::DiagramN(fibre) = fibre else {
                         continue;

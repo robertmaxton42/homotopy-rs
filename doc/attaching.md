@@ -75,6 +75,19 @@ that is not valid, because each is checked as before and only the pool of cells 
 from is smaller. The notice that follows the search says that it was in effect and how many of
 the diagram's cells it looked at.
 
+## The plain search has a time limit too
+
+Finding where the cells of the signature (and their inverses, identities, bubbles and
+reflections) attach is a matching of each against the diagram, which in high dimensions takes
+long enough to wait for. After *Stop searching for plain attachments after N s* (Settings, 10 s
+unless you change it, 0 for no limit) the search stops: the cheapest generators are looked at
+first, those that are left are not looked at at all, and the one that was being looked at is cut
+short with what it had found. What is offered is always valid, but may be missing some, and a
+notice says which generators were not tried or were cut short ("Plain search stopped after 10 s:
+not tried: ...; cut short: ..."). To look for just those, drag the generator onto the diagram
+or pick it with the pointing hand (the search for one generator has all of the time), or choose
+a sheet, which narrows the search to the cells that reach it.
+
 ## Instances of schemas are a heuristic
 
 Finding the instances of a schema that attach at a point is a search over replacements of its
