@@ -110,7 +110,7 @@ impl Action {
         match self {
             Self::Proof(action) => action.work_label(),
             Self::ImportActions(_) => Some(proof::REPLAYING),
-            Self::SelectPoint(_, _) => Some("Finding what can be attached"),
+            Self::SelectPoint(_, _) => Some("Searching for attachments"),
             Self::Draft(_) => Some("Inferring replacements"),
             Self::ExportImage(
                 ImageFormat::Stl(_) | ImageFormat::Tikz(_) | ImageFormat::Manim(_),

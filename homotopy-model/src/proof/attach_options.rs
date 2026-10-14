@@ -218,7 +218,7 @@ impl Job for AttachOptionsJob {
     type Output = Vec<AttachOption>;
 
     fn label(&self) -> &'static str {
-        "Finding what can be attached"
+        "Searching for attachments"
     }
 
     fn progress(&self) -> Option<Progress> {
