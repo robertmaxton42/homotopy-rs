@@ -1,8 +1,11 @@
 //! Finding the ways to attach a generator at a point of the workspace diagram.
 
-use std::{rc::Rc, time::Duration};
+use std::{collections::VecDeque, rc::Rc, time::Duration};
 
-use homotopy_common::hash::{FastHashMap, FastHashSet};
+use homotopy_common::{
+    deadline,
+    hash::{FastHashMap, FastHashSet},
+};
 use homotopy_core::{
     common::{BoundaryPath, Generator},
     signature::Signature as _,
@@ -29,6 +32,107 @@ pub enum NoAttachment {
     NoWorkspace,
     /// The point is on a boundary that the diagram does not have.
     NoBoundary,
+    /// The generator that is asked for is not in the signature.
+    UnknownGenerator,
+}
+
+/// Why a generator cannot be attached anywhere in a diagram, found without searching.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CannotAttach {
+    /// There is no diagram in the workspace.
+    NoDiagram,
+    /// The generator is not in the signature.
+    UnknownGenerator,
+    /// The generator has more dimensions than a cell that can be attached to the diagram.
+    TooHigh { generator: usize, diagram: usize },
+    /// A 0-cell can only be attached by way of weak units.
+    NeedsWeakUnits,
+    /// The cells that the generator starts at, and the cells that it ends at, are not all in the
+    /// diagram: and there is nothing to attach it to.
+    NotInDiagram,
+}
+
+impl CannotAttach {
+    /// What to tell the person, in plain text (not naming the generator, whose name may be a
+    /// formula: they have just picked it).
+    #[must_use]
+    pub fn reason(&self) -> String {
+        match self {
+            Self::NoDiagram => "Open a diagram in the workspace to attach to.".to_owned(),
+            Self::UnknownGenerator => "That generator is not in the signature.".to_owned(),
+            Self::TooHigh { generator, diagram } => format!(
+                "This generator has dimension {generator}, and the diagram in the workspace has \
+                 dimension {diagram}: cells of dimension up to {} can be attached to it.",
+                diagram + 1
+            ),
+            Self::NeedsWeakUnits => "This generator is a 0-cell, which can only be attached by \
+                 way of weak units (see Settings)."
+                .to_owned(),
+            Self::NotInDiagram => "The diagram in the workspace has none of the cells that this \
+                 generator starts or ends at, so there is nothing to attach it to."
+                .to_owned(),
+        }
+    }
+}
+
+/// Whether a generator can be attached anywhere in the diagram, as far as can be told without
+/// searching.
+///
+/// `Err` is a way of telling that it cannot, and `Ok` that it might. This is what a drag of the
+/// generator over the diagram asks, so it never searches (the search is the
+/// [`AttachOptionsJob`]): it only looks at dimensions and at which cells there are, for a result
+/// that is not wrong when it says no.
+///
+/// It looks at the diagram as a whole, and not at a point of it, so that it is the same for every
+/// point; the search at the point may find nothing all the same.
+pub fn can_attach(
+    signature: &Signature,
+    diagram: Option<&Diagram>,
+    generator: Generator,
+    weak_units: bool,
+    limits: InferenceLimits,
+) -> Result<(), CannotAttach> {
+    let diagram = diagram.ok_or(CannotAttach::NoDiagram)?;
+    let info = signature
+        .generator_info(generator)
+        .ok_or(CannotAttach::UnknownGenerator)?;
+    let (cell, workspace) = (generator.dimension, diagram.dimension());
+    if cell > workspace + 1 {
+        return Err(CannotAttach::TooHigh {
+            generator: cell,
+            diagram: workspace,
+        });
+    }
+    // The instances of a schema are made of cells that are not its own, so what can be said
+    // about it is whether they are looked for: at the boundary of the dimension below it, or
+    // in the diagram, which is as high as the diagram.
+    let schema = info.placeholder || !signature.parameters(generator).is_empty();
+    if schema && limits.enabled && cell >= 1 && (cell - 1) as u32 <= limits.max_dimension {
+        return Ok(());
+    }
+    let present = diagram.generators();
+    let in_diagram = |part: &Diagram| part.generators().keys().all(|g| present.contains_key(g));
+    match &info.diagram {
+        Diagram::Diagram0(_) => {
+            // Only a weak identity of it can be attached.
+            if !weak_units {
+                Err(CannotAttach::NeedsWeakUnits)
+            } else if in_diagram(&info.diagram) {
+                Ok(())
+            } else {
+                Err(CannotAttach::NotInDiagram)
+            }
+        }
+        // Cells (and their inverses, reflections and what is raised from them) are attached
+        // along their source or their target.
+        Diagram::DiagramN(d) => {
+            if in_diagram(&d.source()) || in_diagram(&d.target()) {
+                Ok(())
+            } else {
+                Err(CannotAttach::NotInDiagram)
+            }
+        }
+    }
 }
 
 /// How much to spend on inferring the instances of schemas that can be attached.
@@ -72,10 +176,17 @@ impl InferenceLimits {
         (self.budget_ms > 0).then(|| Duration::from_millis(u64::from(self.budget_ms)))
     }
 
-    /// How long one schema may take.
-    fn budget_each(self) -> Option<Duration> {
-        self.budget()
-            .map(|total| (total / 4).max(total.min(Duration::from_secs(1))))
+    /// How long one schema may take, when there are `schemas` of them to infer instances of: a
+    /// quarter of the budget, but at least a second, so that one schema that has no end to it
+    /// does not use up the time of the rest. A schema that is the only one has all of it.
+    pub(super) fn budget_each(self, schemas: usize) -> Option<Duration> {
+        self.budget().map(|total| {
+            if schemas <= 1 {
+                total
+            } else {
+                (total / 4).max(total.min(Duration::from_secs(1)))
+            }
+        })
     }
 }
 
@@ -100,6 +211,15 @@ pub struct InferenceReport {
     /// How long the inference took, and how long it was allowed to.
     pub spent_ms: u64,
     pub budget_ms: u32,
+    /// Whether the search did not stop when the time was up and had to be ended from outside
+    /// (see [`Job::checkpoint`]): what is offered is what it had before the
+    /// schema it was in the middle of.
+    #[serde(default)]
+    pub forced: bool,
+    /// The longest a single step of the inference took, in milliseconds, for judging how well
+    /// the time limit is kept.
+    #[serde(default)]
+    pub longest_step_ms: u64,
 }
 
 impl InferenceReport {
@@ -175,6 +295,12 @@ pub struct AttachOptionsJob {
     /// How many generators the passes are for in all, and how many they have done.
     planned: usize,
     done: usize,
+    /// If the search is for the ways to attach one generator (the index of it), and not all of
+    /// them: its pieces are then the steps (see [`Piece`]), so that how far along it is means
+    /// something, and `Esc` is seen between them.
+    only: Option<usize>,
+    /// The pieces of the pass for the generator that is `only` searched for, once made.
+    pieces: Option<VecDeque<Piece>>,
     /// The cells that placeholders are replaced with, which the searches share the composites of.
     cells: Rc<Cells>,
     inferring: Option<Inferring>,
@@ -182,6 +308,32 @@ pub struct AttachOptionsJob {
     spent: Duration,
     report: InferenceReport,
     started: bool,
+    /// Whether the options so far have changed since the last [`checkpoint`](Job::checkpoint)
+    /// and the inference is going.
+    checkpoint_due: bool,
+    longest_step: Duration,
+}
+
+/// A piece of the search for the ways to attach one generator: a cell made from it to look for,
+/// or a reflection of it to typecheck and look for.
+#[derive(Debug)]
+enum Piece {
+    Variant(Variant),
+    Reflection(ReflectionCandidate),
+}
+
+/// A cell made from a generator to match against the diagram.
+#[derive(Debug)]
+struct Variant {
+    diagram: DiagramN,
+    structure: Option<Structure>,
+}
+
+/// A reflection of a generator that may match.
+#[derive(Debug)]
+struct ReflectionCandidate {
+    directions: Vec<usize>,
+    reflected: DiagramN,
 }
 
 #[derive(Debug)]
@@ -194,11 +346,18 @@ struct Inferring {
 impl AttachOptionsJob {
     /// The search for the ways to attach generators at a point of the diagram in the workspace
     /// (given relative to what it shows), also by way of weak units if `weak_units`.
+    ///
+    /// With `only`, it is for the ways to attach that generator, and what is found is what the
+    /// whole search finds for it, in the same order: the generator itself, its inverse, the cells
+    /// raised from it, its reflections and its instances if it is a schema. The search is then
+    /// split into a step for each of those, and a schema that is the only one searched for has
+    /// all the time that inferring is given.
     pub fn new(
         proof: &ProofState,
         point: &[SliceIndex],
         weak_units: bool,
         limits: InferenceLimits,
+        only: Option<Generator>,
     ) -> Result<Self, NoAttachment> {
         let workspace = proof.workspace.as_ref().ok_or(NoAttachment::NoWorkspace)?;
         let asked_for = point.to_vec();
@@ -219,6 +378,14 @@ impl AttachOptionsJob {
                 .ok_or(NoAttachment::NoBoundary)?,
         };
         let generators: Vec<GeneratorInfo> = proof.signature.iter().cloned().collect();
+        let only = only
+            .map(|generator| {
+                generators
+                    .iter()
+                    .position(|info| info.generator == generator)
+                    .ok_or(NoAttachment::UnknownGenerator)
+            })
+            .transpose()?;
         let cells = Pool::new(&proof.signature, haystack.generators().into_keys()).cells();
         let dimension = haystack.dimension();
 
@@ -244,6 +411,8 @@ impl AttachOptionsJob {
             limits,
             matches: vec![],
             asked_for,
+            only,
+            pieces: None,
             pass: Pass::Plain,
             to_reflect: vec![],
             to_infer: vec![],
@@ -255,10 +424,17 @@ impl AttachOptionsJob {
             spent: Duration::ZERO,
             report,
             started: false,
+            checkpoint_due: false,
+            longest_step: Duration::ZERO,
         };
         job.to_reflect = job.reflecting().map(|(index, _)| index).collect();
         job.to_infer = job.inferring_for().map(|(index, _)| index).collect();
-        job.planned = job.generators.len() + job.to_reflect.len() + job.to_infer.len();
+        // For one generator the pieces make up the steps, and are counted when they are made.
+        job.planned = if only.is_some() {
+            1 + job.to_reflect.len() + job.to_infer.len()
+        } else {
+            job.generators.len() + job.to_reflect.len() + job.to_infer.len()
+        };
         Ok(job)
     }
 
@@ -270,6 +446,7 @@ impl AttachOptionsJob {
             point: self.asked_for.clone(),
             weak_units: self.weak_units,
             limits: self.requested_limits(),
+            only: self.only.map(|index| self.generators[index].generator),
         })
     }
 
@@ -291,7 +468,9 @@ impl AttachOptionsJob {
             && self
                 .generators
                 .iter()
-                .any(|info| info.placeholder || !info.depends_on.is_empty());
+                .enumerate()
+                .filter(|(index, _)| self.only.is_none_or(|only| only == *index))
+                .any(|(_, info)| info.placeholder || !info.depends_on.is_empty());
         schemas || (self.haystack.dimension() >= 4 && !self.to_reflect.is_empty())
     }
 
@@ -301,7 +480,9 @@ impl AttachOptionsJob {
         self.generators
             .iter()
             .enumerate()
-            .filter(move |(_, info)| info.generator.dimension == dimension)
+            .filter(move |(index, info)| {
+                info.generator.dimension == dimension && self.only.is_none_or(|only| only == *index)
+            })
     }
 
     /// The generators to reflect: those that are cells (to attach, not raised).
@@ -351,9 +532,10 @@ impl AttachOptionsJob {
             .collect()
     }
 
-    /// Finds the ways to attach the generator itself, its inverse and cells raised from it.
-    fn plain(&mut self, index: usize) {
-        let info = self.generators[index].clone();
+    /// The cells to look for to attach the generator itself, its inverse and cells raised from
+    /// it, in the order that the options are in.
+    fn plain_variants(&self, index: usize) -> Vec<Variant> {
+        let info = &self.generators[index];
         let haystack = &self.haystack;
         let weak_units = self.weak_units;
         let bubble = |mut diagram: DiagramN| {
@@ -368,53 +550,67 @@ impl AttachOptionsJob {
             }
             DiagramN::try_from(diagram).unwrap()
         };
+        let variant =
+            |diagram: DiagramN, structure: Option<Structure>| Variant { diagram, structure };
 
-        let mut found = vec![];
+        let mut variants = vec![];
         match info.generator.dimension.cmp(&(haystack.dimension() + 1)) {
             std::cmp::Ordering::Less => {
                 // How many dimensions the cell is raised by.
                 let k = haystack.dimension() + 1 - info.generator.dimension;
                 if weak_units {
-                    found.extend(self.options(
-                        &info,
-                        &weak_unit(info.diagram.clone()),
-                        Some(&Structure::Identity(k)),
+                    variants.push(variant(
+                        weak_unit(info.diagram.clone()),
+                        Some(Structure::Identity(k)),
                     ));
                 }
 
                 if let Diagram::DiagramN(d) = &info.diagram {
                     if info.invertibility.is_invertible() {
                         if weak_units {
-                            found.extend(self.options(
-                                &info,
-                                &weak_unit(d.inverse().into()),
-                                Some(&Structure::InverseIdentity(k)),
+                            variants.push(variant(
+                                weak_unit(d.inverse().into()),
+                                Some(Structure::InverseIdentity(k)),
                             ));
                         }
 
-                        found.extend(self.options(
-                            &info,
-                            &bubble(d.clone()),
-                            Some(&Structure::Bubble(k)),
-                        ));
-                        found.extend(self.options(
-                            &info,
-                            &bubble(d.inverse()),
-                            Some(&Structure::InverseBubble(k)),
+                        variants.push(variant(bubble(d.clone()), Some(Structure::Bubble(k))));
+                        variants.push(variant(
+                            bubble(d.inverse()),
+                            Some(Structure::InverseBubble(k)),
                         ));
                     }
                 }
             }
             std::cmp::Ordering::Equal => {
                 if let Diagram::DiagramN(d) = &info.diagram {
-                    found.extend(self.options(&info, d, None));
+                    variants.push(variant(d.clone(), None));
                     if info.invertibility.is_invertible() {
-                        found.extend(self.options(&info, &d.inverse(), Some(&Structure::Inverse)));
+                        variants.push(variant(d.inverse(), Some(Structure::Inverse)));
                     }
                 }
             }
             std::cmp::Ordering::Greater => (),
         }
+        variants
+    }
+
+    /// The ways to attach a cell made from the generator.
+    fn variant_options(&self, index: usize, variant: &Variant) -> Vec<AttachOption> {
+        self.options(
+            &self.generators[index],
+            &variant.diagram,
+            variant.structure.as_ref(),
+        )
+    }
+
+    /// Finds the ways to attach the generator itself, its inverse and cells raised from it.
+    fn plain(&mut self, index: usize) {
+        let found: Vec<_> = self
+            .plain_variants(index)
+            .iter()
+            .flat_map(|variant| self.variant_options(index, variant))
+            .collect();
         self.matches.extend(
             found
                 .into_iter()
@@ -422,22 +618,51 @@ impl AttachOptionsJob {
         );
     }
 
-    /// Finds the ways to attach the reflections of the generator.
-    fn reflections(&mut self, index: usize) {
-        let info = self.generators[index].clone();
+    /// The reflections of the generator that could match, to typecheck and look for.
+    fn reflection_candidates(&self, index: usize) -> Vec<ReflectionCandidate> {
+        let info = &self.generators[index];
         let Diagram::DiagramN(d) = &info.diagram else {
-            return;
+            return vec![];
         };
-        let found = extend_with_reflections(
+        reflection_candidates(
             &self.signature,
-            &info,
+            info.invertibility.is_invertible(),
             d,
+            &self.present,
+            self.boundary,
+        )
+    }
+
+    /// The ways to attach a reflection of the generator, if it typechecks.
+    fn reflection_options(
+        &self,
+        index: usize,
+        candidate: &ReflectionCandidate,
+    ) -> Vec<AttachOption> {
+        let info = &self.generators[index];
+        let Diagram::DiagramN(d) = &info.diagram else {
+            return vec![];
+        };
+        reflection_options(
+            &self.signature,
+            info,
+            d,
+            candidate,
             &self.haystack,
             &self.present,
             &self.point,
             self.boundary,
             self.boundary_path,
-        );
+        )
+    }
+
+    /// Finds the ways to attach the reflections of the generator.
+    fn reflections(&mut self, index: usize) {
+        let found: Vec<_> = self
+            .reflection_candidates(index)
+            .iter()
+            .flat_map(|candidate| self.reflection_options(index, candidate))
+            .collect();
         self.matches.extend(
             found
                 .into_iter()
@@ -445,11 +670,50 @@ impl AttachOptionsJob {
         );
     }
 
+    /// Does a piece of the search for the one generator that is searched for: makes the pieces of
+    /// the pass the first time, and then one of them at a time. `true` when the pass is over.
+    fn piece(&mut self, index: usize, pass: Pass) -> bool {
+        let Some(pieces) = &mut self.pieces else {
+            let pieces: VecDeque<Piece> = match pass {
+                Pass::Plain => self
+                    .plain_variants(index)
+                    .into_iter()
+                    .map(Piece::Variant)
+                    .collect(),
+                _ => self
+                    .reflection_candidates(index)
+                    .into_iter()
+                    .map(Piece::Reflection)
+                    .collect(),
+            };
+            // The one unit that stood for the pass is now as many as there are pieces.
+            self.planned = (self.planned + pieces.len()).saturating_sub(1);
+            self.pieces = Some(pieces);
+            return false;
+        };
+        let Some(piece) = pieces.pop_front() else {
+            self.pieces = None;
+            return true;
+        };
+        let found = match &piece {
+            Piece::Variant(variant) => self.variant_options(index, variant),
+            Piece::Reflection(candidate) => self.reflection_options(index, candidate),
+        };
+        self.matches
+            .extend(found.into_iter().map(|option| (index, pass.rank(), option)));
+        self.done += 1;
+        false
+    }
+
     /// Does a little of the inference of instances of schemas: the next candidate of the search
     /// that is going, or the start of the next one. `true` when it is over.
+    ///
+    /// A step does not run past the time that is left: the search looks at the clock as it goes
+    /// (see [`deadline`]), so that one candidate list or one check that would take long is cut
+    /// short, and the schema is given up on with what it had found.
     fn infer(&mut self) -> bool {
         let limit = self.limits.budget();
-        let limit_each = self.limits.budget_each();
+        let limit_each = self.limits.budget_each(self.to_infer.len());
         let started = Instant::now();
 
         if self.inferring.is_none() {
@@ -464,8 +728,11 @@ impl AttachOptionsJob {
             if limit.is_some_and(|limit| self.spent >= limit) {
                 self.report.not_tried.push(name);
                 self.done += 1;
+                self.checkpoint_due = true;
                 return false;
             }
+            let time_up = limit.map(|limit| started + limit.saturating_sub(self.spent));
+            let _limit = time_up.map(deadline::until);
             self.inferring = InferSearch::new(
                 &self.signature,
                 Rc::clone(&self.cells),
@@ -481,19 +748,35 @@ impl AttachOptionsJob {
             });
             if self.inferring.is_none() {
                 self.done += 1;
+                self.checkpoint_due = true;
             }
             self.spent += started.elapsed();
             return false;
         }
 
         let inferring = self.inferring.as_mut().unwrap();
+        // The most this step may take: what is left of the time for the schema and for all.
+        let left = [
+            limit_each.map(|each| each.saturating_sub(inferring.spent)),
+            limit.map(|limit| limit.saturating_sub(self.spent)),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        let limit_now = left.map(|left| deadline::until(started + left));
         let over = inferring.search.step();
+        let out_of_time = limit_now.as_ref().is_some_and(deadline::Limit::expired);
+        drop(limit_now);
         let took = started.elapsed();
         inferring.spent += took;
         self.spent += took;
-        let cut = !over
-            && (limit_each.is_some_and(|limit| inferring.spent >= limit)
-                || limit.is_some_and(|limit| self.spent >= limit));
+        self.longest_step = self.longest_step.max(took);
+        // A search that was cut short by the clock is not over, whatever it says: it ran out of
+        // what it was looking at.
+        let cut = out_of_time
+            || (!over
+                && (limit_each.is_some_and(|limit| inferring.spent >= limit)
+                    || limit.is_some_and(|limit| self.spent >= limit)));
         if over || cut {
             let Inferring {
                 generator, search, ..
@@ -522,14 +805,34 @@ impl AttachOptionsJob {
                 ));
             }
             self.done += 1;
+            self.checkpoint_due = true;
         }
         false
+    }
+
+    /// The most time that the inference of instances can take, if it is going to happen and has
+    /// a limit: for whoever runs the search somewhere that it can be ended from outside (see
+    /// [`checkpoint`](Job::checkpoint)) to know when to.
+    #[must_use]
+    pub fn inference_budget(&self) -> Option<Duration> {
+        if self.to_infer.is_empty() {
+            return None;
+        }
+        self.limits.budget()
+    }
+
+    /// Goes on to the inference of instances.
+    const fn begin_instances(&mut self) {
+        self.pass = Pass::Instances;
+        self.next = 0;
+        self.checkpoint_due = !self.to_infer.is_empty();
     }
 
     fn outcome(&mut self) -> AttachOutcome {
         let mut matches = std::mem::take(&mut self.matches);
         matches.sort_by_key(|(index, rank, _)| (*index, *rank));
         self.report.spent_ms = self.spent.as_millis() as u64;
+        self.report.longest_step_ms = self.longest_step.as_millis() as u64;
         AttachOutcome {
             options: matches.into_iter().map(|(_, _, option)| option).collect(),
             inference: std::mem::take(&mut self.report),
@@ -542,8 +845,9 @@ impl Job for AttachOptionsJob {
 
     fn label(&self) -> &'static str {
         match self.pass {
-            Pass::Instances => "Inferring instances",
-            Pass::Plain | Pass::Reflections => "Searching for attachments",
+            // (Not when there are no schemas to infer instances of, and what is left is to say so.)
+            Pass::Instances if !self.to_infer.is_empty() => "Inferring instances",
+            Pass::Instances | Pass::Plain | Pass::Reflections => "Searching for attachments",
         }
     }
 
@@ -554,11 +858,54 @@ impl Job for AttachOptionsJob {
         })
     }
 
+    /// What the search would come to if it were ended now, if that is different from the last
+    /// time this was asked and it is in the inference of instances.
+    ///
+    /// The inference is the part of the search that has no end to it, and a single step of it
+    /// can in principle go on for long: so where the search is done by something that can be
+    /// ended from outside (a worker), this is the answer to fall back on if it has to be, with
+    /// the schemas that are not done with, and the one it was in the middle of, reported as not
+    /// finished.
+    fn checkpoint(&mut self) -> Option<Self::Output> {
+        if self.pass != Pass::Instances || !self.checkpoint_due {
+            return None;
+        }
+        self.checkpoint_due = false;
+        let mut matches = self.matches.clone();
+        matches.sort_by_key(|(index, rank, _)| (*index, *rank));
+        let mut report = self.report.clone();
+        report.forced = true;
+        report.spent_ms = self.spent.as_millis() as u64;
+        report.longest_step_ms = self.longest_step.as_millis() as u64;
+        // The schema that is running (or the next, which is about to) is the one that does not
+        // end, if anything is.
+        let mut unfinished = self
+            .inferring
+            .iter()
+            .map(|inferring| inferring.generator)
+            .chain(self.to_infer.iter().skip(self.next).copied());
+        if let Some(running) = unfinished.next() {
+            report.cut_short.push(self.generators[running].name.clone());
+        }
+        report
+            .not_tried
+            .extend(unfinished.map(|index| self.generators[index].name.clone()));
+        Some(AttachOutcome {
+            options: matches.into_iter().map(|(_, _, option)| option).collect(),
+            inference: report,
+        })
+    }
+
     fn step(&mut self) -> Option<Self::Output> {
         self.started = true;
         match self.pass {
             Pass::Plain => {
-                if self.next < self.generators.len() {
+                if let Some(index) = self.only {
+                    if self.piece(index, Pass::Plain) {
+                        self.pass = Pass::Reflections;
+                        self.next = 0;
+                    }
+                } else if self.next < self.generators.len() {
                     self.plain(self.next);
                     self.next += 1;
                     self.done += 1;
@@ -568,13 +915,16 @@ impl Job for AttachOptionsJob {
                 }
             }
             Pass::Reflections => {
-                if let Some(&index) = self.to_reflect.get(self.next) {
+                if let Some(index) = self.only {
+                    if !self.to_reflect.contains(&index) || self.piece(index, Pass::Reflections) {
+                        self.begin_instances();
+                    }
+                } else if let Some(&index) = self.to_reflect.get(self.next) {
                     self.reflections(index);
                     self.next += 1;
                     self.done += 1;
                 } else {
-                    self.pass = Pass::Instances;
-                    self.next = 0;
+                    self.begin_instances();
                 }
             }
             Pass::Instances => {
@@ -587,25 +937,21 @@ impl Job for AttachOptionsJob {
     }
 }
 
-/// Offers the well-typed reflections of a generator other than its inverse: duals, mates,
+/// The reflections of a generator other than its inverse that could match: duals, mates,
 /// adjoints and so on. These are only valid when some of the generators involved are
 /// invertible or dualisable, or when the signature has symmetries, and are typechecked only
-/// once they are known to match. Reflections by a symmetry are tagged with its name.
+/// once they are known to match (see [`reflection_options`]).
 ///
 /// A reflection has the cells that the diagram has, in other directions, so none of them can be
 /// in the haystack if the cells of neither end of the diagram are: which is nearly always, and
 /// is found out before the (up to `2^n - 1`) reflections are made.
-#[allow(clippy::too_many_arguments)]
-fn extend_with_reflections(
+fn reflection_candidates(
     signature: &Signature,
-    info: &GeneratorInfo,
+    invertible: bool,
     diagram: &DiagramN,
-    haystack: &Diagram,
     present: &FastHashMap<Generator, FastHashSet<Orientation>>,
-    point: &[Height],
     boundary: Boundary,
-    boundary_path: Option<BoundaryPath>,
-) -> Vec<AttachOption> {
+) -> Vec<ReflectionCandidate> {
     let any_invertible = Diagram::from(diagram.clone())
         .generators()
         .keys()
@@ -648,41 +994,67 @@ fn extend_with_reflections(
         })
     };
 
-    let mut matches = vec![];
     let n = diagram.dimension();
-    for (directions, reflected) in diagram.reflections_where(could_embed) {
-        if info.invertibility.is_invertible() && directions == [n] {
-            // Already offered as the inverse.
-            continue;
-        }
-        let needle = reflected.slice(boundary.flip()).unwrap();
-        if !in_haystack(&needle) {
-            continue;
-        }
-        let embeddings: Vec<_> = haystack.embeddings_through(&needle, point).collect();
-        if embeddings.is_empty()
-            || typecheck(&reflected.clone().into(), signature, Mode::default(), true).is_err()
-        {
-            continue;
-        }
-        let mask = directions.iter().fold(0_u64, |mask, j| mask | 1 << (j - 1));
-        let structure = signature
-            .symmetries()
-            .iter()
-            .find(|symmetry| symmetry.mask() & ((1 << n) - 1) == mask)
-            .map_or_else(
-                || Structure::Reflection(directions.clone()),
-                |symmetry| Structure::Symmetry(symmetry.name.clone()),
-            );
-        let label = structure.label(&info.name);
-        matches.extend(embeddings.into_iter().map(|embedding| AttachOption {
+    diagram
+        .reflections_where(could_embed)
+        .into_iter()
+        // (The reflection in the last direction alone is already offered as the inverse.)
+        .filter(|(directions, _)| !(invertible && directions == &[n]))
+        .map(|(directions, reflected)| ReflectionCandidate {
+            directions,
+            reflected,
+        })
+        .collect()
+}
+
+/// The ways to attach a reflection of a generator (see [`reflection_candidates`]), if it
+/// typechecks. Reflections by a symmetry are tagged with its name.
+#[allow(clippy::too_many_arguments)]
+fn reflection_options(
+    signature: &Signature,
+    info: &GeneratorInfo,
+    diagram: &DiagramN,
+    candidate: &ReflectionCandidate,
+    haystack: &Diagram,
+    present: &FastHashMap<Generator, FastHashSet<Orientation>>,
+    point: &[Height],
+    boundary: Boundary,
+    boundary_path: Option<BoundaryPath>,
+) -> Vec<AttachOption> {
+    let ReflectionCandidate {
+        directions,
+        reflected,
+    } = candidate;
+    let n = diagram.dimension();
+    let needle = reflected.slice(boundary.flip()).unwrap();
+    if !needle.generators().keys().all(|g| present.contains_key(g)) {
+        return vec![];
+    }
+    let embeddings: Vec<_> = haystack.embeddings_through(&needle, point).collect();
+    if embeddings.is_empty()
+        || typecheck(&reflected.clone().into(), signature, Mode::default(), true).is_err()
+    {
+        return vec![];
+    }
+    let mask = directions.iter().fold(0_u64, |mask, j| mask | 1 << (j - 1));
+    let structure = signature
+        .symmetries()
+        .iter()
+        .find(|symmetry| symmetry.mask() & ((1 << n) - 1) == mask)
+        .map_or_else(
+            || Structure::Reflection(directions.clone()),
+            |symmetry| Structure::Symmetry(symmetry.name.clone()),
+        );
+    let label = structure.label(&info.name);
+    embeddings
+        .into_iter()
+        .map(|embedding| AttachOption {
             generator: info.generator,
             diagram: reflected.clone(),
             label: Some(label.clone()),
             boundary_path,
             embedding: embedding.into_iter().collect(),
             substitution: None,
-        }));
-    }
-    matches
+        })
+        .collect()
 }

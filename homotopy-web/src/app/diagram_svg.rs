@@ -27,11 +27,12 @@ use homotopy_graphics::{
         PLACEHOLDER_HATCH_ID,
     },
 };
+use wasm_bindgen::JsCast;
 use web_sys::Element;
 use yew::prelude::*;
 
 use self::highlight::{HighlightKind, HighlightSvg};
-use super::tooltip;
+use super::{attach_target, tooltip};
 use crate::{
     app::settings::AppSettings,
     components::{read_touch_list_abs, Finger},
@@ -57,6 +58,8 @@ pub struct DiagramSvg<const N: usize> {
     drag_start: Option<Point2D<f32>>,
     /// What the pointer is over, which the tooltip shown is for.
     hovered: Option<Simplex<N>>,
+    /// The part of the diagram that a generator being dragged over it would be attached at.
+    drop_target: Option<Simplex<N>>,
 }
 
 #[derive(Clone, PartialEq, Properties)]
@@ -82,6 +85,12 @@ pub struct DiagramSvgProps<const N: usize> {
     /// and was sized to what was drawn before, may want to look again.
     #[prop_or_default]
     pub on_laid_out: Callback<()>,
+    /// Whether a generator dragged from the signature can be dropped on the diagram, to attach it
+    /// at the point where it is dropped, which is then given to `on_attach`.
+    #[prop_or_default]
+    pub accepts_drops: bool,
+    #[prop_or_default]
+    pub on_attach: Callback<(Generator, Vec<SliceIndex>)>,
 }
 
 #[allow(clippy::enum_variant_names)]
@@ -94,6 +103,11 @@ pub enum DiagramSvgMessage<const N: usize> {
     OnTouchMove(Vec<(Finger, Point2D<f32>)>),
     /// The layout that was asked for is there.
     Layout(Ticket, Rc<Layout<N>>),
+    /// A generator is being dragged over the diagram, with the pointer at this place.
+    OnDragOver(Point2D<f32>),
+    OnDragLeave,
+    /// A generator was dropped on the diagram, with the pointer at this place.
+    OnDrop(Generator, Point2D<f32>),
 }
 
 /// The computed properties of a diagram that are potentially expensive to compute but can be
@@ -201,6 +215,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
             announce: false,
             drag_start: Default::default(),
             hovered: None,
+            drop_target: None,
         };
         this.prepare(ctx);
         this
@@ -237,6 +252,27 @@ impl<const N: usize> Component for DiagramSvg<N> {
                     self.pointer_move(ctx, touches[0].1, false);
                 }
             }
+            DiagramSvgMessage::OnDragOver(point) => {
+                // Only the part under the pointer is looked up: nothing is searched for before
+                // the drop.
+                let target = self.simplex_at(ctx, point);
+                if target == self.drop_target {
+                    return false;
+                }
+                self.drop_target = target;
+                return true;
+            }
+            DiagramSvgMessage::OnDragLeave => {
+                return self.drop_target.take().is_some();
+            }
+            DiagramSvgMessage::OnDrop(generator, point) => {
+                self.drop_target = None;
+                // (Not while the diagram waits for its layout: there is nothing to drop on.)
+                if let Some(simplex) = self.simplex_at(ctx, point) {
+                    ctx.props().on_attach.emit((generator, simplex[0].to_vec()));
+                }
+                return true;
+            }
             DiagramSvgMessage::Layout(ticket, layout) => {
                 // The layout of a diagram that has been replaced since is of no use.
                 if self.pending != Some(ticket) {
@@ -244,6 +280,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
                 }
                 self.pending = None;
                 self.announce = true;
+                self.drop_target = None;
                 self.hide_tooltip();
                 self.prepared = Some(PreparedDiagram::new(
                     &ctx.props().diagram,
@@ -261,6 +298,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
         if old_props.diagram != ctx.props().diagram {
             // What the tooltip said may no longer be there.
             self.hide_tooltip();
+            self.drop_target = None;
             // re-layout
             self.prepare(ctx);
         } else if old_props.style != ctx.props().style {
@@ -375,6 +413,65 @@ impl<const N: usize> Component for DiagramSvg<N> {
             })
         };
 
+        // A generator dragged from the signature: taken on the diagram if it might be attached
+        // to it (as the drag started by working out, without a search) and the diagram is ready
+        // to be acted on, which is not while it waits for its layout.
+        let (on_drag_over, on_drag_leave, on_drop) = if ctx.props().accepts_drops
+            && self.pending.is_none()
+        {
+            let over = {
+                let link = ctx.link().clone();
+                Callback::from(move |e: DragEvent| {
+                    let (Some(dragged), Some(transfer)) =
+                        (attach_target::dragged(), e.data_transfer())
+                    else {
+                        return;
+                    };
+                    if dragged.verdict.is_err() || !attach_target::carries_generator(&transfer) {
+                        return;
+                    }
+                    e.prevent_default();
+                    transfer.set_drop_effect("copy");
+                    let (x, y) = (e.client_x() as f32, e.client_y() as f32);
+                    link.send_message(DiagramSvgMessage::OnDragOver((x, y).into()));
+                })
+            };
+            let leave = {
+                let link = ctx.link().clone();
+                let diagram_ref = ctx.props().diagram_ref.clone();
+                Callback::from(move |e: DragEvent| {
+                    // Moving from one part of the diagram to another leaves the one: that is not
+                    // leaving the diagram.
+                    let moved_within = e
+                        .related_target()
+                        .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
+                        .zip(diagram_ref.cast::<web_sys::Node>())
+                        .is_some_and(|(target, svg)| svg.contains(Some(&target)));
+                    if !moved_within {
+                        link.send_message(DiagramSvgMessage::OnDragLeave);
+                    }
+                })
+            };
+            let drop = {
+                let link = ctx.link().clone();
+                Callback::from(move |e: DragEvent| {
+                    let Some(generator) =
+                        e.data_transfer().and_then(|t| attach_target::dropped(&t))
+                    else {
+                        return;
+                    };
+                    e.prevent_default();
+                    // The drag is over, and the source may not be told it was dropped.
+                    attach_target::end();
+                    let (x, y) = (e.client_x() as f32, e.client_y() as f32);
+                    link.send_message(DiagramSvgMessage::OnDrop(generator, (x, y).into()));
+                })
+            };
+            (over, leave, drop)
+        } else {
+            Default::default()
+        };
+
         // TODO: Do not redraw diagram when highlight changes!
         // TODO: Do not redraw diagram for drags.
 
@@ -395,11 +492,15 @@ impl<const N: usize> Component for DiagramSvg<N> {
                 ontouchstart={on_touch_update.clone()}
                 ontouchend={on_touch_update.clone()}
                 ontouchcancel={on_touch_update.clone()}
+                ondragover={on_drag_over}
+                ondragleave={on_drag_leave}
+                ondrop={on_drop}
                 ref={ctx.props().diagram_ref.clone()}
             >
                 {Self::view_placeholder_hatch(ctx, prepared)}
                 {prepared.graphic.iter().enumerate().map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
                 {self.view_highlight(ctx)}
+                {self.view_drop_target(prepared)}
             </svg>
         }
     }
@@ -664,6 +765,39 @@ impl<const N: usize> DiagramSvg<N> {
 
         html! {
             <path d={path} class={class}/>
+        }
+    }
+
+    /// The part of the diagram that a generator dragged over it would be attached at.
+    fn view_drop_target(&self, prepared: &PreparedDiagram<N>) -> Html {
+        let Some(shape) = self.drop_target.as_ref().and_then(|target| {
+            prepared
+                .actions
+                .iter()
+                .find(|(simplex, _)| simplex == target)
+                .map(|(_, shape)| shape)
+        }) else {
+            return Default::default();
+        };
+        match shape {
+            Shape::Fill(fill) => html! {
+                <path d={path_to_svg(&fill.path)} class="diagram-svg__drop-highlight" />
+            },
+            Shape::Stroke(stroke) => html! {
+                <path
+                    d={path_to_svg(&stroke.path)}
+                    class="diagram-svg__drop-highlight diagram-svg__drop-highlight--line"
+                    stroke-width={stroke.width.to_string()}
+                />
+            },
+            Shape::Circle(circle) => html! {
+                <circle
+                    cx={circle.center.x.to_string()}
+                    cy={circle.center.y.to_string()}
+                    r={circle.radius.to_string()}
+                    class="diagram-svg__drop-highlight"
+                />
+            },
         }
     }
 

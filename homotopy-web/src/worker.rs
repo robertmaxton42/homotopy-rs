@@ -14,9 +14,11 @@
 //!   copied; and `{kind: "preload", bytes}`, diagrams for the next job to find (see
 //!   [`homotopy_model::remote::Remote::preload`]), which has no answer;
 //! - worker to page: `{kind: "ready"}` (said by `static/worker.js`) once the module is running,
-//!   then for each job any number of `{kind: "progress", job, label, done, total}` and finally
-//!   `{kind: "done", job, bytes}`, or `{kind: "panic", job, message}` if the worker crashed
-//!   (after which it is of no use, and the page ends it).
+//!   then for each job any number of `{kind: "progress", job, label, done, total}`, for some jobs
+//!   `{kind: "partial", job, bytes}` (an answer that will do if the job has to be ended: see
+//!   [`homotopy_model::job::Job::checkpoint`]), and finally `{kind: "done", job, bytes}`, or
+//!   `{kind: "panic", job, message}` if the worker crashed (after which it is of no use, and the
+//!   page ends it).
 //!
 //! There are two workers, running the same code: one for jobs, one for laying out diagrams (see
 //! [`crate::layout`]), so that cancelling a job, which ends its worker, does not lose a layout in
@@ -60,6 +62,12 @@ pub enum Event {
         job: u64,
         label: String,
         progress: Option<Progress>,
+    },
+    /// What the job would come to if it were ended now: the answer for the page to use if it has
+    /// to end the job because it takes too long.
+    Partial {
+        job: u64,
+        bytes: Vec<u8>,
     },
     Done {
         job: u64,
@@ -191,7 +199,7 @@ impl Client {
             Event::Crashed { .. } => {
                 self.failures += 1;
             }
-            Event::Progress { .. } => {}
+            Event::Progress { .. } | Event::Partial { .. } => {}
         }
         true
     }
@@ -304,6 +312,10 @@ fn parse_event(data: &JsValue) -> Option<Event> {
                 total: total as usize,
             }),
         },
+        "partial" => Event::Partial {
+            job: job()?,
+            bytes: get(data, "bytes").dyn_into::<Uint8Array>().ok()?.to_vec(),
+        },
         "done" => Event::Done {
             job: job()?,
             bytes: get(data, "bytes").dyn_into::<Uint8Array>().ok()?.to_vec(),
@@ -394,16 +406,30 @@ pub fn worker_message(data: &JsValue) {
         layout::run(&bytes.to_vec(), &mut |delay_ms| spin(delay_ms))
     } else {
         let mut last_report: Option<Instant> = None;
+        let mut last_label: Option<&'static str> = None;
         EXECUTOR.with(|executor| {
-            executor
-                .borrow_mut()
-                .run(&bytes.to_vec(), &mut |step: Step| {
-                    if last_report.is_none_or(|at| at.elapsed() >= PROGRESS_INTERVAL) {
+            executor.borrow_mut().run_with_checkpoints(
+                &bytes.to_vec(),
+                &mut |step: Step| {
+                    // A change of what the job is doing is said at once, as the next report
+                    // may be a long step away.
+                    if last_label != Some(step.label)
+                        || last_report.is_none_or(|at| at.elapsed() >= PROGRESS_INTERVAL)
+                    {
                         last_report = Some(Instant::now());
+                        last_label = Some(step.label);
                         report(job, step);
                     }
                     spin(step.delay_ms);
-                })
+                },
+                &mut |partial: Vec<u8>| {
+                    let buffer = Uint8Array::from(partial.as_slice());
+                    let reply = message("partial");
+                    Reflect::set(&reply, &"job".into(), &(job as f64).into()).unwrap();
+                    Reflect::set(&reply, &"bytes".into(), &buffer).unwrap();
+                    post(&reply, Some(&buffer.buffer()));
+                },
+            )
         })
     };
     CURRENT.with(|current| *current.borrow_mut() = None);

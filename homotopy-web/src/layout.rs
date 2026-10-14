@@ -495,7 +495,7 @@ fn heard(generation: u32, event: Event) {
             tracing::info!("The layout worker is ready");
             pump();
         }
-        Event::Progress { .. } => {}
+        Event::Progress { .. } | Event::Partial { .. } => {}
         Event::Done { job, bytes } => done(job, &bytes),
         Event::Crashed { job, message } => crashed(job, &message),
     }

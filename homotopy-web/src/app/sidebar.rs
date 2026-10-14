@@ -1,3 +1,4 @@
+use homotopy_core::Generator;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::{closure::Closure, JsCast};
 use yew::prelude::*;
@@ -265,6 +266,8 @@ pub struct SidebarProps {
     pub options: Option<model::Selectables>,
     /// The instantiations in progress, which the app owns: what they infer is a job.
     pub drafts: Drafts,
+    /// The generator picked to be attached by the next click on the diagram.
+    pub armed: Option<Generator>,
     pub dispatch: Callback<model::Action>,
     pub remote_project_metadata: Option<RemoteProjectMetadata>,
 }
@@ -282,6 +285,10 @@ pub enum SidebarMsg {
 pub struct DraftProps {
     pub drafts: Drafts,
     pub on_edit: Callback<DraftEdit>,
+    /// The generator picked to be attached by the next click on the diagram, if there is one
+    /// (see [`model::Action::Arm`]), and how to pick one, or put it down.
+    pub armed: Option<Generator>,
+    pub on_arm: Callback<Option<Generator>>,
 }
 
 pub struct Sidebar {
@@ -381,6 +388,8 @@ impl Sidebar {
         let drafts = DraftProps {
             drafts: ctx.props().drafts.clone(),
             on_edit: model_dispatch.reform(model::Action::Draft),
+            armed: ctx.props().armed,
+            on_arm: model_dispatch.reform(model::Action::Arm),
         };
 
         if let Some(options) = ctx.props().options.as_ref() {

@@ -56,6 +56,9 @@ pub enum Work {
         point: Vec<SliceIndex>,
         weak_units: bool,
         limits: InferenceLimits,
+        /// The one generator to search for the ways to attach, if not all of them.
+        #[serde(default)]
+        only: Option<Generator>,
     },
     /// Make the project a `.hom` file (see [`serialize`](crate::serialize)), to save it in the
     /// background (see [`autosave`](crate::autosave)).
@@ -151,6 +154,10 @@ struct Request {
     /// A number for the signature that the job ends with, if it is not the one it began with.
     fresh: u64,
     step_delay_ms: u32,
+    /// For debugging: only the steps whose label contains this are slowed down (all, if it is
+    /// empty).
+    #[serde(default)]
+    step_delay_label: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -388,6 +395,9 @@ pub struct Remote {
     holds: Option<(u64, Signature)>,
     /// The actions of the last request, which the answer refers to.
     asked: Vec<crate::proof::Action>,
+    /// For debugging: which steps the delay of a request applies to (see
+    /// [`slow_only`](Self::slow_only)).
+    slow_label: String,
 }
 
 /// What came of a request.
@@ -407,6 +417,12 @@ impl Remote {
     const fn number(&mut self) -> u64 {
         self.next_number += 1;
         self.next_number
+    }
+
+    /// For debugging: makes the delay that requests ask for apply only to steps whose label
+    /// contains this. Empty for all of them.
+    pub fn slow_only(&mut self, label: &str) {
+        label.clone_into(&mut self.slow_label);
     }
 
     /// Forgets what the executor holds, as it is gone or not known to be what it was.
@@ -478,6 +494,7 @@ impl Remote {
             work,
             fresh,
             step_delay_ms,
+            step_delay_label: self.slow_label.clone(),
         })
     }
 
@@ -563,7 +580,20 @@ impl Executor {
     /// Does the job that the request describes, and gives the bytes to answer with. `before_step`
     /// is told what is going on before each step of the job, which is the only time it can be.
     pub fn run(&mut self, request: &[u8], before_step: &mut dyn FnMut(Step)) -> Vec<u8> {
-        let (response, trailer) = match self.try_run(request, before_step) {
+        self.run_with_checkpoints(request, before_step, &mut |_| {})
+    }
+
+    /// [`run`](Self::run), and `on_checkpoint` is given the bytes of an answer that does for the
+    /// request, if the job is ended before it is done, whenever a job that has such a thing says
+    /// it has a new one (see [`Job::checkpoint`]). It is for the asker to keep the latest of: the
+    /// bytes are an answer as the end of the job gives it, to [`Remote::response`].
+    pub fn run_with_checkpoints(
+        &mut self,
+        request: &[u8],
+        before_step: &mut dyn FnMut(Step),
+        on_checkpoint: &mut dyn FnMut(Vec<u8>),
+    ) -> Vec<u8> {
+        let (response, trailer) = match self.try_run(request, before_step, on_checkpoint) {
             Ok(done) => done,
             Err(message) => (Response::Failed(message), vec![]),
         };
@@ -586,6 +616,7 @@ impl Executor {
         &mut self,
         request: &[u8],
         before_step: &mut dyn FnMut(Step),
+        on_checkpoint: &mut dyn FnMut(Vec<u8>),
     ) -> Result<(Response, Vec<u8>), String> {
         let Request {
             mut store,
@@ -594,7 +625,15 @@ impl Executor {
             work,
             fresh,
             step_delay_ms,
+            step_delay_label,
         } = rmp_serde::from_slice(request).map_err(|e| e.to_string())?;
+        let mut before_step = |mut step: Step| {
+            if !step.label.contains(&step_delay_label) {
+                step.delay_ms = 0;
+            }
+            before_step(step);
+        };
+        let before_step: &mut dyn FnMut(Step) = &mut before_step;
         // What was sent ahead is for this request; it is not kept for the next.
         store.extend(std::mem::take(&mut self.preloaded));
 
@@ -648,18 +687,23 @@ impl Executor {
                 point,
                 weak_units,
                 limits,
+                only,
             } => {
-                let job = AttachOptionsJob::new(&state, &point, weak_units, limits)
+                let job = AttachOptionsJob::new(&state, &point, weak_units, limits, only)
                     .map_err(|e| format!("nothing to attach to: {e:?}"))?;
-                let AttachOutcome { options, inference } =
-                    run_with(job, step_delay_ms, before_step);
-                WireOutput::AttachOptions {
-                    options: options
-                        .into_iter()
-                        .map(|option| pack_option(&mut store, option))
-                        .collect(),
-                    inference,
-                }
+                let outcome = run_checkpointed(job, step_delay_ms, before_step, &mut |outcome| {
+                    // What a job that is ended in the middle comes to: an answer as any other.
+                    let mut partial = Store::default();
+                    let output = pack_attach_outcome(&mut partial, outcome);
+                    on_checkpoint(encode(&Response::Done(Box::new(Done {
+                        store: partial,
+                        holds: number,
+                        output,
+                        worked_ms: started.elapsed().as_secs_f64() * 1000.0,
+                        trailer: 0,
+                    }))));
+                });
+                pack_attach_outcome(&mut store, outcome)
             }
             Work::Serialize => {
                 trailer = serialize(state.signature, state.workspace, state.metadata);
@@ -679,17 +723,54 @@ impl Executor {
     }
 }
 
+/// How many times as long as a checkpoint took to make there is between checkpoints at least.
+const CHECKPOINT_COST_FACTOR: u32 = 10;
+
 /// Runs a job to the end, saying what it is doing before each step.
-fn run_with<J: Job>(mut job: J, delay_ms: u32, before_step: &mut dyn FnMut(Step)) -> J::Output {
+fn run_with<J: Job>(job: J, delay_ms: u32, before_step: &mut dyn FnMut(Step)) -> J::Output {
+    run_checkpointed(job, delay_ms, before_step, &mut |_| {})
+}
+
+/// [`run_with`], passing on what the job would come to if it were ended whenever it says it has
+/// something new to say about that.
+fn run_checkpointed<J: Job>(
+    mut job: J,
+    delay_ms: u32,
+    before_step: &mut dyn FnMut(Step),
+    on_checkpoint: &mut dyn FnMut(J::Output),
+) -> J::Output {
+    // A checkpoint is as costly as an answer is (the diagrams of the options are packed, and
+    // may be large), so they are not made again until their cost is a tenth of the time since:
+    // a job that is ended loses what it found since the last one, and what it says it had not
+    // finished is cut short or not tried, to be honest about that.
+    let mut not_before: Option<Instant> = None;
     loop {
         before_step(Step {
             label: job.label(),
             progress: job.progress(),
             delay_ms,
         });
+        if not_before.is_none_or(|time| Instant::now() >= time) {
+            if let Some(checkpoint) = job.checkpoint() {
+                let started = Instant::now();
+                on_checkpoint(checkpoint);
+                not_before = Some(Instant::now() + started.elapsed() * CHECKPOINT_COST_FACTOR);
+            }
+        }
         if let Some(output) = job.step() {
             return output;
         }
+    }
+}
+
+fn pack_attach_outcome(store: &mut Store, outcome: AttachOutcome) -> WireOutput {
+    let AttachOutcome { options, inference } = outcome;
+    WireOutput::AttachOptions {
+        options: options
+            .into_iter()
+            .map(|option| pack_option(store, option))
+            .collect(),
+        inference,
     }
 }
 

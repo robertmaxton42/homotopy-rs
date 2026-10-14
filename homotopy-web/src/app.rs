@@ -1,6 +1,8 @@
+use armed_chip::ArmedChip;
 use boundary::BoundaryPreview;
 use futures::future::select;
 use gloo_timers::future::TimeoutFuture;
+use homotopy_core::signature::Signature as _;
 use homotopy_model::{job::Job, remote::Answer};
 use instant::{Duration, Instant};
 use mouse_buttons::MouseButtons;
@@ -32,8 +34,10 @@ use crate::{
 
 #[allow(clippy::mem_forget, clippy::future_not_send)] // due to wasm_bindgen
 pub mod account;
+mod armed_chip;
 mod attach;
 pub mod attach_inference;
+pub mod attach_target;
 mod boundary;
 #[cfg(any(debug_assertions, feature = "show_debug_panel"))]
 mod debug;
@@ -60,6 +64,11 @@ mod workspace;
 /// least; and a step that cannot be split up takes as long as it takes.
 const SLICE: Duration = Duration::from_millis(10);
 
+/// How long past the time that the search for instances may take (`InferenceLimits::budget_ms`)
+/// the worker is given to answer, before it is ended and what it had found is used. The search
+/// looks at the clock as it goes and stops by itself, so this is for what it cannot see.
+const INFERENCE_GRACE: u32 = 750;
+
 /// How long after the app starts the worker is started, so as not to compete with the page for
 /// the processor while it loads.
 const WORKER_DELAY: u32 = 500;
@@ -82,6 +91,8 @@ pub enum Message {
     Autosave(autosave::Message),
     /// The notice about inferring instances was dismissed.
     DismissInferenceNotice,
+    /// The time that the worker is given to infer instances for the job of the number is up.
+    InferenceDeadline(u64),
 }
 
 /// A task that the worker is doing.
@@ -94,6 +105,11 @@ struct Remote {
     bytes_out: usize,
     /// Whether the worker was asked again, with the signature.
     retried: bool,
+    /// What the job would come to if it were ended now, as the worker last said, to be used if
+    /// it takes too long (see `Message::InferenceDeadline`).
+    partial: Option<Vec<u8>>,
+    /// When the time began to run for the worker to infer instances, if it has.
+    deadline_since: Option<Instant>,
 }
 
 /// A task that is being worked on a slice at a time. It works on a copy of what it needs, and
@@ -285,10 +301,13 @@ impl App {
                 self.inference_notice.clear();
                 true
             }
+            Message::InferenceDeadline(id) => self.inference_deadline(ctx, id),
             Message::Escape(in_text_field) => {
                 if self.job.is_some() {
                     self.cancel()
-                } else if !in_text_field && self.state.options.is_some() {
+                } else if !in_text_field
+                    && (self.state.options.is_some() || self.state.armed.is_some())
+                {
                     self.dispatch(ctx, model::Action::ClearSelections)
                 } else {
                     false
@@ -382,6 +401,17 @@ impl App {
 
         // A search for attachments says how the inference of instances went.
         if let Some(report) = self.state.take_inference_report() {
+            tracing::info!(
+                "Inferring instances spent {}ms of {}ms (longest step {}ms){}",
+                report.spent_ms,
+                report.budget_ms,
+                report.longest_step_ms,
+                if report.forced {
+                    ", ended from outside"
+                } else {
+                    ""
+                }
+            );
             let lines = attach_inference::notice(&report);
             if !lines.is_empty() {
                 self.inference_notice = lines;
@@ -453,6 +483,10 @@ impl App {
         let (delay, fault) = (debug_hooks::step_delay_ms(), debug_hooks::worker_mode());
         #[cfg(not(debug_assertions))]
         let (delay, fault) = (0, String::new());
+        #[cfg(debug_assertions)]
+        self.worker
+            .remote()
+            .slow_only(&debug_hooks::step_delay_label());
         let bytes = self
             .worker
             .remote()
@@ -469,6 +503,8 @@ impl App {
             encode_ms,
             bytes_out: bytes.len(),
             retried: with_signature,
+            partial: None,
+            deadline_since: None,
         });
         job.started = Instant::now();
         true
@@ -501,9 +537,103 @@ impl App {
                 }
                 false
             }
+            worker::Event::Partial { job, bytes } => {
+                self.worker_partial(ctx, job, bytes);
+                false
+            }
             worker::Event::Done { job, bytes } => self.worker_done(ctx, job, &bytes),
             worker::Event::Crashed { job, message } => self.worker_crashed(ctx, job, &message),
         }
+    }
+
+    /// The worker says what the running job would come to if it were ended now. That is kept
+    /// for the case that it has to be, and the first one starts the clock on the part of the
+    /// job that has no end to it: from here the worker has the time that the job is allowed to
+    /// spend on it, and a little more, to say that it is done.
+    fn worker_partial(&mut self, ctx: &Context<Self>, id: u64, bytes: Vec<u8>) {
+        let Some(running) = self.job.as_mut().filter(|running| running.id == id) else {
+            return;
+        };
+        let Some(remote) = &mut running.remote else {
+            return;
+        };
+        remote.partial = Some(bytes);
+        if remote.deadline_since.is_some() {
+            return;
+        }
+        let Some(budget) = running.task.inference_budget() else {
+            return;
+        };
+        remote.deadline_since = Some(Instant::now());
+        #[cfg(debug_assertions)]
+        let grace = debug_hooks::infer_grace_ms().unwrap_or(INFERENCE_GRACE);
+        #[cfg(not(debug_assertions))]
+        let grace = INFERENCE_GRACE;
+        let wait = u32::try_from(budget.as_millis())
+            .unwrap_or(u32::MAX)
+            .saturating_add(grace);
+        ctx.link().send_future(async move {
+            TimeoutFuture::new(wait).await;
+            Message::InferenceDeadline(id)
+        });
+    }
+
+    /// The worker has had the time to infer instances and is still at it, which it should not
+    /// be: its search stops by itself when the time is up, so something it cannot see is taking
+    /// long. The job is ended as `Esc` would end it, and a new worker started, but instead of
+    /// being cancelled it is finished with what the worker had found before the schema it was
+    /// in the middle of; which of the schemas were not done with is in the notice.
+    fn inference_deadline(&mut self, ctx: &Context<Self>, id: u64) -> bool {
+        let waiting = self.job.as_ref().is_some_and(|running| {
+            running.id == id
+                && running
+                    .remote
+                    .as_ref()
+                    .is_some_and(|remote| remote.partial.is_some())
+        });
+        if !waiting {
+            // It was done in time, or cancelled.
+            return false;
+        }
+        let mut job = self.job.take().expect("a job was being done");
+        let remote = job.remote.take().expect("the worker was doing it");
+        let partial = remote.partial.unwrap_or_default();
+        let waited = remote
+            .deadline_since
+            .map_or(Duration::ZERO, |since| since.elapsed());
+        tracing::warn!(
+            "{} did not stop in time ({:.2}s after it began, {:.1}s since it was sent): \
+             ending the worker",
+            remote.label,
+            waited.as_secs_f64(),
+            remote.sent.elapsed().as_secs_f64()
+        );
+        // What it said is read before the worker is forgotten, as that has what it held.
+        let answer = self.worker.remote().response(&partial);
+        self.worker.stop();
+        self.worker.ensure();
+        let output = match answer {
+            Ok(Answer::Done { output, .. }) => job.task.output_of(output),
+            _ => None,
+        };
+        // How long it had was what it took.
+        let output = output.map(|mut output| {
+            if let model::TaskOutput::AttachOptions(outcome) = &mut output {
+                outcome.inference.spent_ms = waited.as_millis() as u64;
+            }
+            output
+        });
+        if let Some(output) = output {
+            return self.commit(ctx, job, output);
+        }
+        // There is no telling what it had found. The job is done here instead, where it stops
+        // by itself.
+        toast(Toast::warn(
+            "The background worker did not stop in time, and what it had found could not be \
+             used; searching here instead",
+        ));
+        job.started = Instant::now();
+        self.work(ctx, job)
     }
 
     /// The worker has answered for the running job: commits what it came to.
@@ -624,7 +754,7 @@ impl App {
                 let label = job.task.label();
                 let step_started = Instant::now();
                 #[cfg(debug_assertions)]
-                debug_hooks::artificial_delay();
+                debug_hooks::artificial_delay(label);
                 let output = job.task.step();
                 job.steps += 1;
                 job.longest_step = job.longest_step.max(step_started.elapsed());
@@ -860,6 +990,7 @@ impl App {
                 dispatch={dispatch.clone()}
                 attachment_highlight={state.attachment_highlight.clone()}
                 slice_highlight={state.slice_highlight}
+                armed={state.armed}
             />
         };
 
@@ -892,12 +1023,19 @@ impl App {
                         on_dismiss={ctx.link().callback(|()| Message::DismissInferenceNotice)}
                     />
                 }
+                if let Some(info) = state.armed.and_then(|generator| proof.signature.generator_info(generator)) {
+                    <ArmedChip
+                        name={info.name.clone()}
+                        on_cancel={dispatch.reform(|()| model::Action::Arm(None))}
+                    />
+                }
                 <tooltip::HoverTooltip />
                 <Sidebar
                     dispatch={dispatch}
                     proof={proof.clone()}
                     options={state.options.clone()}
                     drafts={state.drafts.clone()}
+                    armed={state.armed}
                     remote_project_metadata={state.remote_project_metadata.clone()}
                 />
                 <div class="toaster">

@@ -11,7 +11,10 @@ use std::{
     rc::Rc,
 };
 
-use homotopy_common::hash::{FastHashMap, FastHashSet};
+use homotopy_common::{
+    deadline,
+    hash::{FastHashMap, FastHashSet},
+};
 use homotopy_core::{
     signature::{Invertibility, Signature as _},
     substitution::substitute,
@@ -95,8 +98,9 @@ impl Composites {
     }
 
     /// The composites with `depth` cells that are new, making them (and those with fewer) if need
-    /// be.
-    fn level(&mut self, depth: usize, cells: &[&DiagramN]) -> Rc<[DiagramN]> {
+    /// be. `None` if the time limit of the thread (see [`deadline`]) is reached before they are
+    /// all made, in which case nothing is kept of the level that was being made.
+    fn level(&mut self, depth: usize, cells: &[&DiagramN]) -> Option<Rc<[DiagramN]>> {
         while self.levels.len() <= depth {
             let depth = self.levels.len();
             let mut level = vec![];
@@ -114,10 +118,18 @@ impl Composites {
                     })
                     .collect()
             };
-            for composite in std::mem::take(&mut self.frontier) {
+            let frontier = std::mem::take(&mut self.frontier);
+            let mut added = vec![];
+            let mut cut = false;
+            'composites: for composite in &frontier {
+                if deadline::expired() {
+                    cut = true;
+                    break;
+                }
                 if !self.seen.insert(composite.clone()) {
                     continue;
                 }
+                added.push(composite.clone());
                 level.push(composite.clone());
                 if depth == MAX_CELLS {
                     continue;
@@ -135,13 +147,29 @@ impl Composites {
                         if let Ok(extended) = composite.attach(cell, Boundary::Target, &embedding) {
                             next.push(extended);
                         }
+                        if deadline::expired() {
+                            cut = true;
+                            break 'composites;
+                        }
+                    }
+                    if deadline::expired() {
+                        cut = true;
+                        break 'composites;
                     }
                 }
+            }
+            if cut {
+                // What was found of the level is not all of it: as if it had not been started.
+                for composite in &added {
+                    self.seen.remove(composite);
+                }
+                self.frontier = frontier;
+                return None;
             }
             self.frontier = next;
             self.levels.push(level.into());
         }
-        Rc::clone(&self.levels[depth])
+        Some(Rc::clone(&self.levels[depth]))
     }
 }
 
@@ -364,6 +392,10 @@ impl<'a> Pool<'a> {
             return found.clone();
         }
         let found = self.find_candidates(placeholder, substitution);
+        // A list that was cut short by the time limit is not the list: it is not remembered.
+        if deadline::expired() {
+            return found;
+        }
         let mut cache = self.cells.candidates.borrow_mut();
         if cache.len() < MAX_CACHED_CANDIDATES {
             cache.insert(key, found.clone());
@@ -412,7 +444,10 @@ impl<'a> Pool<'a> {
         let composites = self.cells.composites_from(&source);
         let mut results = vec![];
         for depth in 0..=MAX_CELLS {
-            let level = composites.borrow_mut().level(depth, &cells);
+            let Some(level) = composites.borrow_mut().level(depth, &cells) else {
+                // Out of time: what there is so far.
+                return results;
+            };
             for composite in level.iter() {
                 if composite.target() == target && Diagram::from(composite.clone()) != own {
                     results.push(composite.clone().into());
@@ -731,15 +766,17 @@ impl InferSearch {
 
 #[cfg(test)]
 mod tests {
-    use homotopy_common::hash::FastHashSet;
+    use std::rc::Rc;
+
+    use homotopy_common::{deadline, hash::FastHashSet};
     use homotopy_core::{
         signature::{Invertibility, Signature as _},
         Boundary, Diagram, DiagramN, Generator, Height,
     };
 
-    use super::{InferSearch, Pool, MAX_CANDIDATES, MAX_CELLS, MAX_SUBSTITUTIONS};
+    use super::{Cells, InferSearch, Pool, MAX_CANDIDATES, MAX_CELLS, MAX_SUBSTITUTIONS};
     use crate::{
-        job::run_to_end,
+        job::{run_to_end, Job},
         proof::{
             AttachOptionsJob, AttachOutcome, InferenceLimits, ProofState, Signature, SignatureEdit,
             SignatureItemEdit, Workspace,
@@ -977,6 +1014,10 @@ mod tests {
     /// finds instances), or, with the cell `u : q ⇒ q` as well, a diagram that the search for
     /// the placeholders has a great deal of choice in (and runs into its limit).
     fn attach_job(big: bool, limits: InferenceLimits) -> AttachOptionsJob {
+        AttachOptionsJob::new(&schema_proof(big), &[], false, limits, None).unwrap()
+    }
+
+    fn schema_proof(big: bool) -> ProofState {
         let (sig, _, q, u) = independent();
         let haystack = if big {
             let mut d = q.identity();
@@ -987,12 +1028,83 @@ mod tests {
         } else {
             small_haystack(&q)
         };
-        let proof = ProofState {
+        ProofState {
             signature: sig,
             workspace: Some(Workspace::new(haystack)),
             ..ProofState::default()
+        }
+    }
+
+    /// The search for the schema alone gives what the whole search gives for it, in pieces, and
+    /// with all of the time that inferring is given: a quarter of it is for a schema that has
+    /// others to share the time with.
+    #[test]
+    fn a_schema_searched_for_alone_is_what_the_whole_search_finds_for_it() {
+        for big in [false, true] {
+            let proof = schema_proof(big);
+            let limits = InferenceLimits::UNLIMITED;
+            let whole =
+                run_to_end(AttachOptionsJob::new(&proof, &[], false, limits, None).unwrap());
+            let mut instances = 0;
+            for info in proof.signature.iter() {
+                let mut job =
+                    AttachOptionsJob::new(&proof, &[], false, limits, Some(info.generator))
+                        .unwrap();
+                let (mut steps, mut last_done) = (0, 0);
+                let only = loop {
+                    let progress = job.progress().unwrap();
+                    assert!(progress.done <= progress.total && progress.done >= last_done);
+                    last_done = progress.done;
+                    steps += 1;
+                    if let Some(outcome) = job.step() {
+                        break outcome;
+                    }
+                };
+                let expected: Vec<_> = whole
+                    .options
+                    .iter()
+                    .filter(|option| option.generator == info.generator)
+                    .cloned()
+                    .collect();
+                assert_eq!(only.options, expected, "{}", info.name);
+                let found = only
+                    .options
+                    .iter()
+                    .filter(|option| option.substitution.is_some())
+                    .count();
+                if found > 0 {
+                    // Searching for the schema is more than a step: the pieces and the inference.
+                    assert!(steps > 3, "{steps}");
+                }
+                instances += found;
+            }
+            assert!(instances > 0, "instances are inferred");
+        }
+    }
+
+    /// With a time limit the schema that is searched for alone has all of it, not a quarter.
+    #[test]
+    fn a_schema_searched_for_alone_has_all_the_time() {
+        let limits = InferenceLimits {
+            budget_ms: 4000,
+            ..InferenceLimits::UNLIMITED
         };
-        AttachOptionsJob::new(&proof, &[], false, limits).unwrap()
+        assert_eq!(
+            limits.budget_each(1),
+            Some(std::time::Duration::from_millis(4000))
+        );
+        assert_eq!(
+            limits.budget_each(5),
+            Some(std::time::Duration::from_millis(1000))
+        );
+        let short = InferenceLimits {
+            budget_ms: 800,
+            ..limits
+        };
+        assert_eq!(
+            short.budget_each(5),
+            Some(std::time::Duration::from_millis(800))
+        );
     }
 
     #[test]
@@ -1084,6 +1196,147 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(plain(&limited), plain(&all));
+    }
+
+    /// A search whose time runs out in the middle of a step finds some of the instances, and no
+    /// instance that is not one; and what it left behind is not taken for the whole: a search
+    /// that shares its cells with it afterwards finds everything.
+    #[test]
+    fn a_search_cut_by_the_clock_is_incomplete_not_wrong() {
+        let (sig, s, q, _) = independent();
+        let haystack = small_haystack(&q);
+        let all = found(&sig, s, &haystack, Boundary::Target, &[]);
+        assert!(all.len() > 5, "{}", all.len());
+
+        let cells = Pool::new(&sig, haystack.generators().into_keys()).cells();
+        let (mut cut_short, mut complete) = (0, 0);
+        for checks in (0..24).chain([30, 50, 80, 120, 200, 400, 100_000]) {
+            let search = |cells: &Rc<Cells>| {
+                InferSearch::new(&sig, Rc::clone(cells), s, &haystack, Boundary::Target, &[])
+                    .unwrap()
+            };
+            let limit = deadline::after_checks(checks);
+            let mut cut = search(&cells);
+            while !cut.step() {}
+            let expired = limit.expired();
+            drop(limit);
+            let some: Vec<_> = cut
+                .finish()
+                .into_iter()
+                .map(|inferred| (inferred.substitution, inferred.embedding))
+                .collect();
+            assert!(
+                some.iter().all(|instance| all.contains(instance)),
+                "{checks} checks: an instance that is not one"
+            );
+            if expired {
+                cut_short += 1;
+            } else {
+                complete += 1;
+                assert_eq!(some, all, "{checks} checks: a search that was not cut");
+            }
+
+            // The candidates and composites it made are still good.
+            let mut again = search(&cells);
+            while !again.step() {}
+            let again: Vec<_> = again
+                .finish()
+                .into_iter()
+                .map(|inferred| (inferred.substitution, inferred.embedding))
+                .collect();
+            assert_eq!(again, all, "{checks} checks: what was left behind");
+        }
+        assert!(cut_short > 20 && complete > 0, "{cut_short} / {complete}");
+    }
+
+    /// The checkpoints of the job that a worker keeps in case it has to be ended are the options
+    /// that there are by then, and say what was not finished.
+    #[test]
+    fn checkpoints_are_what_the_search_has_by_then() {
+        let mut job = attach_job(false, InferenceLimits::UNLIMITED);
+        let mut checkpoints = vec![];
+        let outcome = loop {
+            if let Some(checkpoint) = job.checkpoint() {
+                checkpoints.push(checkpoint);
+            }
+            if let Some(outcome) = job.step() {
+                break outcome;
+            }
+        };
+        assert!(!outcome.inference.forced, "{:?}", outcome.inference);
+        assert!(!outcome.options.is_empty());
+        // One as the instances are begun, and one for each schema that is done.
+        assert!(checkpoints.len() >= 2, "{}", checkpoints.len());
+        for checkpoint in &checkpoints {
+            assert!(checkpoint.inference.forced);
+            assert!(checkpoint
+                .options
+                .iter()
+                .all(|option| outcome.options.contains(option)));
+        }
+        // The first has the options that are not instances, and says that the first schema is
+        // not done; the last has everything, as nothing was left.
+        let first = &checkpoints[0];
+        assert!(first
+            .options
+            .iter()
+            .all(|option| option.substitution.is_none()));
+        assert_eq!(first.inference.cut_short.len(), 1);
+        let last = checkpoints.last().unwrap();
+        assert_eq!(last.options, outcome.options);
+        assert!(!last.inference.timed_out(), "{:?}", last.inference);
+    }
+
+    /// What an executor says it has when it is asked for a search: answers that do for the
+    /// request, which are the checkpoints of the job, and the last of them is the whole of what
+    /// there was before the schema being searched.
+    #[test]
+    fn an_executor_says_what_it_has_as_it_goes() {
+        use crate::remote::{Answer, Executor, Output, Remote, Work};
+
+        let (sig, _, q, _) = independent();
+        let proof = ProofState {
+            signature: sig,
+            workspace: Some(Workspace::new(small_haystack(&q))),
+            ..ProofState::default()
+        };
+        let work = Work::AttachOptions {
+            point: vec![],
+            weak_units: false,
+            limits: InferenceLimits::UNLIMITED,
+            only: None,
+        };
+        let mut remote = Remote::default();
+        let request = remote.request(&proof, work, 0, false);
+        let mut checkpoints = vec![];
+        let response =
+            Executor::default()
+                .run_with_checkpoints(&request, &mut |_| {}, &mut |bytes| checkpoints.push(bytes));
+        let outcome_of = |remote: &mut Remote, bytes: &[u8]| match remote.response(bytes) {
+            Ok(Answer::Done {
+                output: Output::AttachOptions(outcome),
+                ..
+            }) => outcome,
+            other => panic!("{other:?}"),
+        };
+        let whole = outcome_of(&mut remote, &response);
+        assert!(!whole.inference.forced);
+        assert!(whole.options.iter().any(|o| o.substitution.is_some()));
+        // (How many depends on how long they take to make.)
+        assert!(!checkpoints.is_empty());
+        let mut instances_before = 0;
+        for bytes in &checkpoints {
+            let partial = outcome_of(&mut remote, bytes);
+            assert!(partial.inference.forced);
+            assert!(partial.options.iter().all(|o| whole.options.contains(o)));
+            let instances = partial
+                .options
+                .iter()
+                .filter(|o| o.substitution.is_some())
+                .count();
+            assert!(instances >= instances_before, "checkpoints only grow");
+            instances_before = instances;
+        }
     }
 
     fn generator(d: &DiagramN) -> Generator {

@@ -1,10 +1,13 @@
 use homotopy_common::{idx::Idx, tree::Node};
-use homotopy_core::Diagram;
+use homotopy_core::{Diagram, Generator};
 use yew::prelude::*;
 
 use super::item::ItemView;
 use crate::{
-    app::sidebar::{DraftProps, DrawerViewSize},
+    app::{
+        attach_target,
+        sidebar::{DraftProps, DrawerViewSize},
+    },
     components::{add_class, remove_class},
     model::{
         proof::{self, Signature, SignatureEdit, SignatureItem},
@@ -44,13 +47,24 @@ where
     })
 }
 
-fn on_drag_start(node: Node) -> Callback<DragEvent> {
+/// The drag of an item of the signature: moving it elsewhere in the signature, and, if it is a
+/// generator, attaching it to the diagram in the workspace (see [`attach_target`]).
+fn on_drag_start(props: &Props, node: Node, generator: Option<Generator>) -> Callback<DragEvent> {
+    let signature = props.signature.clone();
+    let workspace = props.workspace.clone();
     Callback::from(move |e: DragEvent| {
         if let Some(dt) = e.data_transfer() {
             dt.set_effect_allowed("move");
             dt.set_data("text", &node.index().to_string()).unwrap();
+            if let Some(generator) = generator {
+                attach_target::start(&signature, workspace.as_ref(), generator, &dt);
+            }
         }
     })
+}
+
+fn on_drag_end() -> Callback<DragEvent> {
+    Callback::from(|_: DragEvent| attach_target::end())
 }
 
 fn on_drag_enter(props: &Props, node: Node) -> Callback<DragEvent> {
@@ -154,7 +168,8 @@ fn render_item(props: &Props, node: Node) -> Html {
                         on_drag_over={on_drag_over(props, node)}
                         on_drag_enter={on_drag_enter(props, node)}
                         on_drop={on_drop(props, node, DropPosition::After)}
-                        on_drag_start={on_drag_start(node)}
+                        on_drag_start={on_drag_start(props, node, None)}
+                        on_drag_end={on_drag_end()}
                     />
                 }
             }
@@ -170,7 +185,10 @@ fn render_item(props: &Props, node: Node) -> Html {
                         workspace={props.workspace.clone()}
                         draft={props.drafts.drafts.get(info.generator)}
                         on_draft={props.drafts.on_edit.clone()}
-                        on_drag_start={on_drag_start(node)}
+                        armed={props.drafts.armed == Some(info.generator)}
+                        on_arm={props.drafts.on_arm.clone()}
+                        on_drag_start={on_drag_start(props, node, Some(info.generator))}
+                        on_drag_end={on_drag_end()}
                     />
                 }
             }

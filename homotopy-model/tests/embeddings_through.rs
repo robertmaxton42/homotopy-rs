@@ -2,6 +2,7 @@
 //! point, in the same order: on the diagrams of the examples (every state of every proof) and
 //! every point in their first two dimensions, and some deeper.
 
+use homotopy_common::deadline;
 use homotopy_core::{Boundary, Diagram, DiagramN, Height};
 use homotopy_model::{
     history::Proof,
@@ -104,4 +105,63 @@ fn embeddings_through_a_point_are_the_embeddings_containing_it() {
     assert!(checked.0 > 1000, "{checked:?}");
     assert!(checked.1 > 100, "some embeddings are found: {checked:?}");
     assert!(nonempty > 10);
+}
+
+/// A search that runs out of time stops where it is: what it has found is the beginning of what
+/// the whole search finds, so it is never wrong, only incomplete.
+#[test]
+fn a_search_that_runs_out_of_time_finds_the_first_of_the_embeddings() {
+    let mut cut = 0;
+    let mut whole = 0;
+    for json in EXAMPLES {
+        let mut proof = Proof::default();
+        for action in recorded_actions(json) {
+            if proof.update(&action).is_err() {
+                continue;
+            }
+            let Some(workspace) = proof.workspace.as_ref() else {
+                continue;
+            };
+            let haystack = workspace.diagram.clone();
+            let points = points(&haystack, 1);
+            for info in proof.signature.iter() {
+                let Diagram::DiagramN(d) = &info.diagram else {
+                    continue;
+                };
+                let needle = d.slice(Boundary::Source).unwrap();
+                if needle.dimension() > haystack.dimension() {
+                    continue;
+                }
+                for point in &points {
+                    let all: Vec<_> = haystack.embeddings_through(&needle, point).collect();
+                    let everything: Vec<_> = haystack.embeddings(&needle).collect();
+                    for checks in [0, 1, 2, 5, 20] {
+                        let limit = deadline::after_checks(checks);
+                        let some: Vec<_> = haystack.embeddings_through(&needle, point).collect();
+                        let through_expired = limit.expired();
+                        drop(limit);
+                        assert!(all.starts_with(&some), "{} through {point:?}", info.name);
+
+                        let limit = deadline::after_checks(checks);
+                        let some_of_everything: Vec<_> = haystack.embeddings(&needle).collect();
+                        let expired = limit.expired();
+                        drop(limit);
+                        assert!(everything.starts_with(&some_of_everything), "{}", info.name);
+
+                        // A search that did not run out of time found everything.
+                        if !through_expired {
+                            assert_eq!(some, all);
+                        }
+                        if expired {
+                            cut += 1;
+                        } else {
+                            whole += 1;
+                            assert_eq!(some_of_everything, everything);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(cut > 100 && whole > 100, "{cut} cut, {whole} whole");
 }

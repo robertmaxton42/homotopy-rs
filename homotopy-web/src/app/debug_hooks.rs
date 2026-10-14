@@ -1,7 +1,9 @@
 //! Hooks for driving and inspecting the app from the browser's console or an automated test, in
 //! debug builds only: `window.__homotopy`.
 //!
-//! - `dispatch(json)` does an action, given as JSON (see [`Command`]); `importActions(bytes)`
+//! - `dispatch(json)` does an action, given as JSON (see [`Command`]), such as
+//!   `{"AttachGenerator": [{"id": 48, "dimension": 6}, [{"Regular": 1}], false]}` for dropping a
+//!   generator on a point of the diagram; `importActions(bytes)`
 //!   and `importProof(bytes)` do the same with a file's contents.
 //! - `state()` is a JSON summary of the project and the job in progress (see [`Summary`]).
 //! - `layouts()` is a JSON summary of the layouts of diagrams that were made and where (see
@@ -13,9 +15,13 @@
 //! - `fillWithGenerator("[schema, placeholder, generator]")` chooses the diagram of a generator
 //!   for a placeholder in the Instantiate panel of a schema (each as `[id, dimension]`).
 //! - `profile(json)` replays recorded actions and times each kind (in milliseconds).
+//! - `window.__homotopy_infer_grace_ms` sets how long past its time the worker is given to
+//!   finish inferring instances before it is ended (to see it keep its time by itself, set it
+//!   high).
 //! - `window.__homotopy_step_delay_ms`, if set, makes every step of a job take at least that long,
 //!   to make jobs slow enough to test with (also those done in the worker, which is told when
-//!   it is given the job).
+//!   it is given the job); `window.__homotopy_step_delay_label` limits that to steps whose label
+//!   contains it (`"Inferring"`, say, to have a step of the inference that cannot be interrupted).
 //! - `autosave()` is a JSON summary of saving the project in the background (see `autosave`);
 //!   `window.__homotopy_autosave_idle_ms` sets how long the project is left alone before it is
 //!   saved, and `window.__homotopy_autosave_worker` does for the worker that saves it what
@@ -43,6 +49,18 @@ enum Command {
     SelectPoint(Vec<SliceIndex>, bool),
     /// With these limits on inferring instances.
     SelectPointWith(Vec<SliceIndex>, bool, proof::InferenceLimits),
+    /// Attaches one generator (`{"id": .., "dimension": ..}`) at a point, as dropping it there does,
+    /// with the limits from the settings.
+    AttachGenerator(homotopy_core::Generator, Vec<SliceIndex>, bool),
+    /// The same with these limits on inferring instances.
+    AttachGeneratorWith(
+        homotopy_core::Generator,
+        Vec<SliceIndex>,
+        bool,
+        proof::InferenceLimits,
+    ),
+    /// Picks a generator for the next click on the diagram to attach (`null` puts it down).
+    Arm(Option<homotopy_core::Generator>),
     Select(usize),
     ClearSelections,
     Undo,
@@ -67,6 +85,16 @@ impl From<Command> for model::Action {
             Command::SelectPointWith(point, weak_units, limits) => {
                 Self::SelectPoint(point, weak_units, limits)
             }
+            Command::AttachGenerator(generator, point, weak_units) => Self::AttachGenerator(
+                generator,
+                point,
+                weak_units,
+                super::attach_inference::limits(),
+            ),
+            Command::AttachGeneratorWith(generator, point, weak_units, limits) => {
+                Self::AttachGenerator(generator, point, weak_units, limits)
+            }
+            Command::Arm(generator) => Self::Arm(generator),
             Command::Select(index) => Self::Select(index),
             Command::ClearSelections => Self::ClearSelections,
             Command::Undo => linear(Backward),
@@ -99,6 +127,8 @@ struct Summary {
     project_bytes: usize,
     generators: usize,
     options: Option<usize>,
+    /// The generator picked to be attached by the next click, as `[id, dimension]`.
+    armed: Option<(usize, usize)>,
     /// The crash dump's action log: its number of actions, and the size of the import it starts
     /// from.
     log: (usize, usize),
@@ -137,6 +167,9 @@ fn summary() -> String {
             model::Selectables::Merge(_, tos) => tos.len(),
             model::Selectables::Attach(options) => options.len(),
         }),
+        armed: state
+            .armed
+            .map(|generator| (generator.id, generator.dimension)),
         log: crate::panic::debug_summary(),
     };
     serde_json::to_string(&summary).unwrap()
@@ -149,6 +182,27 @@ pub fn step_delay_ms() -> u32 {
         .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_step_delay_ms".into()).ok())
         .and_then(|delay| delay.as_f64())
         .map_or(0, |delay| delay as u32)
+}
+
+/// What `window.__homotopy_step_delay_label` says, if it is set: the delay of
+/// `__homotopy_step_delay_ms` is only for steps whose label contains this ("Inferring instances"
+/// slows down only the inference of instances, for example).
+pub fn step_delay_label() -> String {
+    web_sys::window()
+        .and_then(|window| {
+            js_sys::Reflect::get(&window, &"__homotopy_step_delay_label".into()).ok()
+        })
+        .and_then(|label| label.as_string())
+        .unwrap_or_default()
+}
+
+/// What `window.__homotopy_infer_grace_ms` says, if it is set: how long past the time for
+/// inferring instances the worker is given to answer before it is ended (in milliseconds).
+pub fn infer_grace_ms() -> Option<u32> {
+    web_sys::window()
+        .and_then(|window| js_sys::Reflect::get(&window, &"__homotopy_infer_grace_ms".into()).ok())
+        .and_then(|grace| grace.as_f64())
+        .map(|grace| grace as u32)
 }
 
 /// What `window.__homotopy_worker` says about the worker, if anything: `"off"` for none, `"broken"`
@@ -209,11 +263,15 @@ pub fn layout_delay_ms() -> u32 {
         .map_or(0, |delay| delay as u32)
 }
 
-/// Makes a step take as long as `window.__homotopy_step_delay_ms` says, if it is set.
-pub fn artificial_delay() {
+/// Makes a step take as long as `window.__homotopy_step_delay_ms` says, if it is set (and the
+/// label of the step is one that `__homotopy_step_delay_label` says, if that is set).
+pub fn artificial_delay(label: &str) {
     let Some(window) = web_sys::window() else {
         return;
     };
+    if !label.contains(&step_delay_label()) {
+        return;
+    }
     let delay = f64::from(step_delay_ms());
     if delay == 0.0 {
         return;
@@ -352,6 +410,7 @@ fn profile_autosave(state: &model::State) -> String {
         point: vec![],
         weak_units: false,
         limits: proof::InferenceLimits::default(),
+        only: None,
     };
     out.push(timed("serialize", &mut bytes, &mut || {
         serialize::serialize(

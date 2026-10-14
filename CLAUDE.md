@@ -233,6 +233,51 @@ indicator: see "Laying out diagrams" below.
     off for the rest of the session (`infer_suspended`, not kept, ended by toggling the setting): a search
     that spends all its time on every click is worse than one with fewer options. A diagram above the
     dimension limit says so once per session. Esc cancels the whole search as any job.
+  - **The limit is hard** (`homotopy_common::deadline`, `Job::checkpoint`, `Message::InferenceDeadline`
+    in `app.rs`). The time was only looked at between steps, and one step (a candidate list, a check
+    of a substitution) could take a long time: in the release build, native, a 1.5 s limit gave 2.46 s
+    spent (+955ms), 700ms gave 975ms; in the debug wasm the steps are 10 to 30 times longer. Now in
+    two layers:
+    - *In the search*, whichever thread it is on (the page when the worker is not ready, or the
+      worker): `AttachOptionsJob::infer` sets a limit for the step with `deadline::until(start + what
+      is left for the schema and for all)`, and the code that loops over what can be large looks at it
+      with `deadline::expired()` (a thread-local read when no limit is set, the clock every 4th
+      call otherwise; sticky until the limit is dropped): `DiagramN::embeddings` (per regular slice),
+      `embeddings_through` (per offset), `Composites::level` (per composite and per embedding).
+      Stopping early only makes a search find less: the results are a prefix of the whole
+      (`homotopy-model/tests/embeddings_through.rs`, `inference::tests::a_search_cut_by_the_clock_is_incomplete_not_wrong`),
+      and nothing that was cut is remembered (a candidate list that was cut short is not cached, a
+      level of composites is rolled back), so later searches of the same job are not the poorer for it.
+      A step that was cut makes its schema "gave up on", as one that went over its share. Measured
+      native release on the fixture, budgets 200ms to 2.5s: spent at most 29ms over (14ms over with
+      the clock looked at on every call; 4 is the compromise); debug wasm in the worker, 700ms to
+      3s: 9 to 21ms over (`spent_ms` of the report, and `longest_step_ms`, are logged as "Inferring
+      instances spent N ms of M"). A single schema that is the only one searched gets all the budget
+      (`budget_each`), not a quarter.
+    - *From the page*, as a backstop for what the search cannot see (a stretch that does not look at
+      the clock): the worker posts `{kind: "partial"}` with an answer that does for the job if it is
+      ended (`Job::checkpoint`: for `AttachOptionsJob`, the options so far, with the schema it is in
+      the middle of in `cut_short` and the ones after it in `not_tried`; `Executor::run_with_checkpoints`;
+      the first as the instances begin, and after that not before ten times the time the last took to
+      make, as packing the options is as costly as packing the answer, 1.5MB for the fixture). The
+      page keeps the latest without decoding it, and when the first arrives starts a timer of the
+      budget plus 750ms (`INFERENCE_GRACE`). If the worker has not answered by then, the page decodes
+      the checkpoint, ends the worker as Esc would (`stop` + `ensure`) and commits the checkpoint
+      as the outcome of the job (`InferenceReport::forced`; the notice says that the search was
+      ended and what it had before then is offered, and that the schemas it names may have been
+      finished). What the worker had found for the schema it was in the middle of is lost. If
+      the checkpoint cannot be read the search is done in the page instead (where the first layer
+      stops it). Busy pill, refusal and Esc are as for any job: the job is the running one until
+      it is committed. Test (debug build): `window.__homotopy_step_delay_ms = 4000` with
+      `window.__homotopy_step_delay_label = "Inferring"` makes every step of the inference spin
+      4s, which no search can see; with a 1s budget the worker was ended 2.4s after the first
+      checkpoint (1.75s asked for: the page's timers are late while it renders the 3D view) and
+      9 options and the notice were committed. `window.__homotopy_infer_grace_ms` sets the grace
+      (high, to see the search keep its time by itself).
+    - The limit is for the inference. The plain cells and their reflections are not limited
+      (they are always offered): on the full workspace of the fixture they are most of the time of
+      a search in the debug wasm build (about 31s of 35s for a click at `[R3, R2]` with a 3s
+      limit; 12 to 14s on the workspace `start`).
   - Debug hooks: `__homotopy.dispatch` takes `{"SelectPoint": [point, weak_units]}` (limits from the
     settings) and `{"SelectPointWith": [point, weak_units, {"enabled":..,"budget_ms":..,"max_dimension":..}]}`;
     a point is a list of `{"Singular": n}`, `{"Regular": n}` or `{"Boundary": "Source"}`. Measured in
@@ -248,13 +293,104 @@ indicator: see "Laying out diagrams" below.
     898 of the 11,259 clicks tried), which the old search made unconditionally on every click. The search
     now only makes reflections that could match, so those clicks work, but the panic is still there
     for a reflection that does.
-  - Known gaps: the time is measured between steps, so a step that takes long (the first candidate
-    list of a new source, up to 1.6s) can go over; in the page (no worker yet) the search is stepped
-    in slices as the others; the searches that do not finish are cut, not made quick; the options a cut
-    schema would have had are not there (use the setting to give it more time).
+  - Known gaps: stretches of the search that do not look at the clock (`Pool::substitute` and the
+    instance lookups, `composite.attach`, the typechecks of reflections, which are not in the
+    inference at all) can still go over by their length (up to 29ms in the release build, none
+    seen beyond that); in the page (no worker yet) a step is as long as one candidate list (the
+    clock stops it, but the page does not respond meanwhile) and the search is stepped in slices as
+    the others; the searches that do not finish are cut, not made quick; the options a cut schema
+    would have had are not there (use the setting to give it more time).
+
+- **Attaching one generator** (`AttachOptionsJob::new(.., only)`, `can_attach`, `Action::AttachGenerator`
+  and `Action::Arm`, `app/attach_target.rs`, `app/armed_chip.rs`; user-facing text in
+  `doc/attaching.md`). Dropping a generator from the signature on the diagram, or picking it with the
+  button on its row and clicking a point, searches for the ways to attach *that* generator only, and the
+  outcomes are as for a click (none: "no attachment found"; one: attached at once; several: the option
+  list).
+  - Model: `only: Option<Generator>` in `AttachOptionsJob::new` (and `Work::AttachOptions`, `#[serde(default)]`,
+    so the worker does the same): the passes look at that generator and its variants only, and the
+    options are what the whole search gives for it, in the same order (tests:
+    `homotopy-model/tests/attach_only.rs`, on the example corpus at points of the diagrams and their
+    boundaries, with and without weak units; `inference::tests::a_schema_searched_for_alone_is_what_the_whole_search_finds_for_it`).
+    The work is cut into pieces so that progress and `Esc` mean something: one step for each cell
+    made from the generator (itself, inverse, weak identity, bubble, ...: `Variant`), one for each
+    reflection that could match (`ReflectionCandidate`: typecheck and embeddings), and the steps of the
+    inference as before; the progress counts the pieces when they have been made. A schema that is the
+    only one searched for has the whole of the budget (`InferenceLimits::budget_each(1)`), not a
+    quarter. The worker is offered it as for any attach search (`may_take_long`: a schema, or reflections
+    in four dimensions or more); a plain cell is done in the page (119ms in the debug wasm for `c` on
+    `start`, 6 steps). The busy pill says "Searching for attachments" (and "Inferring instances" only
+    when there is a schema to infer for).
+  - `can_attach(signature, diagram, generator, weak_units, limits) -> Result<(), CannotAttach>`:
+    what a drag asks, once, when it starts (`attach_target::start`, from `FolderView`'s
+    `on_drag_start`), never searching: the dimension (more than the diagram's plus one: no), whether the
+    cells that the generator starts at or ends at are in the diagram (a 0-cell: only through weak
+    units), and for a schema whether inference is on and the dimension within its limit. It looks at the
+    diagram as a whole and not at the point (a drag over the diagram never runs a search), so it can say no
+    for all points and yes for a point where the search finds nothing. Never says no wrongly: tested
+    on the corpus against the options that the whole search finds (`attach_only.rs`). Computing it
+    walks all the cells of the workspace diagram (`Diagram::generators`, not cached: 5.5ms for the
+    fixture's `start` in the debug wasm, more for the whole workspace) and is not done for rendering.
+  - Dragging: a signature row carries the generator as plain text (the node, for moving it in the
+    signature, which still works) and as `application/x-homotopy-generator` (`id,dimension`), with
+    `effectAllowed = "copyMove"`. The page cannot read the data until the drop, so `attach_target` keeps
+    the generator and the verdict of `can_attach` in a thread-local from `dragstart` to `dragend`.
+    `DiagramSvg` (`accepts_drops`, `on_attach`) accepts a drag (`preventDefault` on `dragover`) only if
+    it carries that type, the verdict is yes and the diagram is not waiting for its layout (the handlers
+    are not there while `pending`: drops are ignored as clicks are); it outlines the simplex under the
+    pointer (`diagram-svg__drop-highlight`, from the shape that `simplex_at` finds, no search) and on drop
+    emits `(generator, simplex[0])`, which the workspace turns into `AttachGenerator(generator, point, weak
+    units, limits)`. While a job runs a drop is refused like a click (the pill shakes; dragover is
+    still accepted, so that there is something to refuse). Folder drop zones and the signature are as
+    before; a drag of a folder carries no generator, so the diagram ignores it.
+  - Picking: `Action::Arm(Some(generator))` sets `State::armed` (not part of the project, `Done(false)`,
+    cleared by `ClearSelections`, which `Esc` does when nothing is running); `App::render` shows the chip
+    (`ArmedChip`: "Attaching <name> click a point in the diagram, Esc to cancel", a button that disarms) and
+    passes `armed` to the workspace, whose click then dispatches `AttachGenerator` instead of
+    `SelectPoint` (this disarms at the start of the action). The button (`signature__item-attach`, a
+    pointing hand, shown by the stylesheet where the pointer is: it must be in the DOM all the time or it is
+    gone before it can be clicked) checks `can_attach` when pressed and toasts why not (in words that do
+    not name the generator, whose name is a formula).
+  - Tests: `homotopy-web/tests/tasks.rs` (`attaching_one_generator_gives_the_options_for_that_generator_and_picking_one_is_not_the_project`:
+    the options are those of a click for that generator, picking is `Done(false)` and leaves the project
+    alone, `Esc`/`ClearSelections` puts it down, a generator that is not there is an error, the action is heavy
+    and refused while busy); in the browser (Playwright, not committed): arming with the button, the chip,
+    `Esc`, clicking the chip, `dragTo` of a row on the diagram at nine heights (8 options at the top, "no
+    attachment found" elsewhere, the highlight outlines the vertex or wire under the pointer and goes on
+    drop), a drag that the diagram does not take (6-cell on a 4-diagram: no highlight, nothing runs; the button
+    toasts why), a drop while the layout is pending (ignored) and while a job runs (refused, pill shakes).
+  - Debug hooks: `__homotopy.dispatch` takes `{"AttachGenerator": [{"id": 48, "dimension": 6}, [{"Regular": 1}], false]}`
+    (limits from the settings), `{"AttachGeneratorWith": [generator, point, weak_units, limits]}` and
+    `{"Arm": generator|null}`; `state().armed` is `[id, dimension]`. Rows of the signature have
+    `data-generator="id:dimension"`. In Playwright, `locator.dragTo` does a real drag (dragstart, dragover,
+    drop, dragend), as does `mouse.down`/`move`/`up` for most rows (some rows of schemas lose the drag after
+    `dragstart` with hand-made mouse moves, and `dragTo` works for them; a click straight after a drag is
+    swallowed); synthetic `DragEvent`s with a `DataTransfer` work too. Wait for the workspace's layout
+    (`.diagram-svg--stale`, `.layout-note`) before dragging, or the diagram does not accept the drop.
+  - Measured (debug wasm, the fixture, worker, 3s limit): generator 16 (`ζ[η̇→η̇′]`, the schema that
+    never finishes) dropped on a vertex of `start`: 4.1 to 4.8s to "no attachment found" with the notice
+    (the whole 3s of inference, 0.8s of which was sending the 5MB signature to the worker the first time),
+    against 15.4s for the full search with the same limit, which gives it a quarter of it and spends the
+    rest on the plain cells; a plain cell, `c` on `start` at `[R1]` (8 options): 119ms in 6 steps in the page,
+    against 7.9s; `c^2 = 1` (6-cell, with reflections) on the whole workspace at `[R3, R2]`: 5.8s (4 options),
+    against 33.8s for the full search. With the default limit (20s) generator 16 takes the 20s and then says so.
+  - Gaps: the 3D view does not take drops or armed clicks (`DiagramGl` has no attach by clicking);
+    the verdict is for the whole diagram and not the point, so a drop at a point where nothing attaches
+    runs the (usually quick) search and then says "no attachment found"; the busy pill does not
+    name the generator; touch devices have the button only (no hover: it is shown all the time there).
 
 New expensive work: write it as a job (or give an existing job another kind of step), label it,
 and check it with the debug hooks below.
+
+## Policy: heuristics
+
+False negatives are acceptable: a useful heuristic may miss solutions. But a heuristic must never
+produce an invalid result, and it must not be silent about being one: label heuristics in the UI
+(say that this is a search that is bounded, or a guess, and what it left out when it can be said),
+and make them switchable (a setting, as for inferring instances of schemas). Anything that
+cuts a search short (a time limit, a bound on candidates) must leave behind only results that are
+valid by themselves, and nothing remembered as if it were complete. The tests for this are of the
+form "what it found is among what the whole search finds" (see `a_search_cut_by_the_clock_is_incomplete_not_wrong`).
 
 ## Development
 
@@ -303,7 +439,10 @@ and check it with the debug hooks below.
   have something slow to test with in a headless browser (watch `state().busy`, the
   `.busy__pill` element, send `Escape`). Timings of jobs are logged: "<label> took Nms in K steps
   (longest Mms)" in the page, "<label> took Nms in the worker: Wms working, Pms to prepare and Tms
-  to take in the answer (A KB there, B KB back)" for the worker.
+  to take in the answer (A KB there, B KB back)" for the worker. `window.__homotopy_step_delay_label`
+  limits the delay to steps whose label contains it (`"Inferring"`), and `window.__homotopy_infer_grace_ms`
+  sets how long the page waits past the inference budget before it ends the worker (see "The limit is
+  hard").
 
 ## Firebase may not be there, and crashes must not lose work
 
