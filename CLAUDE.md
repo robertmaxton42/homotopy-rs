@@ -48,7 +48,9 @@ indicator: see "Laying out diagrams" below.
 - **Instantiate panel**: the drafts (the replacements being chosen for each schema, with what
   was inferred) are `State::drafts`, owned by the app like the rest of the state, and a choice is
   `Action::Draft(DraftEdit)`. `State::start` makes the choice (it is kept in red if it does not
-  fit its type, see `doc/placeholders.md`) and returns a `Task::Infer` holding an `InferJob`,
+  fit its type, or is not as invertible or dualisable as the placeholder, see
+  `doc/placeholders.md`: `Signature::check_invertibility`, which the kernel, `Matcher::bind` and
+  the candidate pools all use) and returns a `Task::Infer` holding an `InferJob`,
   which `State::finish` takes in; the job is the search for what follows from the choices, as a
   stack of things to try (`Machine` in `proof/completion.rs`), one cut or one candidate a step,
   so a step is 0.1 to 5ms (debug build) whatever the whole search takes, and the page runs it a
