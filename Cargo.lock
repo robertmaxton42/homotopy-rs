@@ -1323,6 +1323,7 @@ dependencies = [
  "syn 2.0.104",
  "thiserror",
  "tracing",
+ "ultraviolet",
 ]
 
 [[package]]

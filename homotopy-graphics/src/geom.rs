@@ -120,10 +120,10 @@ pub struct CurveData {
 
 // Element data
 
-#[derive(Default)]
+#[derive(Default, Clone, Debug)]
 pub struct CubeData;
 
-#[derive(Default)]
+#[derive(Default, Clone, Debug)]
 pub struct SimplexData;
 
 impl ElementData for CubeData {

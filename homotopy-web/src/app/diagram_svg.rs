@@ -1,6 +1,7 @@
 use std::{
     convert::{From, Into, TryInto},
     f32::consts::PI,
+    rc::Rc,
 };
 
 use euclid::{
@@ -34,6 +35,7 @@ use super::tooltip;
 use crate::{
     app::settings::AppSettings,
     components::{read_touch_list_abs, Finger},
+    layout::{self, Asked, Ticket},
     model::proof::{
         homotopy::{Contract, Expand, Homotopy},
         Signature,
@@ -43,7 +45,15 @@ use crate::{
 pub mod highlight;
 
 pub struct DiagramSvg<const N: usize> {
-    prepared: PreparedDiagram<N>,
+    /// What is shown. While the layout of the diagram of the properties is being made (`pending`)
+    /// it is for an earlier diagram, or there is nothing yet.
+    prepared: Option<PreparedDiagram<N>>,
+    /// The layout that is being made elsewhere, of the diagram of the properties. While there is
+    /// one, what is shown is stale and nothing about it is to be acted on: points of the old
+    /// diagram are not points of the new one.
+    pending: Option<Ticket>,
+    /// Whether the layout has just arrived, and `on_laid_out` is to be called once it is drawn.
+    announce: bool,
     drag_start: Option<Point2D<f32>>,
     /// What the pointer is over, which the tooltip shown is for.
     hovered: Option<Simplex<N>>,
@@ -68,26 +78,34 @@ pub struct DiagramSvgProps<const N: usize> {
     pub max_height: Option<f32>,
     #[prop_or_default]
     pub diagram_ref: NodeRef,
+    /// Called when the diagram has been drawn after waiting for its layout: what is around it,
+    /// and was sized to what was drawn before, may want to look again.
+    #[prop_or_default]
+    pub on_laid_out: Callback<()>,
 }
 
 #[allow(clippy::enum_variant_names)]
-pub enum DiagramSvgMessage {
+pub enum DiagramSvgMessage<const N: usize> {
     OnMouseDown(Point2D<f32>),
     OnMouseMove(Point2D<f32>, bool),
     OnMouseUp,
     OnMouseLeave,
     OnTouchUpdate(Vec<(Finger, Point2D<f32>)>),
     OnTouchMove(Vec<(Finger, Point2D<f32>)>),
+    /// The layout that was asked for is there.
+    Layout(Ticket, Rc<Layout<N>>),
 }
 
 /// The computed properties of a diagram that are potentially expensive to compute but can be
 /// cached if the diagram does not change.
 struct PreparedDiagram<const N: usize> {
+    /// The diagram that this is for.
+    diagram: Diagram,
     graphic: Vec<GraphicElement<N>>,
     actions: Vec<(Simplex<N>, Shape)>,
     depths: Depths<N>,
     projection: Projection<N>,
-    layout: Layout<N>,
+    layout: Rc<Layout<N>>,
 
     /// The width and height of the diagram image in pixels.
     ///
@@ -102,13 +120,14 @@ struct PreparedDiagram<const N: usize> {
 }
 
 impl<const N: usize> PreparedDiagram<N> {
-    fn new(diagram: &Diagram, style: RenderStyle) -> Self {
+    /// Prepares the diagram for rendering, given its layout, which is the part that can take
+    /// long (see [`layout`]).
+    fn new(diagram: &Diagram, layout: Rc<Layout<N>>, style: RenderStyle) -> Self {
         assert!(diagram.dimension() >= N);
 
         let performance = web_sys::window().unwrap().performance().unwrap();
         performance.mark("startPrepareDiagram").unwrap();
 
-        let layout = Layout::new(diagram).unwrap();
         let complex = make_complex(diagram);
         let depths = Depths::new(diagram).unwrap();
         let projection = Projection::new(diagram, &layout, &depths).unwrap();
@@ -159,6 +178,7 @@ impl<const N: usize> PreparedDiagram<N> {
         performance.clear_measures();
 
         Self {
+            diagram: diagram.clone(),
             graphic,
             actions,
             depths,
@@ -171,17 +191,19 @@ impl<const N: usize> PreparedDiagram<N> {
 }
 
 impl<const N: usize> Component for DiagramSvg<N> {
-    type Message = DiagramSvgMessage;
+    type Message = DiagramSvgMessage<N>;
     type Properties = DiagramSvgProps<N>;
 
     fn create(ctx: &Context<Self>) -> Self {
-        let prepared = PreparedDiagram::new(&ctx.props().diagram, ctx.props().style);
-        let drag_start = Default::default();
-        Self {
-            prepared,
-            drag_start,
+        let mut this = Self {
+            prepared: None,
+            pending: None,
+            announce: false,
+            drag_start: Default::default(),
             hovered: None,
-        }
+        };
+        this.prepare(ctx);
+        this
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
@@ -215,23 +237,75 @@ impl<const N: usize> Component for DiagramSvg<N> {
                     self.pointer_move(ctx, touches[0].1, false);
                 }
             }
+            DiagramSvgMessage::Layout(ticket, layout) => {
+                // The layout of a diagram that has been replaced since is of no use.
+                if self.pending != Some(ticket) {
+                    return false;
+                }
+                self.pending = None;
+                self.announce = true;
+                self.hide_tooltip();
+                self.prepared = Some(PreparedDiagram::new(
+                    &ctx.props().diagram,
+                    layout,
+                    ctx.props().style,
+                ));
+                return true;
+            }
         }
         // Moving the pointer or hovering does not change what the diagram looks like.
         false
     }
 
     fn changed(&mut self, ctx: &Context<Self>, old_props: &Self::Properties) -> bool {
-        if old_props.diagram != ctx.props().diagram || old_props.style != ctx.props().style {
+        if old_props.diagram != ctx.props().diagram {
             // What the tooltip said may no longer be there.
             self.hide_tooltip();
             // re-layout
-            self.prepared = PreparedDiagram::new(&ctx.props().diagram, ctx.props().style);
+            self.prepare(ctx);
+        } else if old_props.style != ctx.props().style {
+            self.hide_tooltip();
+            // Not the layout, which is of the diagram only. If it is not there yet, it will be
+            // prepared in the style of the time.
+            if let Some(prepared) = self.prepared.as_ref().filter(|_| self.pending.is_none()) {
+                let layout = Rc::clone(&prepared.layout);
+                self.prepared = Some(PreparedDiagram::new(
+                    &ctx.props().diagram,
+                    layout,
+                    ctx.props().style,
+                ));
+            }
         }
         true
     }
 
+    fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
+        if std::mem::take(&mut self.announce) {
+            ctx.props().on_laid_out.emit(());
+        }
+    }
+
+    fn destroy(&mut self, _ctx: &Context<Self>) {
+        self.hide_tooltip();
+        if let Some(ticket) = self.pending.take() {
+            layout::cancel(ticket);
+        }
+    }
+
     fn view(&self, ctx: &Context<Self>) -> Html {
-        let size = self.prepared.dimensions;
+        // Nothing yet: the first layout of a large diagram is still being made.
+        let Some(prepared) = &self.prepared else {
+            return html! {
+                <svg
+                    xmlns={"http://www.w3.org/2000/svg"}
+                    class="diagram-svg--stale"
+                    width="1"
+                    height="1"
+                    ref={ctx.props().diagram_ref.clone()}
+                />
+            };
+        };
+        let size = prepared.dimensions;
 
         let width = match ctx.props().max_width {
             Some(width) => width.min(size.width),
@@ -309,6 +383,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
         html! {
             <svg
                 xmlns={"http://www.w3.org/2000/svg"}
+                class={self.pending.is_some().then_some("diagram-svg--stale")}
                 width={width.to_string()}
                 height={height.to_string()}
                 viewBox={format!("0 0 {} {}", size.width, size.height)}
@@ -322,8 +397,8 @@ impl<const N: usize> Component for DiagramSvg<N> {
                 ontouchcancel={on_touch_update.clone()}
                 ref={ctx.props().diagram_ref.clone()}
             >
-                {self.view_placeholder_hatch(ctx)}
-                {self.prepared.graphic.iter().enumerate().map(|(i, e)| self.view_element(ctx, i, e)).collect::<Html>()}
+                {Self::view_placeholder_hatch(ctx, prepared)}
+                {prepared.graphic.iter().enumerate().map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
                 {self.view_highlight(ctx)}
             </svg>
         }
@@ -331,9 +406,36 @@ impl<const N: usize> Component for DiagramSvg<N> {
 }
 
 impl<const N: usize> DiagramSvg<N> {
+    /// Prepares the diagram of the properties for rendering. If its layout is not there at once,
+    /// what was prepared before is kept for now, and replaced when the layout is.
+    fn prepare(&mut self, ctx: &Context<Self>) {
+        if let Some(ticket) = self.pending.take() {
+            layout::cancel(ticket);
+        }
+        let props = ctx.props();
+        let link = ctx.link().clone();
+        let on_layout = Callback::from(move |(ticket, layout)| {
+            link.send_message(DiagramSvgMessage::Layout(ticket, layout));
+        });
+        match layout::ask::<N>(&props.diagram, on_layout) {
+            Asked::Ready(layout) => {
+                self.prepared = Some(PreparedDiagram::new(&props.diagram, layout, props.style));
+            }
+            Asked::Pending(ticket) => self.pending = Some(ticket),
+        }
+    }
+
+    /// What is prepared, if it is for the diagram that is to be shown, and so can be acted on.
+    fn current(&self) -> Option<&PreparedDiagram<N>> {
+        self.prepared.as_ref().filter(|_| self.pending.is_none())
+    }
+
     /// Transform coordinates on the screen (such as those in `MouseEvent`s) to coordinates in the
     /// SVG image. This incorporates translation and zoom of the diagram component.
-    fn transform_screen_to_image(&self, ctx: &Context<Self>) -> Transform2D<f32> {
+    fn transform_screen_to_image(
+        prepared: &PreparedDiagram<N>,
+        ctx: &Context<Self>,
+    ) -> Transform2D<f32> {
         let rect = ctx
             .props()
             .diagram_ref
@@ -342,7 +444,7 @@ impl<const N: usize> DiagramSvg<N> {
             .get_bounding_client_rect();
 
         let screen_size = Size2D::new(rect.width() as f32, rect.height() as f32);
-        let image_size = self.prepared.dimensions;
+        let image_size = prepared.dimensions;
 
         Transform2D::translation(-rect.left() as f32, -rect.top() as f32).then_scale(
             image_size.width / screen_size.width,
@@ -362,8 +464,8 @@ impl<const N: usize> DiagramSvg<N> {
     }
 
     /// Defines the pattern with which the surfaces of placeholders are hatched, if there are any.
-    fn view_placeholder_hatch(&self, ctx: &Context<Self>) -> Html {
-        let has_placeholder_surface = self.prepared.graphic.iter().any(|element| {
+    fn view_placeholder_hatch(ctx: &Context<Self>, prepared: &PreparedDiagram<N>) -> Html {
+        let has_placeholder_surface = prepared.graphic.iter().any(|element| {
             matches!(element, GraphicElement::Surface(d, _) if Self::is_placeholder(ctx, d.generator))
         });
         if !has_placeholder_surface {
@@ -394,17 +496,22 @@ impl<const N: usize> DiagramSvg<N> {
     }
 
     /// Creates the SVG elements for the diagram.
-    fn view_element(&self, ctx: &Context<Self>, index: usize, element: &GraphicElement<N>) -> Html {
+    fn view_element(
+        ctx: &Context<Self>,
+        prepared: &PreparedDiagram<N>,
+        index: usize,
+        element: &GraphicElement<N>,
+    ) -> Html {
         let class = generator_class_from_diagram_dim(
             element.generator(),
             element.orientation(),
-            ctx.props().diagram.dimension(),
+            prepared.diagram.dimension(),
             element.clone().into(),
         );
 
         match element {
             GraphicElement::Surface(d, path) => {
-                let path = path_to_svg(&path.clone().transformed(&self.prepared.transform));
+                let path = path_to_svg(&path.clone().transformed(&prepared.transform));
                 if Self::is_placeholder(ctx, d.generator) {
                     // Placeholders are translucent (by their stylesheet) and also hatched.
                     html! {
@@ -424,7 +531,7 @@ impl<const N: usize> DiagramSvg<N> {
                 }
             }
             GraphicElement::Wire(_, _, path, mask) => {
-                let path = path_to_svg(&path.clone().transformed(&self.prepared.transform));
+                let path = path_to_svg(&path.clone().transformed(&prepared.transform));
 
                 if mask.is_empty() {
                     html! {
@@ -440,7 +547,7 @@ impl<const N: usize> DiagramSvg<N> {
                         .map(|mask_path| {
                             html! {
                                 <path
-                                    d={path_to_svg(&mask_path.clone().transformed(&self.prepared.transform))}
+                                    d={path_to_svg(&mask_path.clone().transformed(&prepared.transform))}
                                     stroke-width={(ctx.props().style.wire_thickness * 2.0).to_string()}
                                     fill="none"
                                     stroke="black"
@@ -472,7 +579,7 @@ impl<const N: usize> DiagramSvg<N> {
             }
             GraphicElement::Point(d, point) => {
                 use VertexShape::{Circle, Square};
-                let point = self.prepared.transform.transform_point(*point);
+                let point = prepared.transform.transform_point(*point);
                 let radius = ctx.props().style.point_radius;
                 let shape = if let Some(info) = ctx.props().signature.generator_info(d.generator) {
                     info.shape.clone()
@@ -504,6 +611,10 @@ impl<const N: usize> DiagramSvg<N> {
         let Some(highlight) = &ctx.props().highlight else {
             return Default::default();
         };
+        // The highlight is of points of the new diagram, which are not on the one that is shown.
+        let Some(prepared) = self.current() else {
+            return Default::default();
+        };
 
         let (mut from, mut to) = (
             Point2D::splat(f32::INFINITY),
@@ -511,7 +622,7 @@ impl<const N: usize> DiagramSvg<N> {
         );
 
         for p in &highlight.points {
-            match self.position(*p) {
+            match Self::position(prepared, *p) {
                 None => {
                     tracing::error!("Encountered highlight point outside prepared diagram (point: {:?}). This is a bug!", p);
                     return Default::default();
@@ -556,14 +667,17 @@ impl<const N: usize> DiagramSvg<N> {
         }
     }
 
-    fn position(&self, point: [SliceIndex; N]) -> Option<Point2D<f32>> {
-        let point = project_2d(*self.prepared.layout.get(&point)?).into();
-        Some(self.prepared.transform.transform_point(point))
+    fn position(prepared: &PreparedDiagram<N>, point: [SliceIndex; N]) -> Option<Point2D<f32>> {
+        let point = project_2d(*prepared.layout.get(&point)?).into();
+        Some(prepared.transform.transform_point(point))
     }
 
+    /// The part of the diagram at the point of the screen, if there is one and the diagram is
+    /// ready to be acted on (not while it is waiting for its layout).
     fn simplex_at(&self, ctx: &Context<Self>, point: Point2D<f32>) -> Option<Simplex<N>> {
-        let point = self.transform_screen_to_image(ctx).transform_point(point);
-        self.prepared
+        let prepared = self.current()?;
+        let point = Self::transform_screen_to_image(prepared, ctx).transform_point(point);
+        prepared
             .actions
             .iter()
             .find(|(_, shape)| shape.contains_point(point, 0.01))
@@ -582,15 +696,16 @@ impl<const N: usize> DiagramSvg<N> {
             let angle = diff.angle_from_x_axis();
             self.drag_start = None;
 
-            let Some(simplex) = self.simplex_at(ctx, start) else {
+            let (Some(simplex), Some(prepared)) = (self.simplex_at(ctx, start), self.current())
+            else {
                 return;
             };
 
             let homotopy = drag_to_homotopy(
                 angle,
                 &simplex,
-                ctx.props().diagram.clone(),
-                &self.prepared.depths,
+                prepared.diagram.clone(),
+                &prepared.depths,
                 shift_key,
             );
 
@@ -620,12 +735,16 @@ impl<const N: usize> DiagramSvg<N> {
     fn update_tooltip(&mut self, ctx: &Context<Self>, point: Point2D<f32>) {
         let pointer = (f64::from(point.x), f64::from(point.y));
         let simplex = self.simplex_at(ctx, point);
+        // (There is none while the diagram is waiting for its layout.)
         if simplex.is_some() && simplex == self.hovered {
             tooltip::move_to(pointer);
             return;
         }
         self.hovered = simplex;
-        match simplex.map(|simplex| self.hover_content(ctx, &simplex)) {
+        let content = simplex
+            .zip(self.current())
+            .map(|(simplex, prepared)| Self::hover_content(ctx, prepared, &simplex));
+        match content {
             Some(content) => tooltip::show(content, pointer),
             None => tooltip::hide(),
         }
@@ -640,17 +759,21 @@ impl<const N: usize> DiagramSvg<N> {
     /// What the tooltip says about a part of the diagram: the label of the cell there (a
     /// formula, so that the names of generators that are formulas are shown as such), and where
     /// in the diagram it is.
-    fn hover_content(&self, ctx: &Context<Self>, simplex: &Simplex<N>) -> tooltip::Content {
+    fn hover_content(
+        ctx: &Context<Self>,
+        prepared: &PreparedDiagram<N>,
+        simplex: &Simplex<N>,
+    ) -> tooltip::Content {
         let p = simplex[0];
         let d = match simplex {
-            Simplex::Surface(_) => self.prepared.projection.generator(p),
-            Simplex::Wire(_) | Simplex::Point(_) => self.prepared.projection.front_generator(p).0,
+            Simplex::Surface(_) => prepared.projection.generator(p),
+            Simplex::Wire(_) | Simplex::Point(_) => prepared.projection.front_generator(p).0,
         };
         let props = ctx.props();
         // A vertex may be where strands cross, or a cell is cancelled or created, which is named
         // for that (it is a step of the diagram); wires and surfaces are named by their cell.
         let label = match simplex {
-            Simplex::Point(_) => props.signature.describe_point(&props.diagram, &p, d),
+            Simplex::Point(_) => props.signature.describe_point(&prepared.diagram, &p, d),
             Simplex::Wire(_) | Simplex::Surface(_) => props.signature.describe_cell(d),
         };
         tooltip::Content {

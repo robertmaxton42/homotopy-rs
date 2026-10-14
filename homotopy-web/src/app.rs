@@ -16,6 +16,7 @@ use crate::{
     components::{
         busy::{self, BusyIndicator},
         icon::{Icon, IconSize},
+        layout_note::LayoutNote,
         modal::Modal,
         panzoom::PanZoom,
         toast::{toast, Toast, ToasterComponent},
@@ -31,7 +32,7 @@ mod boundary;
 #[cfg(any(debug_assertions, feature = "show_debug_panel"))]
 mod debug;
 #[cfg(debug_assertions)]
-mod debug_hooks;
+pub mod debug_hooks;
 pub mod diagram_gl;
 mod diagram_svg;
 mod image_export;
@@ -147,6 +148,7 @@ impl Component for App {
         let mut worker = WorkerClient::new(
             ctx.link()
                 .callback(|(generation, event)| Message::Worker(generation, event)),
+            worker::SCRIPT,
         );
         #[cfg(debug_assertions)]
         match debug_hooks::worker_mode().as_str() {
@@ -212,6 +214,7 @@ impl App {
             Message::Cancel => self.cancel(),
             Message::StartWorker => {
                 self.worker.ensure();
+                crate::layout::start();
                 false
             }
             Message::Worker(generation, event) => self.worker_said(ctx, generation, event),
@@ -764,6 +767,7 @@ impl App {
         html! {
             <main class="app">
                 <BusyIndicator on_cancel={ctx.link().callback(|()| Message::Cancel)} />
+                <LayoutNote />
                 <tooltip::HoverTooltip />
                 <Sidebar
                     dispatch={dispatch}

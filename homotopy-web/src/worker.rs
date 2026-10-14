@@ -9,11 +9,18 @@
 //! `SharedArrayBuffer` needs response headers that the hosting does not send), so jobs travel as
 //! bytes (see [`homotopy_model::remote`]) in messages:
 //!
-//! - page to worker: `{kind: "run", job, bytes}`, with the bytes transferred rather than copied;
-//! - worker to page: `{kind: "ready"}` once the module is running, then for each job any number of
-//!   `{kind: "progress", job, label, done, total}` and finally `{kind: "done", job, bytes}`, or
-//!   `{kind: "panic", job, message}` if the worker crashed (after which it is of no use, and the
-//!   page ends it).
+//! - page to worker: `{kind: "run", job, bytes}` for a job, or `{kind: "layout", job, bytes}` for
+//!   a layout (see [`homotopy_model::remote::layout`]), with the bytes transferred rather than
+//!   copied;
+//! - worker to page: `{kind: "ready"}` (said by `static/worker.js`) once the module is running,
+//!   then for each job any number of `{kind: "progress", job, label, done, total}` and finally
+//!   `{kind: "done", job, bytes}`, or `{kind: "panic", job, message}` if the worker crashed
+//!   (after which it is of no use, and the page ends it).
+//!
+//! There are two workers, running the same code: one for jobs, one for laying out diagrams (see
+//! [`crate::layout`]), so that cancelling a job, which ends its worker, does not lose a layout in
+//! the making, and a layout does not make a job wait. The one for layout is started with
+//! `?layout` after the name of the script, which makes `worker.js` load HiGHS too.
 //!
 //! The page side is [`Client`], which owns the worker and the [`Remote`] that knows what the worker
 //! holds. It is told of what the worker says through a callback, as events tagged with the
@@ -24,7 +31,7 @@ use std::cell::RefCell;
 
 use homotopy_model::{
     job::Progress,
-    remote::{Executor, Remote, Step},
+    remote::{layout, Executor, Remote, Step},
 };
 use instant::{Duration, Instant};
 use js_sys::{Array, Object, Reflect, Uint8Array};
@@ -33,7 +40,10 @@ use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Worker, WorkerOptions, W
 use yew::Callback;
 
 /// Where the worker's script is. Absolute, as the page may be at any path.
-const SCRIPT: &str = "/worker.js";
+pub const SCRIPT: &str = "/worker.js";
+
+/// The script of the worker that lays diagrams out.
+pub const LAYOUT_SCRIPT: &str = "/worker.js?layout";
 
 /// How often the worker reports progress at the most, so that it does not flood the page.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(40);
@@ -95,7 +105,7 @@ impl Client {
     const MAX_FAILURES: u32 = 3;
 
     #[must_use]
-    pub fn new(events: Callback<(u32, Event)>) -> Self {
+    pub fn new(events: Callback<(u32, Event)>, script: &'static str) -> Self {
         Self {
             spawned: None,
             status: Status::Starting,
@@ -103,7 +113,7 @@ impl Client {
             failures: 0,
             events,
             remote: Remote::default(),
-            script: SCRIPT,
+            script,
         }
     }
 
@@ -187,12 +197,22 @@ impl Client {
 
     /// Gives the worker a job, which is the bytes of a request to the [`Executor`].
     pub fn run(&self, job: u64, bytes: &[u8], fault: &str) -> Result<(), JsValue> {
+        self.give("run", job, bytes, fault)
+    }
+
+    /// Gives the worker a layout to do, which is the bytes of a request of
+    /// [`homotopy_model::remote::layout`].
+    pub fn lay_out(&self, job: u64, bytes: &[u8], fault: &str) -> Result<(), JsValue> {
+        self.give("layout", job, bytes, fault)
+    }
+
+    fn give(&self, kind: &str, job: u64, bytes: &[u8], fault: &str) -> Result<(), JsValue> {
         let Some(spawned) = &self.spawned else {
             return Err("no worker".into());
         };
         let buffer = Uint8Array::from(bytes);
         let message = Object::new();
-        Reflect::set(&message, &"kind".into(), &"run".into())?;
+        Reflect::set(&message, &"kind".into(), &kind.into())?;
         Reflect::set(&message, &"job".into(), &(job as f64).into())?;
         Reflect::set(&message, &"bytes".into(), &buffer)?;
         if !fault.is_empty() {
@@ -208,6 +228,12 @@ impl Client {
     /// Takes note that the worker failed to do a job (without crashing).
     pub const fn fail(&mut self) {
         self.failures += 1;
+    }
+
+    /// Whether there is no worker, and there will not be one.
+    #[must_use]
+    pub fn is_disabled(&self) -> bool {
+        self.status == Status::Disabled && self.spawned.is_none()
     }
 
     /// Does without workers, for testing.
@@ -328,13 +354,13 @@ pub fn init() {
         #[cfg(feature = "console_error_panic_hook")]
         console_error_panic_hook::hook(info);
     }));
-    post(&message("ready"), None);
 }
 
-/// Handles a message from the page: does the job in it. Called by `static/worker.js`.
+/// Handles a message from the page: does the job or the layout in it. Called by `static/worker.js`.
 #[wasm_bindgen]
 pub fn worker_message(data: &JsValue) {
-    if get(data, "kind").as_string().as_deref() != Some("run") {
+    let kind = get(data, "kind").as_string();
+    if !matches!(kind.as_deref(), Some("run" | "layout")) {
         return;
     }
     let (Some(job), Ok(bytes)) = (
@@ -347,11 +373,13 @@ pub fn worker_message(data: &JsValue) {
     let fault = get(data, "fault").as_string().unwrap_or_default();
     assert!(fault != "crash", "the worker was asked to crash");
 
-    let mut last_report: Option<Instant> = None;
     let response = if fault == "garble" {
         // The answer is not one.
         vec![0xc1, 0xc1]
+    } else if kind.as_deref() == Some("layout") {
+        layout::run(&bytes.to_vec(), &mut |delay_ms| spin(delay_ms))
     } else {
+        let mut last_report: Option<Instant> = None;
         EXECUTOR.with(|executor| {
             executor
                 .borrow_mut()

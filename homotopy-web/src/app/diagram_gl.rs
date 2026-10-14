@@ -4,6 +4,7 @@ use futures::future::try_join_all;
 use gloo::render::{request_animation_frame, AnimationFrame};
 use homotopy_core::Diagram;
 use homotopy_gl::GlCtx;
+use homotopy_graphics::geom::CubicalGeometry;
 use js_sys::Uint8Array;
 use ultraviolet::Vec3;
 use wasm_bindgen::JsCast;
@@ -23,6 +24,7 @@ use crate::{
         toast::{toast, Toast},
         touch_interface::{TouchAction, TouchInterface},
     },
+    layout::{self, Asked, Ticket},
     model::{
         generate_download,
         proof::{Signature, View},
@@ -73,6 +75,8 @@ pub enum DiagramGlMessage {
     FrameCaptureScrub(f32),
     FrameCaptureDump,
     FrameCaptureFlush,
+    /// The geometry that was asked for is there.
+    Geometry(Ticket, Rc<CubicalGeometry>),
     Noop,
 }
 
@@ -93,6 +97,16 @@ pub struct DiagramGl {
     canvas: NodeRef,
     camera: OrbitCamera,
     renderer: Rc<RefCell<Option<Renderer>>>,
+    /// What the renderer is made from: the geometry of the diagram, and whether time is one of
+    /// its dimensions. It is for an earlier diagram while that of the one to show is being made
+    /// (`pending`); what is on the canvas is that of the earlier one until it is there.
+    geometry: Option<(Rc<CubicalGeometry>, bool)>,
+    pending: Option<Ticket>,
+    /// Whether the renderer is to be made again, as it is for something other than what is to be
+    /// shown (the layout is of the diagram only: it is not made again).
+    rebuild: bool,
+    /// Whether there is no WebGL to be had.
+    no_gl: bool,
     global_t: f32,
     t_coord: f32,
 
@@ -138,11 +152,15 @@ impl Component for DiagramGl {
 
         FRAME_CAPTURE.set(ctx.link().callback(DiagramGlMessage::FrameCapture));
 
-        Self {
+        let mut this = Self {
             canvas: Default::default(),
 
             camera: Default::default(),
             renderer: Default::default(),
+            geometry: None,
+            pending: None,
+            rebuild: false,
+            no_gl: false,
             global_t: Default::default(),
             t_coord: Default::default(),
 
@@ -156,7 +174,19 @@ impl Component for DiagramGl {
             clip_rect: Default::default(),
             export_frame_buffer: Default::default(),
             pending_queue: Default::default(),
+        };
+        this.prepare(ctx);
+        this
+    }
+
+    fn changed(&mut self, ctx: &Context<Self>, old_props: &Self::Properties) -> bool {
+        if old_props.diagram != ctx.props().diagram || old_props.view != ctx.props().view {
+            self.prepare(ctx);
+        } else {
+            // The signature, which the colours are from.
+            self.rebuild = true;
         }
+        true
     }
 
     #[allow(clippy::cognitive_complexity)]
@@ -216,7 +246,9 @@ impl Component for DiagramGl {
                 }
 
                 // Schedule the next frame
-                self.schedule_frame(ctx);
+                if !self.no_gl {
+                    self.schedule_frame(ctx);
+                }
             }
             DiagramGlMessage::Camera(phi, theta, distance, target) => {
                 self.camera.phi = phi;
@@ -230,6 +262,8 @@ impl Component for DiagramGl {
             }
             DiagramGlMessage::Setting(msg) => {
                 if let AppSettingsMsg::animated_3d(_) = msg {
+                    // The geometry has time as a dimension, or not.
+                    self.prepare(ctx);
                     return true;
                 }
             }
@@ -340,6 +374,16 @@ impl Component for DiagramGl {
                     }
                 }
             }
+            DiagramGlMessage::Geometry(ticket, geometry) => {
+                // The geometry of a diagram that has been replaced since is of no use.
+                if self.pending != Some(ticket) {
+                    return false;
+                }
+                self.pending = None;
+                self.geometry = Some((geometry, Self::is_animated(ctx)));
+                self.rebuild = true;
+                return true;
+            }
             DiagramGlMessage::Noop => {}
         }
 
@@ -347,6 +391,9 @@ impl Component for DiagramGl {
     }
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
+        if let Some(ticket) = self.pending.take() {
+            layout::cancel(ticket);
+        }
         AppSettings::unsubscribe(&[AppSettingsKey::animated_3d], &[self.setting_callback]);
         CAMERA.with(|c| c.unregister(self.camera_callback));
         SCRUB.with(|s| s.unregister(self.scrub_callback));
@@ -375,6 +422,7 @@ impl Component for DiagramGl {
             <>
                 <canvas
                     id="canvas"
+                    class={self.pending.is_some().then_some("diagram-gl--stale")}
                     style="width: 100%; height: 100%; display: block"
                     onmousemove={on_mouse_move}
                     onmouseup={on_mouse_up}
@@ -392,15 +440,29 @@ impl Component for DiagramGl {
     }
 
     fn rendered(&mut self, ctx: &Context<Self>, first_render: bool) {
+        if first_render {
+            self.schedule_frame(ctx);
+        }
+        // Not while the layout of the diagram is being made: the renderer for the one before
+        // it goes on drawing it until then.
+        if !self.rebuild || self.pending.is_some() {
+            return;
+        }
+        let Some((geometry, animated)) = self.geometry.clone() else {
+            return;
+        };
         if let Ok(gl_ctx) = GlCtx::attach(&self.canvas) {
-            {
-                *self.renderer.borrow_mut() = Some(Renderer::new(gl_ctx, ctx.props()).unwrap());
-            }
-
-            if first_render {
-                self.schedule_frame(ctx);
-            }
+            self.rebuild = false;
+            let started = instant::Instant::now();
+            let renderer = Renderer::new(gl_ctx, ctx.props(), geometry, animated).unwrap();
+            tracing::info!(
+                "Making the 3D scene (from the layout) took {:.1}ms",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+            *self.renderer.borrow_mut() = Some(renderer);
         } else {
+            self.rebuild = false;
+            self.no_gl = true;
             self.render_loop = None;
             toast(Toast::error("Failed to get WebGL 2.0 context"));
         }
@@ -408,6 +470,32 @@ impl Component for DiagramGl {
 }
 
 impl DiagramGl {
+    /// Asks for the geometry of the diagram of the properties. If it is not there at once, what
+    /// is shown is kept until it is.
+    fn prepare(&mut self, ctx: &Context<Self>) {
+        if let Some(ticket) = self.pending.take() {
+            layout::cancel(ticket);
+        }
+        let link = ctx.link().clone();
+        let on_geometry = Callback::from(move |(ticket, geometry)| {
+            link.send_message(DiagramGlMessage::Geometry(ticket, geometry));
+        });
+        let props = ctx.props();
+        let animated = Self::is_animated(ctx);
+        match layout::ask_geometry_in(
+            usize::from(props.view.dimension()),
+            &props.diagram,
+            animated,
+            on_geometry,
+        ) {
+            Asked::Ready(geometry) => {
+                self.geometry = Some((geometry, animated));
+                self.rebuild = true;
+            }
+            Asked::Pending(ticket) => self.pending = Some(ticket),
+        }
+    }
+
     fn is_animated(ctx: &Context<Self>) -> bool {
         let n = ctx.props().view.dimension();
         n == 4 || n == 3 && AppSettings::get_animated_3d()

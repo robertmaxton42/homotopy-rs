@@ -8,6 +8,7 @@ mod common;
 pub mod busy;
 pub mod delta;
 pub mod icon;
+pub mod layout_note;
 pub mod modal;
 pub mod panzoom;
 pub mod settings;

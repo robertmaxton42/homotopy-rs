@@ -181,21 +181,21 @@
           highs_postjs = pkgs.writeTextFile {
             name = "post.js";
             text = ''
-              window.Highs_call = Module._Highs_call;
-              window.Highs_changeObjectiveSense = Module._Highs_changeObjectiveSense;
-              window.Highs_create = Module._Highs_create;
-              window.Highs_destroy = Module._Highs_destroy;
-              window.Highs_getModelStatus = Module._Highs_getModelStatus;
-              window.Highs_getNumCols = Module._Highs_getNumCols;
-              window.Highs_getNumRows = Module._Highs_getNumRows;
-              window.Highs_getSolution = Module._Highs_getSolution;
-              window.Highs_run = Module._Highs_run;
-              window.Highs_setBoolOptionValue = Module.cwrap("Highs_setBoolOptionValue","number",["number", "string", "number"]);
-              window.Highs_setDoubleOptionValue = Module.cwrap("Highs_setDoubleOptionValue","number",["number", "string", "number"]);
-              window.Highs_setIntOptionValue = Module.cwrap("Highs_setIntOptionValue","number",["number", "string", "number"]);
-              window.Highs_setStringOptionValue = Module.cwrap("Highs_setIntOptionValue","number",["number", "string", "number"]);
+              self.Highs_call = Module._Highs_call;
+              self.Highs_changeObjectiveSense = Module._Highs_changeObjectiveSense;
+              self.Highs_create = Module._Highs_create;
+              self.Highs_destroy = Module._Highs_destroy;
+              self.Highs_getModelStatus = Module._Highs_getModelStatus;
+              self.Highs_getNumCols = Module._Highs_getNumCols;
+              self.Highs_getNumRows = Module._Highs_getNumRows;
+              self.Highs_getSolution = Module._Highs_getSolution;
+              self.Highs_run = Module._Highs_run;
+              self.Highs_setBoolOptionValue = Module.cwrap("Highs_setBoolOptionValue","number",["number", "string", "number"]);
+              self.Highs_setDoubleOptionValue = Module.cwrap("Highs_setDoubleOptionValue","number",["number", "string", "number"]);
+              self.Highs_setIntOptionValue = Module.cwrap("Highs_setIntOptionValue","number",["number", "string", "number"]);
+              self.Highs_setStringOptionValue = Module.cwrap("Highs_setIntOptionValue","number",["number", "string", "number"]);
 
-              window.Highs_passLp = function (h,nc,nr,nnz,a_fmt,sense,off,ccost,clow,cup,rlow,rup,astart,aidx,aval) {
+              self.Highs_passLp = function (h,nc,nr,nnz,a_fmt,sense,off,ccost,clow,cup,rlow,rup,astart,aidx,aval) {
                 var pccost = Module._malloc(ccost.length*ccost.BYTES_PER_ELEMENT); Module.HEAPU8.set(ccost, pccost);
                 var pclow = Module._malloc(clow.length*clow.BYTES_PER_ELEMENT); Module.HEAPU8.set(clow, pclow);
                 var pcup = Module._malloc(cup.length*cup.BYTES_PER_ELEMENT); Module.HEAPU8.set(cup, pcup);
@@ -209,7 +209,7 @@
                 Module._free(prup); Module._free(pastart); Module._free(paidx); Module._free(paval);
                 return ret;
               }
-              window.Highs_passMip = function (h,nc,nr,nnz,a_fmt,sense,off,ccost,clow,cup,rlow,rup,astart,aidx,aval,integ) {
+              self.Highs_passMip = function (h,nc,nr,nnz,a_fmt,sense,off,ccost,clow,cup,rlow,rup,astart,aidx,aval,integ) {
                 var pccost = Module._malloc(ccost.length*ccost.BYTES_PER_ELEMENT); Module.HEAPU8.set(ccost, pccost);
                 var pclow = Module._malloc(clow.length*clow.BYTES_PER_ELEMENT); Module.HEAPU8.set(clow, pclow);
                 var pcup = Module._malloc(cup.length*cup.BYTES_PER_ELEMENT); Module.HEAPU8.set(cup, pcup);
@@ -225,7 +225,7 @@
                 return ret;
               }
 
-              window.Highs_getSolution = function(h,c,r) {
+              self.Highs_getSolution = function(h,c,r) {
                 let ptr0=Module._malloc(c+8);let ptr1=Module._malloc(c+8);let ptr2=Module._malloc(r+8);let ptr3=Module._malloc(r+8);
                 let ret=Module._Highs_getSolution(h,ptr0+8,ptr1+8,ptr2+8,ptr3+8);
                 let cv=new Uint8Array(Module.HEAPU8.buffer,ptr0+8,c);

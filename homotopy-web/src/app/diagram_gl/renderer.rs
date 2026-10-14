@@ -1,8 +1,11 @@
+use std::rc::Rc;
+
 use homotopy_gl::{
     draw,
     frame::{DepthTest, Frame},
     GlCtx, Result,
 };
+use homotopy_graphics::geom::CubicalGeometry;
 use ultraviolet::{Mat4, Vec4};
 
 use self::{
@@ -26,7 +29,6 @@ pub struct Renderer {
     ctx: GlCtx,
     signature: Signature,
     // state
-    animated_3d: bool,
     cubical_subdivision: bool,
     smooth_time: bool,
     subdivision_depth: u8,
@@ -42,8 +44,14 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(ctx: GlCtx, props: &DiagramGlProps) -> Result<Self> {
-        let animated_3d = AppSettings::get_animated_3d();
+    /// A renderer for the diagram of the properties, given its geometry (for the view, and with
+    /// time as a dimension if `animated`), which is made elsewhere.
+    pub fn new(
+        ctx: GlCtx,
+        props: &DiagramGlProps,
+        geometry: Rc<CubicalGeometry>,
+        animated: bool,
+    ) -> Result<Self> {
         let cubical_subdivision = AppSettings::get_cubical_subdivision();
         let smooth_time = AppSettings::get_smooth_time();
         let subdivision_depth = AppSettings::get_subdivision_depth() as u8;
@@ -54,8 +62,8 @@ impl Renderer {
             scene: Scene::new(
                 &ctx,
                 &props.diagram,
-                props.view,
-                animated_3d,
+                geometry,
+                animated,
                 cubical_subdivision,
                 smooth_time,
                 subdivision_depth,
@@ -69,7 +77,6 @@ impl Renderer {
             cylinder_buffer: GBuffer::new(&ctx)?,
             ctx,
             signature,
-            animated_3d,
             cubical_subdivision,
             smooth_time,
             subdivision_depth,
@@ -78,7 +85,6 @@ impl Renderer {
     }
 
     pub fn update(&mut self) -> Result<()> {
-        let animated_3d = AppSettings::get_animated_3d();
         let cubical_subdivision = AppSettings::get_cubical_subdivision();
         let smooth_time = AppSettings::get_smooth_time();
         let subdivision_depth = AppSettings::get_subdivision_depth() as u8;
@@ -91,20 +97,17 @@ impl Renderer {
 
         self.ctx.set_pixel_ratio(pixel_ratio)?;
 
-        if self.animated_3d != animated_3d
-            || self.cubical_subdivision != cubical_subdivision
+        if self.cubical_subdivision != cubical_subdivision
             || self.smooth_time != smooth_time
             || self.subdivision_depth != subdivision_depth
             || self.geometry_samples != samples
         {
-            self.animated_3d = animated_3d;
             self.cubical_subdivision = cubical_subdivision;
             self.smooth_time = smooth_time;
             self.subdivision_depth = subdivision_depth;
             self.geometry_samples = samples;
             self.scene.reload_meshes(
                 &self.ctx,
-                animated_3d,
                 cubical_subdivision,
                 smooth_time,
                 subdivision_depth,
@@ -117,8 +120,7 @@ impl Renderer {
     }
 
     pub fn render(&mut self, camera: &OrbitCamera, t: f32) {
-        let n = self.scene.view.dimension();
-        let animated = n == 4 || n == 3 && self.animated_3d;
+        let animated = self.scene.animated;
 
         let geometry_scale = AppSettings::get_geometry_scale() as f32 / 10.;
 

@@ -8,6 +8,7 @@ use std::{
 };
 
 use homotopy_core::{layout::Layout, Diagram, SliceIndex};
+use homotopy_graphics::geom::CubicalGeometry;
 use homotopy_model::{
     history::Proof,
     job::run_to_end,
@@ -80,10 +81,29 @@ fn sorted<const N: usize>(layout: &Layout<N>) -> Vec<([SliceIndex; N], [f32; N])
 
 fn same_layout<const N: usize>(elsewhere: &Elsewhere, diagram: &Diagram, what: &str) {
     let here = Layout::<N>::new(diagram).unwrap();
-    let (response, pauses) = elsewhere.ask(layout::request::<N>(diagram, 7));
+    let (response, pauses) = elsewhere.ask(layout::request_layout::<N>(diagram, 7));
     assert_eq!(pauses, vec![7], "the delay is passed on");
-    let (there, _worked) = layout::response::<N>(&response).unwrap();
+    let (there, _worked) = layout::response_layout::<N>(&response).unwrap();
     assert_eq!(sorted(&here), sorted(&there), "{what}, N = {N}");
+}
+
+fn same_geometry<const N: usize>(
+    elsewhere: &Elsewhere,
+    diagram: &Diagram,
+    animated: bool,
+    what: &str,
+) {
+    let here = CubicalGeometry::new::<N>(diagram, animated).unwrap();
+    let (response, _) = elsewhere.ask(layout::request_geometry::<N>(diagram, animated, 0));
+    let (there, _worked) = layout::response_geometry(&response).unwrap();
+    assert_eq!(
+        format!("{here:?}"),
+        format!("{there:?}"),
+        "{what}, N = {N}, animated: {animated}"
+    );
+    // The same, right down to the last point and line, when it is sent again from the page.
+    assert_eq!(here.verts.len(), there.verts.len());
+    assert_eq!(here.curves.len(), there.curves.len());
 }
 
 fn diagrams_of(json: &str) -> Vec<Diagram> {
@@ -127,14 +147,41 @@ fn laying_out_elsewhere_is_laying_out_here() {
 }
 
 #[test]
+fn making_geometry_elsewhere_is_making_it_here() {
+    let elsewhere = Elsewhere::new();
+    let mut made = 0;
+    for (name, json) in EXAMPLES {
+        for diagram in diagrams_of(json) {
+            let dimension = diagram.dimension();
+            same_geometry::<0>(&elsewhere, &diagram, false, name);
+            if dimension >= 1 {
+                same_geometry::<1>(&elsewhere, &diagram, false, name);
+            }
+            if dimension >= 2 {
+                same_geometry::<2>(&elsewhere, &diagram, false, name);
+            }
+            if dimension >= 3 {
+                same_geometry::<3>(&elsewhere, &diagram, false, name);
+                same_geometry::<3>(&elsewhere, &diagram, true, name);
+            }
+            if dimension >= 4 {
+                same_geometry::<4>(&elsewhere, &diagram, true, name);
+            }
+            made += 1;
+        }
+    }
+    assert!(made > 20);
+}
+
+#[test]
 fn a_diagram_too_small_for_the_layout_is_a_failure() {
     let elsewhere = Elsewhere::new();
     let diagram = diagrams_of(EXAMPLES[0].1)
         .into_iter()
         .find(|d| d.dimension() == 0)
         .unwrap();
-    let (response, _) = elsewhere.ask(layout::request::<2>(&diagram, 0));
-    assert!(layout::response::<2>(&response).is_err());
+    let (response, _) = elsewhere.ask(layout::request_layout::<2>(&diagram, 0));
+    assert!(layout::response_layout::<2>(&response).is_err());
 }
 
 #[test]
@@ -144,12 +191,19 @@ fn the_wrong_dimension_or_garbage_is_a_failure_not_a_crash() {
         .into_iter()
         .find(|d| d.dimension() >= 2)
         .unwrap();
-    let (response, _) = elsewhere.ask(layout::request::<1>(&diagram, 0));
-    assert!(layout::response::<2>(&response).is_err());
-    assert!(layout::response::<1>(&response).is_ok());
+    let (response, _) = elsewhere.ask(layout::request_layout::<1>(&diagram, 0));
+    assert!(layout::response_layout::<2>(&response).is_err());
+    assert!(layout::response_layout::<1>(&response).is_ok());
     let (response, _) = elsewhere.ask(vec![0xc1, 1, 2, 3]);
-    assert!(layout::response::<1>(&response).is_err());
-    assert!(layout::response::<1>(&[0xc1, 2]).is_err());
+    assert!(layout::response_layout::<1>(&response).is_err());
+    assert!(layout::response_layout::<1>(&[0xc1, 2]).is_err());
+    // An answer to something else, or cut short.
+    let (geometry, _) = elsewhere.ask(layout::request_geometry::<1>(&diagram, false, 0));
+    assert!(layout::response_layout::<1>(&geometry).is_err());
+    assert!(layout::response_geometry(&response).is_err());
+    assert!(layout::response_geometry(&geometry).is_ok());
+    assert!(layout::response_geometry(&geometry[..geometry.len() - 1]).is_err());
+    assert!(layout::response_geometry(&geometry[..geometry.len() / 2]).is_err());
 }
 
 #[test]
