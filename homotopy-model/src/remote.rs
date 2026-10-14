@@ -36,9 +36,9 @@ use crate::{
     job::{Job, Progress},
     proof::{
         generators::{GeneratorInfo, Instance},
-        ActionsJob, ActionsOutcome, AttachOption, AttachOptionsJob, FolderInfo, Metadata,
-        ProofError, ProofState, SelectedBoundary, Signature, SignatureItem, View, Workspace,
-        REPLAYING,
+        ActionsJob, ActionsOutcome, AttachOption, AttachOptionsJob, AttachOutcome, FolderInfo,
+        InferenceLimits, InferenceReport, Metadata, ProofError, ProofState, SelectedBoundary,
+        Signature, SignatureItem, View, Workspace, REPLAYING,
     },
     serialize::serialize,
 };
@@ -55,6 +55,7 @@ pub enum Work {
     AttachOptions {
         point: Vec<SliceIndex>,
         weak_units: bool,
+        limits: InferenceLimits,
     },
     /// Make the project a `.hom` file (see [`serialize`](crate::serialize)), to save it in the
     /// background (see [`autosave`](crate::autosave)).
@@ -65,7 +66,7 @@ pub enum Work {
 #[derive(Debug)]
 pub enum Output {
     Actions(ActionsOutcome),
-    AttachOptions(Vec<AttachOption>),
+    AttachOptions(AttachOutcome),
     /// The bytes of the file.
     Serialized(Vec<u8>),
 }
@@ -179,7 +180,10 @@ enum WireOutput {
         steps: Vec<WireStep>,
         error: Option<String>,
     },
-    AttachOptions(Vec<WireAttachOption>),
+    AttachOptions {
+        options: Vec<WireAttachOption>,
+        inference: InferenceReport,
+    },
     /// The file is in the trailer.
     Serialized,
 }
@@ -520,13 +524,16 @@ impl Remote {
                     error: error.map(ProofError::Remote),
                 })
             }
-            WireOutput::AttachOptions(options) => Output::AttachOptions(
-                options
-                    .into_iter()
-                    .map(|option| unpack_option(&mut store, option))
-                    .collect::<Option<_>>()
-                    .ok_or(CORRUPT)?,
-            ),
+            WireOutput::AttachOptions { options, inference } => {
+                Output::AttachOptions(AttachOutcome {
+                    options: options
+                        .into_iter()
+                        .map(|option| unpack_option(&mut store, option))
+                        .collect::<Option<_>>()
+                        .ok_or(CORRUPT)?,
+                    inference,
+                })
+            }
             WireOutput::Serialized => {
                 let start = bytes.len().checked_sub(done.trailer).ok_or(CORRUPT)?;
                 Output::Serialized(bytes[start..].to_vec())
@@ -637,16 +644,22 @@ impl Executor {
                     error: outcome.error.map(|error| error.to_string()),
                 }
             }
-            Work::AttachOptions { point, weak_units } => {
-                let job = AttachOptionsJob::new(&state, &point, weak_units)
+            Work::AttachOptions {
+                point,
+                weak_units,
+                limits,
+            } => {
+                let job = AttachOptionsJob::new(&state, &point, weak_units, limits)
                     .map_err(|e| format!("nothing to attach to: {e:?}"))?;
-                let options = run_with(job, step_delay_ms, before_step);
-                WireOutput::AttachOptions(
-                    options
+                let AttachOutcome { options, inference } =
+                    run_with(job, step_delay_ms, before_step);
+                WireOutput::AttachOptions {
+                    options: options
                         .into_iter()
                         .map(|option| pack_option(&mut store, option))
                         .collect(),
-                )
+                    inference,
+                }
             }
             Work::Serialize => {
                 trailer = serialize(state.signature, state.workspace, state.metadata);

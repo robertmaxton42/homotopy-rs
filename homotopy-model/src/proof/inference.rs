@@ -6,9 +6,12 @@
 //! [`MAX_CELLS`] of its cells of the placeholder's dimension, between the placeholder's source and
 //! target. A substitution is kept if the instantiated schema then attaches at the given point.
 
-use std::{cell::OnceCell, rc::Rc};
+use std::{
+    cell::{OnceCell, RefCell},
+    rc::Rc,
+};
 
-use homotopy_common::hash::FastHashSet;
+use homotopy_common::hash::{FastHashMap, FastHashSet};
 use homotopy_core::{
     signature::{Invertibility, Signature as _},
     substitution::substitute,
@@ -51,6 +54,101 @@ pub(super) struct Pool<'a> {
 pub(super) struct Cells {
     from: From,
     made: OnceCell<Made>,
+    /// The composites of the cells that start at a diagram, so far (see [`Composites`]): what the
+    /// candidates for a placeholder are taken from, which depends on where they start and not on
+    /// where they end, so that placeholders (of one schema, or of many) with the same source share
+    /// the work.
+    composites: RefCell<FastHashMap<Diagram, Rc<RefCell<Composites>>>>,
+    /// The placeholders that the candidates for each placeholder are in terms of.
+    required: RefCell<FastHashMap<Generator, Rc<[Generator]>>>,
+    /// The candidates found for a placeholder, given the replacements for those it is in terms
+    /// of (and not the others, which the candidates do not depend on).
+    candidates: RefCell<FastHashMap<CandidatesKey, Vec<Diagram>>>,
+}
+
+/// A placeholder with the replacements of the placeholders its candidates are in terms of.
+type CandidatesKey = (Generator, Vec<(Generator, Diagram)>);
+
+/// The most lists of candidates kept.
+const MAX_CACHED_CANDIDATES: usize = 1 << 16;
+
+/// The most diagrams that composites are kept for, so that the memory held is bounded.
+const MAX_CACHED_SOURCES: usize = 4096;
+
+/// The composites of up to [`MAX_CELLS`] cells that start at a diagram, a level (number of cells)
+/// at a time as they are wanted, each once and in the order of a breadth first search.
+struct Composites {
+    /// Those composites with this many cells that were not found with fewer.
+    levels: Vec<Rc<[DiagramN]>>,
+    seen: FastHashSet<DiagramN>,
+    /// What the last level can be extended to, with repeats, for the next level.
+    frontier: Vec<DiagramN>,
+}
+
+impl Composites {
+    fn new(source: &Diagram) -> Self {
+        Self {
+            levels: vec![],
+            seen: FastHashSet::default(),
+            frontier: vec![source.clone().identity()],
+        }
+    }
+
+    /// The composites with `depth` cells that are new, making them (and those with fewer) if need
+    /// be.
+    fn level(&mut self, depth: usize, cells: &[&DiagramN]) -> Rc<[DiagramN]> {
+        while self.levels.len() <= depth {
+            let depth = self.levels.len();
+            let mut level = vec![];
+            let mut next = vec![];
+            // A cell is only attached where the cells of its source are.
+            let sources: Vec<(Diagram, Vec<Generator>)> = if depth == MAX_CELLS {
+                vec![]
+            } else {
+                cells
+                    .iter()
+                    .map(|cell| {
+                        let source = cell.source();
+                        let generators = source.generators().into_keys().collect();
+                        (source, generators)
+                    })
+                    .collect()
+            };
+            for composite in std::mem::take(&mut self.frontier) {
+                if !self.seen.insert(composite.clone()) {
+                    continue;
+                }
+                level.push(composite.clone());
+                if depth == MAX_CELLS {
+                    continue;
+                }
+                let end = composite.target();
+                let present = end.generators();
+                for (cell, (source, generators)) in cells.iter().zip(&sources) {
+                    if !generators
+                        .iter()
+                        .all(|generator| present.contains_key(generator))
+                    {
+                        continue;
+                    }
+                    for embedding in end.embeddings(source) {
+                        if let Ok(extended) = composite.attach(cell, Boundary::Target, &embedding) {
+                            next.push(extended);
+                        }
+                    }
+                }
+            }
+            self.frontier = next;
+            self.levels.push(level.into());
+        }
+        Rc::clone(&self.levels[depth])
+    }
+}
+
+impl std::fmt::Debug for Cells {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cells").finish_non_exhaustive()
+    }
 }
 
 enum From {
@@ -66,16 +164,19 @@ struct Made {
     zero_cells: Vec<Diagram>,
 }
 
-struct Search<'a> {
-    pool: Pool<'a>,
-    schema: Generator,
-    schema_diagram: DiagramN,
-    parameters: Vec<Generator>,
-    haystack: &'a Diagram,
-    boundary: Boundary,
-    point: &'a [Height],
-    tried: usize,
-    results: Vec<InferredInstance>,
+impl Cells {
+    /// The composites that start at a diagram (kept, for a bounded number of diagrams).
+    fn composites_from(&self, source: &Diagram) -> Rc<RefCell<Composites>> {
+        let mut cache = self.composites.borrow_mut();
+        if let Some(found) = cache.get(source) {
+            return Rc::clone(found);
+        }
+        let fresh = Rc::new(RefCell::new(Composites::new(source)));
+        if cache.len() < MAX_CACHED_SOURCES {
+            cache.insert(source.clone(), Rc::clone(&fresh));
+        }
+        fresh
+    }
 }
 
 impl<'a> Pool<'a> {
@@ -89,6 +190,9 @@ impl<'a> Pool<'a> {
             cells: Rc::new(Cells {
                 from: From::Generators(generators.into_iter().collect()),
                 made: OnceCell::new(),
+                composites: RefCell::default(),
+                required: RefCell::default(),
+                candidates: RefCell::default(),
             }),
         }
     }
@@ -100,6 +204,9 @@ impl<'a> Pool<'a> {
             cells: Rc::new(Cells {
                 from: From::Diagrams(diagrams),
                 made: OnceCell::new(),
+                composites: RefCell::default(),
+                required: RefCell::default(),
+                candidates: RefCell::default(),
             }),
         }
     }
@@ -226,10 +333,47 @@ impl<'a> Pool<'a> {
         .ok()
     }
 
-    /// The candidate replacements for a placeholder, given replacements for those before it.
-    // `DiagramN` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
+    /// The candidate replacements for a placeholder, given replacements for the placeholders
+    /// its type is in terms of (and others, which make no difference). The same candidates for
+    /// the same replacements of those are found once.
+    // `Diagram` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
     #[allow(clippy::mutable_key_type)]
     pub(super) fn candidates(
+        &self,
+        placeholder: Generator,
+        substitution: &[(Generator, Diagram)],
+    ) -> Vec<Diagram> {
+        let required = {
+            let mut required = self.cells.required.borrow_mut();
+            Rc::clone(required.entry(placeholder).or_insert_with(|| {
+                self.signature
+                    .parameters(placeholder)
+                    .into_iter()
+                    .filter(|&q| q != placeholder)
+                    .collect()
+            }))
+        };
+        let mut key: Vec<(Generator, Diagram)> = substitution
+            .iter()
+            .filter(|(g, _)| required.contains(g))
+            .cloned()
+            .collect();
+        key.sort_by_key(|(g, _)| (g.dimension, g.id));
+        let key = (placeholder, key);
+        if let Some(found) = self.cells.candidates.borrow().get(&key) {
+            return found.clone();
+        }
+        let found = self.find_candidates(placeholder, substitution);
+        let mut cache = self.cells.candidates.borrow_mut();
+        if cache.len() < MAX_CACHED_CANDIDATES {
+            cache.insert(key, found.clone());
+        }
+        found
+    }
+
+    // `DiagramN` is hash-consed; its `OnceCell` caches do not affect `Hash`/`Eq`.
+    #[allow(clippy::mutable_key_type)]
+    fn find_candidates(
         &self,
         placeholder: Generator,
         substitution: &[(Generator, Diagram)],
@@ -265,6 +409,373 @@ impl<'a> Pool<'a> {
             .iter()
             .filter(|c| c.dimension() == k)
             .collect();
+        let composites = self.cells.composites_from(&source);
+        let mut results = vec![];
+        for depth in 0..=MAX_CELLS {
+            let level = composites.borrow_mut().level(depth, &cells);
+            for composite in level.iter() {
+                if composite.target() == target && Diagram::from(composite.clone()) != own {
+                    results.push(composite.clone().into());
+                    if results.len() >= MAX_CANDIDATES {
+                        return results;
+                    }
+                }
+            }
+        }
+        results
+    }
+}
+
+impl Signature {
+    /// The ways to instantiate a schema so that it can be attached to `haystack` at `point`,
+    /// attaching to its `boundary` (as in the attach menu). Instances of generators that the
+    /// schema depends on must already exist for the instance to match.
+    ///
+    /// This is [`InferSearch`] run to the end, which the attach options do a step at a time.
+    #[must_use]
+    pub fn infer_instances(
+        &self,
+        schema: Generator,
+        haystack: &Diagram,
+        boundary: Boundary,
+        point: &[Height],
+    ) -> Vec<InferredInstance> {
+        let cells = Pool::new(self, haystack.generators().into_keys()).cells();
+        let Some(mut search) = InferSearch::new(self, cells, schema, haystack, boundary, point)
+        else {
+            return vec![];
+        };
+        while !search.step() {}
+        search.finish()
+    }
+}
+
+impl Signature {
+    /// The replacements of the placeholders of a schema that are determined by the replacements
+    /// `chosen` for some of them. Each replacement chosen has a type in terms of other
+    /// placeholders, e.g. a cone `α₀ : X₀ ∘ ! ⇒ D₀` for `α : X ∘ ! ⇒ D`: so `X` and `D` must be
+    /// replaced with `X₀` and `D₀`.
+    ///
+    /// A placeholder is determined if every way of replacing the rest of the placeholders so that
+    /// the types of the replacements chosen are right agrees on it. The types are matched
+    /// structurally, which takes no search for the placeholders they mention: see the
+    /// [module](super::completion) on how, and on what is left to a bounded search, like
+    /// [`infer_instances`](Self::infer_instances). If that has to stop early, only what matching
+    /// forces is returned. Placeholders that the types do not mention are left alone, and
+    /// placeholders that were replaced already are never returned.
+    #[must_use]
+    pub fn infer_replacements(
+        &self,
+        schema: Generator,
+        chosen: &[(Generator, Diagram)],
+    ) -> Vec<(Generator, Diagram)> {
+        self.infer(schema, chosen).determined
+    }
+}
+
+/// The search for the ways to instantiate a schema so that it attaches at a point (see
+/// [`Signature::infer_instances`]), as a machine that does a little at a time: one list of
+/// candidates for a placeholder, or one complete substitution checked, in each
+/// [`step`](Self::step).
+///
+/// The placeholders are solved one after another, each from the candidates for it given the
+/// replacements chosen for those its type mentions (see [`Pool::candidates`]): not strictly from
+/// the lowest dimension up, but a placeholder as soon as the placeholders its type is in terms
+/// of are done, so that a replacement that cannot be completed is found out before the
+/// replacements for unrelated placeholders are chosen (two functors with a transformation each
+/// take the product of what each pair has in the one order, and the sum in the other).
+/// What is found is the same, and in the same order: the instances are sorted by the numbers of
+/// the candidates chosen, placeholder by placeholder from the lowest dimension. Only when the
+/// search stops early, at [`MAX_SUBSTITUTIONS`], does it find different instances.
+pub(super) struct InferSearch {
+    signature: Signature,
+    cells: Rc<Cells>,
+    schema: Generator,
+    schema_diagram: DiagramN,
+    parameters: Vec<Generator>,
+    /// The order the placeholders are solved in, as indices into `parameters`.
+    order: Vec<usize>,
+    haystack: Diagram,
+    /// The generators of the haystack, for ruling out needles that have others.
+    present: FastHashSet<Generator>,
+    boundary: Boundary,
+    point: Vec<Height>,
+    started: bool,
+    done: bool,
+    /// The candidates for the placeholder solved at each depth, and how many have been taken.
+    stack: Vec<Candidates>,
+    /// What was chosen at each depth up to the last frame.
+    chosen: Vec<Chosen>,
+    tried: usize,
+    /// Each instance with what it was found for, to sort by.
+    results: Vec<(Vec<usize>, InferredInstance)>,
+}
+
+struct Candidates {
+    list: Vec<Diagram>,
+    next: usize,
+}
+
+struct Chosen {
+    parameter: usize,
+    candidate: usize,
+    replacement: Diagram,
+}
+
+impl std::fmt::Debug for InferSearch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InferSearch")
+            .field("schema", &self.schema)
+            .field("depth", &self.stack.len())
+            .field("tried", &self.tried)
+            .finish_non_exhaustive()
+    }
+}
+
+impl InferSearch {
+    /// The search to instantiate a schema, with the cells of the pool shared with other searches
+    /// in the same diagram (which share the work of making the composites in them). `None` if
+    /// there is nothing to search: the schema has no placeholders, or is not a cell of the
+    /// dimension to attach.
+    pub(super) fn new(
+        signature: &Signature,
+        cells: Rc<Cells>,
+        schema: Generator,
+        haystack: &Diagram,
+        boundary: Boundary,
+        point: &[Height],
+    ) -> Option<Self> {
+        let parameters = signature.parameters(schema);
+        let Some(Diagram::DiagramN(schema_diagram)) = signature
+            .generator_info(schema)
+            .map(|info| info.diagram.clone())
+        else {
+            return None;
+        };
+        if parameters.is_empty() || schema_diagram.dimension() != haystack.dimension() + 1 {
+            return None;
+        }
+
+        // The placeholders that the type of each is in terms of.
+        let required: Vec<Vec<usize>> = parameters
+            .iter()
+            .map(|&p| {
+                signature
+                    .parameters(p)
+                    .into_iter()
+                    .filter(|&q| q != p)
+                    .filter_map(|q| parameters.iter().position(|&r| r == q))
+                    .collect()
+            })
+            .collect();
+        // A placeholder whose type is in terms of others is solved as soon as they are, so that a
+        // choice that leaves it without replacements is found out before the replacements for
+        // unrelated placeholders are chosen; otherwise the lowest dimension first.
+        let mut order: Vec<usize> = vec![];
+        while order.len() < parameters.len() {
+            let ready = |i: &usize| required[*i].iter().all(|j| order.contains(j));
+            let unsolved = || (0..parameters.len()).filter(|i| !order.contains(i));
+            let next = unsolved()
+                .filter(ready)
+                .find(|&i| !required[i].is_empty())
+                .or_else(|| unsolved().find(ready))
+                // Placeholders whose types are in terms of each other.
+                .or_else(|| unsolved().next())?;
+            order.push(next);
+        }
+
+        Some(Self {
+            signature: signature.clone(),
+            cells,
+            schema,
+            schema_diagram,
+            parameters,
+            order,
+            haystack: haystack.clone(),
+            present: haystack.generators().into_keys().collect(),
+            boundary,
+            point: point.to_vec(),
+            started: false,
+            done: false,
+            stack: vec![],
+            chosen: vec![],
+            tried: 0,
+            results: vec![],
+        })
+    }
+
+    /// Does a little of the search: whether it is over.
+    pub(super) fn step(&mut self) -> bool {
+        if self.done {
+            return true;
+        }
+        if !self.started {
+            self.started = true;
+            self.descend();
+            return self.done;
+        }
+        let depth = self.stack.len();
+        let Some(frame) = self.stack.last_mut() else {
+            self.done = true;
+            return true;
+        };
+        if frame.next >= frame.list.len() {
+            self.stack.pop();
+            return false;
+        }
+        if self.tried >= MAX_SUBSTITUTIONS {
+            self.done = true;
+            return true;
+        }
+        let candidate = frame.next;
+        let replacement = frame.list[candidate].clone();
+        frame.next += 1;
+        self.chosen.truncate(depth - 1);
+        self.chosen.push(Chosen {
+            parameter: self.order[depth - 1],
+            candidate,
+            replacement,
+        });
+        if depth == self.order.len() {
+            self.tried += 1;
+            self.check();
+        } else {
+            self.descend();
+        }
+        false
+    }
+
+    /// Finds the candidates for the next placeholder, given those chosen.
+    fn descend(&mut self) {
+        let placeholder = self.parameters[self.order[self.chosen.len()]];
+        let substitution: Vec<_> = self
+            .chosen
+            .iter()
+            .map(|chosen| {
+                (
+                    self.parameters[chosen.parameter],
+                    chosen.replacement.clone(),
+                )
+            })
+            .collect();
+        let list = Pool::from_cells(&self.signature, Rc::clone(&self.cells))
+            .candidates(placeholder, &substitution);
+        self.stack.push(Candidates { list, next: 0 });
+    }
+
+    /// The instances found, in the order that choosing the candidates for the placeholders from
+    /// the lowest dimension would find them.
+    pub(super) fn finish(mut self) -> Vec<InferredInstance> {
+        self.results.sort_by(|(a, _), (b, _)| a.cmp(b));
+        self.results.into_iter().map(|(_, found)| found).collect()
+    }
+
+    /// Checks whether a complete substitution lets the schema attach at the point.
+    fn check(&mut self) {
+        let mut chosen: Vec<&Chosen> = self.chosen.iter().collect();
+        chosen.sort_by_key(|chosen| chosen.parameter);
+        let substitution: Vec<(Generator, Diagram)> = chosen
+            .iter()
+            .map(|chosen| {
+                (
+                    self.parameters[chosen.parameter],
+                    chosen.replacement.clone(),
+                )
+            })
+            .collect();
+        let mut key = vec![0; self.parameters.len()];
+        for chosen in &chosen {
+            key[chosen.parameter] = chosen.candidate;
+        }
+
+        let pool = Pool::from_cells(&self.signature, Rc::clone(&self.cells));
+        // The side attached along must match the diagram, so it can only use existing instances;
+        // instances on the other side may be created when attaching.
+        let strict_source = self.boundary == Boundary::Target;
+        let source = self.schema_diagram.source();
+        let target = self.schema_diagram.target();
+        let (Some(source), Some(target)) = (
+            pool.substitute(self.schema, &substitution, &source, strict_source),
+            pool.substitute(self.schema, &substitution, &target, !strict_source),
+        ) else {
+            return;
+        };
+        // The side attached along is what is looked for in the haystack, and cells that it does
+        // not have are not in it.
+        let needle_side = if strict_source { &source } else { &target };
+        if !needle_side
+            .generators()
+            .keys()
+            .all(|generator| self.present.contains(generator))
+        {
+            return;
+        }
+        let Ok(diagram) = DiagramN::from_generator(self.schema, source, target) else {
+            return;
+        };
+        let Some(needle) = diagram.slice(self.boundary.flip()) else {
+            return;
+        };
+        for embedding in self.haystack.embeddings_through(&needle, &self.point) {
+            self.results.push((
+                key.clone(),
+                InferredInstance {
+                    substitution: self.signature.normalise(&substitution),
+                    diagram: diagram.clone(),
+                    embedding,
+                },
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use homotopy_common::hash::FastHashSet;
+    use homotopy_core::{
+        signature::{Invertibility, Signature as _},
+        Boundary, Diagram, DiagramN, Generator, Height,
+    };
+
+    use super::{InferSearch, Pool, MAX_CANDIDATES, MAX_CELLS, MAX_SUBSTITUTIONS};
+    use crate::{
+        job::run_to_end,
+        proof::{
+            AttachOptionsJob, AttachOutcome, InferenceLimits, ProofState, Signature, SignatureEdit,
+            SignatureItemEdit, Workspace,
+        },
+    };
+
+    /// The candidates for a placeholder as they were found before the composites were kept: a
+    /// search from the source of the placeholder of its own, which stops at enough candidates.
+    fn reference_candidates(
+        pool: &Pool<'_>,
+        placeholder: Generator,
+        substitution: &[(Generator, Diagram)],
+    ) -> Vec<Diagram> {
+        let own = pool
+            .signature
+            .generator_info(placeholder)
+            .unwrap()
+            .diagram
+            .clone();
+        let Diagram::DiagramN(own_n) = &own else {
+            return pool.candidates(placeholder, substitution);
+        };
+        let (Some(source), Some(target)) = (
+            pool.substitute(placeholder, substitution, &own_n.source(), true),
+            pool.substitute(placeholder, substitution, &own_n.target(), true),
+        ) else {
+            return vec![];
+        };
+        let cells: Vec<DiagramN> = pool
+            .made()
+            .cells
+            .iter()
+            .filter(|cell| cell.dimension() == own_n.dimension())
+            .cloned()
+            .collect();
+        let cells: Vec<&DiagramN> = cells.iter().collect();
         let mut seen = FastHashSet::default();
         let mut results = vec![];
         let mut frontier = vec![source.identity()];
@@ -295,32 +806,81 @@ impl<'a> Pool<'a> {
         }
         results
     }
-}
 
-impl Signature {
-    /// The ways to instantiate a schema so that it can be attached to `haystack` at `point`,
-    /// attaching to its `boundary` (as in the attach menu). Instances of generators that the
-    /// schema depends on must already exist for the instance to match.
-    #[must_use]
-    pub fn infer_instances(
-        &self,
+    /// The search as it was before it was made a step at a time, the placeholders from the
+    /// lowest dimension up, and every embedding looked at.
+    fn reference_infer(
+        sig: &Signature,
         schema: Generator,
         haystack: &Diagram,
         boundary: Boundary,
         point: &[Height],
-    ) -> Vec<InferredInstance> {
-        let parameters = self.parameters(schema);
+    ) -> Vec<(Vec<(Generator, Diagram)>, Vec<usize>)> {
+        struct Ref<'a> {
+            pool: Pool<'a>,
+            schema: Generator,
+            schema_diagram: DiagramN,
+            parameters: Vec<Generator>,
+            haystack: &'a Diagram,
+            boundary: Boundary,
+            point: &'a [Height],
+            tried: usize,
+            results: Vec<(Vec<(Generator, Diagram)>, Vec<usize>)>,
+        }
+        impl Ref<'_> {
+            fn solve(&mut self, substitution: &mut Vec<(Generator, Diagram)>) {
+                if self.tried >= MAX_SUBSTITUTIONS {
+                    return;
+                }
+                let Some(&placeholder) = self.parameters.get(substitution.len()) else {
+                    self.tried += 1;
+                    self.check(substitution);
+                    return;
+                };
+                for candidate in reference_candidates(&self.pool, placeholder, substitution) {
+                    substitution.push((placeholder, candidate));
+                    self.solve(substitution);
+                    substitution.pop();
+                }
+            }
+
+            fn check(&mut self, substitution: &[(Generator, Diagram)]) {
+                let strict_source = self.boundary == Boundary::Target;
+                let (source, target) = (self.schema_diagram.source(), self.schema_diagram.target());
+                let (Some(source), Some(target)) = (
+                    self.pool
+                        .substitute(self.schema, substitution, &source, strict_source),
+                    self.pool
+                        .substitute(self.schema, substitution, &target, !strict_source),
+                ) else {
+                    return;
+                };
+                let Ok(diagram) = DiagramN::from_generator(self.schema, source, target) else {
+                    return;
+                };
+                let Some(needle) = diagram.slice(self.boundary.flip()) else {
+                    return;
+                };
+                for embedding in self.haystack.embeddings(&needle) {
+                    if needle.contains_point(self.point, &embedding) {
+                        self.results
+                            .push((self.pool.signature.normalise(substitution), embedding));
+                    }
+                }
+            }
+        }
+
+        let parameters = sig.parameters(schema);
         let Some(Diagram::DiagramN(schema_diagram)) =
-            self.generator_info(schema).map(|info| info.diagram.clone())
+            sig.generator_info(schema).map(|info| info.diagram.clone())
         else {
             return vec![];
         };
         if parameters.is_empty() || schema_diagram.dimension() != haystack.dimension() + 1 {
             return vec![];
         }
-
-        let mut search = Search {
-            pool: Pool::new(self, haystack.generators().into_keys()),
+        let mut search = Ref {
+            pool: Pool::new(sig, haystack.generators().into_keys()),
             schema,
             schema_diagram,
             parameters,
@@ -333,89 +893,198 @@ impl Signature {
         search.solve(&mut vec![]);
         search.results
     }
-}
 
-impl Signature {
-    /// The replacements of the placeholders of a schema that are determined by the replacements
-    /// `chosen` for some of them. Each replacement chosen has a type in terms of other
-    /// placeholders, e.g. a cone `α₀ : X₀ ∘ ! ⇒ D₀` for `α : X ∘ ! ⇒ D`: so `X` and `D` must be
-    /// replaced with `X₀` and `D₀`.
-    ///
-    /// A placeholder is determined if every way of replacing the rest of the placeholders so that
-    /// the types of the replacements chosen are right agrees on it. The types are matched
-    /// structurally, which takes no search for the placeholders they mention: see the
-    /// [module](super::completion) on how, and on what is left to a bounded search, like
-    /// [`infer_instances`](Self::infer_instances). If that has to stop early, only what matching
-    /// forces is returned. Placeholders that the types do not mention are left alone, and
-    /// placeholders that were replaced already are never returned.
-    #[must_use]
-    pub fn infer_replacements(
-        &self,
+    fn found(
+        sig: &Signature,
         schema: Generator,
-        chosen: &[(Generator, Diagram)],
-    ) -> Vec<(Generator, Diagram)> {
-        self.infer(schema, chosen).determined
-    }
-}
-
-impl Search<'_> {
-    fn solve(&mut self, substitution: &mut Vec<(Generator, Diagram)>) {
-        if self.tried >= MAX_SUBSTITUTIONS {
-            return;
-        }
-        let Some(&placeholder) = self.parameters.get(substitution.len()) else {
-            self.tried += 1;
-            self.check(substitution);
-            return;
-        };
-        for candidate in self.pool.candidates(placeholder, substitution) {
-            substitution.push((placeholder, candidate));
-            self.solve(substitution);
-            substitution.pop();
-        }
+        haystack: &Diagram,
+        boundary: Boundary,
+        point: &[Height],
+    ) -> Vec<(Vec<(Generator, Diagram)>, Vec<usize>)> {
+        sig.infer_instances(schema, haystack, boundary, point)
+            .into_iter()
+            .map(|inferred| (inferred.substitution, inferred.embedding))
+            .collect()
     }
 
-    /// Checks whether a complete substitution lets the schema attach at the point.
-    fn check(&mut self, substitution: &[(Generator, Diagram)]) {
-        // The side attached along must match the diagram, so it can only use existing instances;
-        // instances on the other side may be created when attaching.
-        let strict_source = self.boundary == Boundary::Target;
-        let source = self.schema_diagram.source();
-        let target = self.schema_diagram.target();
-        let (Some(source), Some(target)) = (
-            self.pool
-                .substitute(self.schema, substitution, &source, strict_source),
-            self.pool
-                .substitute(self.schema, substitution, &target, !strict_source),
-        ) else {
-            return;
+    /// Two independent placeholders `P, P' : x → x` with a 2-cell each, `e : P ⇒ P` and
+    /// `e' : P' ⇒ P'`; the schema `S : e ⇛ e` which depends on `e'` and so on `P'`; and a diagram
+    /// with cells to replace them with.
+    fn independent() -> (Signature, Generator, DiagramN, DiagramN) {
+        let mut sig = Signature::default();
+        let x: Diagram = sig.create_generator_zero("x").into();
+        let cell = |sig: &mut Signature, s: Diagram, t: Diagram| {
+            sig.create_generator(s, t, "c", Invertibility::Directed)
+                .unwrap()
         };
-        let Ok(diagram) = DiagramN::from_generator(self.schema, source, target) else {
-            return;
-        };
-        let Some(needle) = diagram.slice(self.boundary.flip()) else {
-            return;
-        };
-        for embedding in self.haystack.embeddings(&needle) {
-            if needle.contains_point(self.point, &embedding) {
-                self.results.push(InferredInstance {
-                    substitution: self.pool.signature.normalise(substitution),
-                    diagram: diagram.clone(),
-                    embedding,
-                });
+        let p = cell(&mut sig, x.clone(), x.clone());
+        let p2 = cell(&mut sig, x.clone(), x.clone());
+        let q = cell(&mut sig, x.clone(), x.clone());
+        let e = cell(&mut sig, p.clone().into(), p.clone().into());
+        let e2 = cell(&mut sig, p2.clone().into(), p2.clone().into());
+        let u = cell(&mut sig, q.clone().into(), q.clone().into());
+        let s = cell(&mut sig, e.clone().into(), e.clone().into());
+        let g = |d: &DiagramN| d.max_generator().generator;
+        for d in [&p, &p2, &e, &e2] {
+            make_placeholder(&mut sig, g(d));
+        }
+        let node = sig.find_node(g(&s)).unwrap();
+        sig.update(&SignatureEdit::Edit(
+            node,
+            SignatureItemEdit::SetDependsOn(vec![g(&e2)]),
+        ))
+        .unwrap();
+        (sig, g(&s), q, u)
+    }
+
+    /// The identity on `q ≫ q ≫ q`.
+    fn small_haystack(q: &DiagramN) -> Diagram {
+        q.attach(q, Boundary::Target, &[])
+            .unwrap()
+            .attach(q, Boundary::Target, &[])
+            .unwrap()
+            .identity()
+            .into()
+    }
+
+    #[test]
+    fn the_search_finds_what_the_search_from_the_lowest_dimension_up_finds() {
+        let (sig, s, q, _) = independent();
+        let haystack = small_haystack(&q);
+        assert_eq!(sig.parameters(s).len(), 4);
+        // `e` is solved right after `P` and before `P'`.
+        let cells = Pool::new(&sig, haystack.generators().into_keys()).cells();
+        let search = InferSearch::new(&sig, cells, s, &haystack, Boundary::Target, &[]).unwrap();
+        assert_eq!(search.order, vec![0, 2, 1, 3]);
+        let mut total = 0;
+        for point in [
+            vec![],
+            vec![Height::Singular(0)],
+            vec![Height::Regular(0)],
+            vec![Height::Regular(0), Height::Singular(1)],
+            vec![Height::Regular(0), Height::Singular(2)],
+        ] {
+            let expected = reference_infer(&sig, s, &haystack, Boundary::Target, &point);
+            let got = found(&sig, s, &haystack, Boundary::Target, &point);
+            assert_eq!(got.len(), expected.len(), "{point:?}");
+            assert!(got == expected, "{point:?} (the order is different)");
+            total += expected.len();
+        }
+        assert!(total > 0, "some instances are inferred");
+    }
+
+    /// The schema `S` of `independent`, with the identity on `q ≫ q ≫ q` (small, and the search
+    /// finds instances), or, with the cell `u : q ⇒ q` as well, a diagram that the search for
+    /// the placeholders has a great deal of choice in (and runs into its limit).
+    fn attach_job(big: bool, limits: InferenceLimits) -> AttachOptionsJob {
+        let (sig, _, q, u) = independent();
+        let haystack = if big {
+            let mut d = q.identity();
+            for _ in 0..3 {
+                d = d.attach(&u, Boundary::Target, &[]).unwrap();
             }
-        }
+            d.into()
+        } else {
+            small_haystack(&q)
+        };
+        let proof = ProofState {
+            signature: sig,
+            workspace: Some(Workspace::new(haystack)),
+            ..ProofState::default()
+        };
+        AttachOptionsJob::new(&proof, &[], false, limits).unwrap()
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use homotopy_core::{
-        signature::{Invertibility, Signature as _},
-        Boundary, Diagram, DiagramN, Generator, Height,
-    };
+    #[test]
+    fn inference_can_be_turned_off_and_limited() {
+        let instances = |outcome: &AttachOutcome| {
+            outcome
+                .options
+                .iter()
+                .filter(|option| option.substitution.is_some())
+                .count()
+        };
+        let all = run_to_end(attach_job(false, InferenceLimits::UNLIMITED));
+        assert!(instances(&all) > 0, "instances are inferred");
+        assert!(!all.inference.timed_out() && all.inference.too_high.is_none());
 
-    use crate::proof::{Signature, SignatureEdit, SignatureItemEdit};
+        // Off: only the options that are not instances, and the same ones.
+        let plain = run_to_end(attach_job(
+            false,
+            InferenceLimits {
+                enabled: false,
+                ..InferenceLimits::UNLIMITED
+            },
+        ));
+        assert_eq!(instances(&plain), 0);
+        assert!(!plain.inference.timed_out() && plain.inference.too_high.is_none());
+        let without_instances: Vec<_> = all
+            .options
+            .iter()
+            .filter(|option| option.substitution.is_none())
+            .cloned()
+            .collect();
+        assert_eq!(plain.options, without_instances);
+
+        // The diagram has more dimensions than the limit lets instances be inferred for.
+        let high = run_to_end(attach_job(
+            false,
+            InferenceLimits {
+                max_dimension: 1,
+                ..InferenceLimits::UNLIMITED
+            },
+        ));
+        assert_eq!(instances(&high), 0);
+        assert_eq!(high.inference.too_high, Some(2));
+        assert_eq!(high.options, plain.options);
+        // At the limit it is done.
+        let at_limit = run_to_end(attach_job(
+            false,
+            InferenceLimits {
+                max_dimension: 2,
+                ..InferenceLimits::UNLIMITED
+            },
+        ));
+        assert_eq!(at_limit.options, all.options);
+        assert_eq!(at_limit.inference.too_high, None);
+    }
+
+    #[test]
+    fn inference_stops_when_its_time_is_used_up() {
+        let all = run_to_end(attach_job(true, InferenceLimits::UNLIMITED));
+        assert!(!all.inference.timed_out());
+        assert!(all
+            .options
+            .iter()
+            .any(|option| option.substitution.is_some()));
+
+        // A millisecond is used up by the search for the first schema.
+        let limited = run_to_end(attach_job(
+            true,
+            InferenceLimits {
+                budget_ms: 1,
+                ..InferenceLimits::UNLIMITED
+            },
+        ));
+        assert!(limited.inference.timed_out(), "{:?}", limited.inference);
+        assert_eq!(limited.inference.budget_ms, 1);
+        // What it found is among what there is, and the options that are not instances are all
+        // there.
+        assert!(limited.options.len() < all.options.len());
+        assert!(limited
+            .options
+            .iter()
+            .all(|option| all.options.contains(option)));
+        let plain = |outcome: &AttachOutcome| {
+            outcome
+                .options
+                .iter()
+                .filter(|option| option.substitution.is_none())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(plain(&limited), plain(&all));
+    }
 
     fn generator(d: &DiagramN) -> Generator {
         d.max_generator().generator

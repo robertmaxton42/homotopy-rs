@@ -7,7 +7,10 @@ use homotopy_graphics::{manim, stl, svg, tikz};
 pub use homotopy_model::{history, job, migration, proof, serialize};
 use homotopy_model::{
     job::run_to_end,
-    proof::{ActionsJob, AttachOption, AttachOptionsJob, DraftEdit, Drafts, NoAttachment},
+    proof::{
+        ActionsJob, AttachOption, AttachOptionsJob, DraftEdit, Drafts, InferenceLimits,
+        InferenceReport, NoAttachment,
+    },
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -35,7 +38,9 @@ pub enum Action {
     Select(usize),
     ClearSelections,
     Merge(Generator),
-    SelectPoint(Vec<SliceIndex>, bool),
+    /// Click on a point of the workspace, to find what can be attached there: through weak units
+    /// if the flag is set, and with the limits on inferring instances of schemas.
+    SelectPoint(Vec<SliceIndex>, bool, InferenceLimits),
     HighlightAttachment(Option<AttachOption>),
     HighlightSlice(Option<SliceIndex>),
 
@@ -110,7 +115,7 @@ impl Action {
         match self {
             Self::Proof(action) => action.work_label(),
             Self::ImportActions(_) => Some(proof::REPLAYING),
-            Self::SelectPoint(_, _) => Some("Searching for attachments"),
+            Self::SelectPoint(..) => Some("Searching for attachments"),
             Self::Draft(_) => Some("Inferring replacements"),
             Self::ExportImage(
                 ImageFormat::Stl(_) | ImageFormat::Tikz(_) | ImageFormat::Manim(_),
@@ -183,9 +188,18 @@ pub struct State {
     /// The instantiations in progress, which are not part of the project: neither undo nor redo
     /// touches them, and what they infer is a job like the others.
     pub drafts: Drafts,
+    /// What the last search for attachments has to say about inferring instances of schemas,
+    /// for the app to pass on to whoever clicked (see [`take_inference_report`](Self::take_inference_report)).
+    inference_report: Option<InferenceReport>,
 }
 
 impl State {
+    /// What the search for attachments that was finished last said about how the inference of
+    /// instances went, if it has not been asked for yet.
+    pub const fn take_inference_report(&mut self) -> Option<InferenceReport> {
+        self.inference_report.take()
+    }
+
     #[inline]
     #[must_use]
     pub fn proof(&self) -> &Proof {
@@ -413,8 +427,8 @@ impl State {
                 };
                 return self.start(Action::Proof(action));
             }
-            Action::SelectPoint(point, weak_units) => {
-                return match AttachOptionsJob::new(self.proof(), &point, weak_units) {
+            Action::SelectPoint(point, weak_units, limits) => {
+                return match AttachOptionsJob::new(self.proof(), &point, weak_units, limits) {
                     Ok(job) => Ok(Started::Running(Task::AttachOptions(Box::new(job)))),
                     Err(NoAttachment::NoWorkspace) => Ok(Started::Done(true)),
                     Err(NoAttachment::NoBoundary) => Err(ModelError::NoAttachment),
@@ -493,7 +507,9 @@ impl State {
                 }
                 Ok(Started::Done(changed || kind == ActionsKind::Import))
             }
-            TaskOutput::AttachOptions(matches) => {
+            TaskOutput::AttachOptions(outcome) => {
+                let matches = outcome.options;
+                self.inference_report = Some(outcome.inference);
                 match matches.len() {
                     0 => {
                         self.clear_selections();

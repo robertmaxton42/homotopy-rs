@@ -9,6 +9,7 @@ pub mod autosave_note;
 pub mod busy;
 pub mod delta;
 pub mod icon;
+pub mod inference_notice;
 pub mod layout_note;
 pub mod modal;
 pub mod panzoom;

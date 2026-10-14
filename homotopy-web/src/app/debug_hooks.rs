@@ -39,7 +39,10 @@ use crate::model::{self, history::UndoState, proof, serialize};
 #[derive(Deserialize)]
 enum Command {
     Proof(proof::Action),
+    /// With the limits from the settings.
     SelectPoint(Vec<SliceIndex>, bool),
+    /// With these limits on inferring instances.
+    SelectPointWith(Vec<SliceIndex>, bool, proof::InferenceLimits),
     Select(usize),
     ClearSelections,
     Undo,
@@ -58,7 +61,12 @@ impl From<Command> for model::Action {
         };
         match command {
             Command::Proof(action) => Self::Proof(action),
-            Command::SelectPoint(point, weak_units) => Self::SelectPoint(point, weak_units),
+            Command::SelectPoint(point, weak_units) => {
+                Self::SelectPoint(point, weak_units, super::attach_inference::limits())
+            }
+            Command::SelectPointWith(point, weak_units, limits) => {
+                Self::SelectPoint(point, weak_units, limits)
+            }
             Command::Select(index) => Self::Select(index),
             Command::ClearSelections => Self::ClearSelections,
             Command::Undo => linear(Backward),
@@ -343,6 +351,7 @@ fn profile_autosave(state: &model::State) -> String {
     let work = || Work::AttachOptions {
         point: vec![],
         weak_units: false,
+        limits: proof::InferenceLimits::default(),
     };
     out.push(timed("serialize", &mut bytes, &mut || {
         serialize::serialize(

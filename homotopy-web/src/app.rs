@@ -19,6 +19,7 @@ use crate::{
         busy::{self, BusyIndicator},
         delta::CallbackIdx,
         icon::{Icon, IconSize},
+        inference_notice::InferenceNotice,
         layout_note::LayoutNote,
         modal::Modal,
         panzoom::PanZoom,
@@ -32,6 +33,7 @@ use crate::{
 #[allow(clippy::mem_forget, clippy::future_not_send)] // due to wasm_bindgen
 pub mod account;
 mod attach;
+pub mod attach_inference;
 mod boundary;
 #[cfg(any(debug_assertions, feature = "show_debug_panel"))]
 mod debug;
@@ -78,6 +80,8 @@ pub enum Message {
     Worker(u32, worker::Event),
     /// Something about saving the project in the background (see [`crate::autosave`]).
     Autosave(autosave::Message),
+    /// The notice about inferring instances was dismissed.
+    DismissInferenceNotice,
 }
 
 /// A task that the worker is doing.
@@ -135,6 +139,11 @@ pub struct App {
     /// Saving the project in the background, in case the tab is lost.
     autosave: Autosave,
     autosave_setting: Vec<CallbackIdx>,
+    /// What the last search for attachments had to say about inferring instances, until it is
+    /// dismissed (see [`attach_inference`]).
+    inference_notice: Vec<String>,
+    /// Keeps the settings about inferring instances in this browser when they change.
+    inference_setting: Vec<CallbackIdx>,
 }
 
 impl Component for App {
@@ -183,9 +192,21 @@ impl Component for App {
             }),
         );
 
+        attach_inference::load();
+        let inference_setting = AppSettings::subscribe(
+            &[
+                AppSettingsKey::infer_instances,
+                AppSettingsKey::infer_budget,
+                AppSettingsKey::infer_max_dimension,
+            ],
+            Callback::from(|_: AppSettingsMsg| attach_inference::store()),
+        );
+
         Self {
             autosave,
             autosave_setting,
+            inference_notice: vec![],
+            inference_setting,
             state,
             job: None,
             next_job: 0,
@@ -207,11 +228,24 @@ impl Component for App {
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        Self::render(ctx, &self.state, self.autosave.offer())
+        Self::render(
+            ctx,
+            &self.state,
+            self.autosave.offer(),
+            &self.inference_notice,
+        )
     }
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
         AppSettings::unsubscribe(&[AppSettingsKey::autosave], &self.autosave_setting);
+        AppSettings::unsubscribe(
+            &[
+                AppSettingsKey::infer_instances,
+                AppSettingsKey::infer_budget,
+                AppSettingsKey::infer_max_dimension,
+            ],
+            &self.inference_setting,
+        );
         self.autosave.destroy();
         self.signature_stylesheet.unmount();
         if let Some(escape) = self.escape.take() {
@@ -247,6 +281,10 @@ impl App {
             }
             Message::Worker(generation, event) => self.worker_said(ctx, generation, event),
             Message::Autosave(msg) => self.autosave.update(msg, &self.state, self.job.is_some()),
+            Message::DismissInferenceNotice => {
+                self.inference_notice.clear();
+                true
+            }
             Message::Escape(in_text_field) => {
                 if self.job.is_some() {
                     self.cancel()
@@ -341,6 +379,14 @@ impl App {
     /// What follows from the project having been updated, or not.
     fn updated(&mut self, result: Result<bool, model::ModelError>, resets_panzoom: bool) -> bool {
         homotopy_core::collect_garbage();
+
+        // A search for attachments says how the inference of instances went.
+        if let Some(report) = self.state.take_inference_report() {
+            let lines = attach_inference::notice(&report);
+            if !lines.is_empty() {
+                self.inference_notice = lines;
+            }
+        }
 
         if matches!(result, Ok(true)) {
             // What a crash from here on saves (see `panic`).
@@ -801,6 +847,7 @@ impl App {
         ctx: &Context<Self>,
         state: &model::State,
         backup: Option<&autosave::Snapshot>,
+        inference_notice: &[String],
     ) -> Html {
         let proof = state.proof();
         let dispatch = ctx.link().callback(Message::Dispatch);
@@ -837,6 +884,12 @@ impl App {
                         backup={backup.clone()}
                         on_restore={ctx.link().callback(|()| Message::Autosave(autosave::Message::Restore))}
                         on_discard={ctx.link().callback(|()| Message::Autosave(autosave::Message::Discard))}
+                    />
+                }
+                if !inference_notice.is_empty() {
+                    <InferenceNotice
+                        lines={inference_notice.to_vec()}
+                        on_dismiss={ctx.link().callback(|()| Message::DismissInferenceNotice)}
                     />
                 }
                 <tooltip::HoverTooltip />
