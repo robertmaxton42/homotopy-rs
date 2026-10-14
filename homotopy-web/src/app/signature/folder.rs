@@ -4,7 +4,7 @@ use yew::prelude::*;
 
 use super::item::ItemView;
 use crate::{
-    app::sidebar::DrawerViewSize,
+    app::sidebar::{DraftProps, DrawerViewSize},
     components::{add_class, remove_class},
     model::{
         proof::{self, Signature, SignatureEdit, SignatureItem},
@@ -22,6 +22,7 @@ enum DropPosition {
 pub struct Props {
     pub dispatch: Callback<Action>,
     pub signature: Signature,
+    pub drafts: DraftProps,
     pub drawer_view_size: DrawerViewSize,
     pub workspace: Option<Diagram>,
 }
@@ -149,6 +150,7 @@ fn render_item(props: &Props, node: Node) -> Html {
                         signature={props.signature.clone()}
                         drawer_view_size={props.drawer_view_size}
                         workspace={props.workspace.clone()}
+                        on_draft={props.drafts.on_edit.clone()}
                         on_drag_over={on_drag_over(props, node)}
                         on_drag_enter={on_drag_enter(props, node)}
                         on_drop={on_drop(props, node, DropPosition::After)}
@@ -166,6 +168,8 @@ fn render_item(props: &Props, node: Node) -> Html {
                         signature={props.signature.clone()}
                         drawer_view_size={props.drawer_view_size}
                         workspace={props.workspace.clone()}
+                        draft={props.drafts.drafts.get(info.generator)}
+                        on_draft={props.drafts.on_edit.clone()}
                         on_drag_start={on_drag_start(node)}
                     />
                 }

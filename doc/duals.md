@@ -44,8 +44,9 @@ Reflections in an even number of a cell's normal directions are rotations, and l
 cell positively oriented. Reflections in an odd number reverse its orientation.
 
 In the app, the attach menu offers each reflection of a generator that typechecks, labelled
-by the reflected directions (e.g. *dual in x₁, x₂*) or by the name of the symmetry that
-gives it (see below). Its inverse `Rₙ` is labelled *inverse*. **Theorems are generators
+by the reflected directions (`R_{1,2}(f)`, or `f^*` for `R₁`) or by the name of the symmetry
+that gives it (`f^{op}`, see below). Its inverse `Rₙ` is labelled `f^{-1}`. See `labels.md`
+for how these cells are named. **Theorems are generators
 too**, so a theorem's dual versions are offered in the same way, without adding anything to
 the signature. The *Invert* action (`v`) reflects the whole workspace in its outermost
 direction.
@@ -86,6 +87,15 @@ reversed in their own right. So the mate `D* ⇒ C*` of a directed `F : C ⇒ D`
 exactly when `C` and `D` are invertible or dualisable. This matches the mathematics: mates
 are built from the cups and caps of `C` and `D`.
 
+### Units and counits
+
+For a dualisable `C`, the cap that cancels `C ; C*` into nothing (made by dragging the two wires
+into each other in the workspace) is the *counit* `ε_C`, and the cup that creates `C* ; C` out of
+nothing is the *unit* `η_C`. Their other orders are `ε_{C*}` and `η_{C*}`. Hovering over the
+fold of a cap or cup shows its name, and panels that describe a diagram that has one as a step,
+such as the replacement for a placeholder, use it too (see `labels.md`). The attach menu offers
+the cups of invertible cells as bubbles: `bub_C` is `η_{C*}`, `bub_{C^{-1}}` is `η_C`.
+
 ## Symmetries: duals for free
 
 Some theories have orientation-reversing duals of *directed* cells for free. In **Cat**,
@@ -111,7 +121,8 @@ is dualisable and `{1}` is a symmetry, `C^op` *is* `C*`. That is right for profu
 where `C^op` is the dual of `C`, but it is an extra identification in general.
 
 Symmetries are declared in the signature drawer (marked experimental). Removing a symmetry
-is refused if a generator or the workspace would then fail to typecheck.
+is refused if a generator or the workspace would then fail to typecheck. Symmetry names are
+labels, so they can contain LaTeX, e.g. `$\mathrm{op}$` (see `labels.md`).
 
 ## Internal homs
 

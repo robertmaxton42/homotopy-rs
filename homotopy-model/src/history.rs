@@ -65,6 +65,14 @@ impl UndoState for Proof {
     }
 }
 
+/// A proof that is not part of any history, such as one that a job works on.
+#[must_use]
+pub fn proof_from_state(state: ProofState) -> Proof {
+    let mut proof = Proof::default();
+    **proof = state;
+    proof
+}
+
 impl fmt::Debug for Snapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.action)

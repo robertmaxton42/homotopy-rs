@@ -14,7 +14,11 @@ of the substitution in your proofs.
    `A : e ≫ e ⇛ e`, both `e` and `A` are schemas in `P`.
 3. To instantiate a schema, open its settings. Put the diagram that should replace each
    placeholder in the workspace, click *Use workspace* in that placeholder's slot, then click
-   *Create instance*.
+   *Create instance*. Replacements that follow from the ones you choose are filled in for you:
+   a cone `α₀ : X₀ ∘ ! ⇒ D₀` can only be a cone over `D₀` with apex `X₀`, so choosing it for `α`
+   also fills `X` and `D`. They are shown dimmed and marked *inferred*. Choose another diagram
+   for one to override it, or clear it to leave it empty (it stays empty until what it was
+   inferred from changes). Nothing you chose yourself is ever replaced.
 4. The instance, e.g. `A[Q/P]`, is listed under its schema in the signature. The schema shows as
    a collapsed folder, so instances stay out of the way until you open it. An instance is an
    ordinary generator from then on: attach it, invert it, use it in proofs.
@@ -75,6 +79,20 @@ is solved. If a schema depends on another generator that mentions a placeholder,
 of that generator must already exist for the schema to match: it occurs in the diagram you
 click on, after all. The search is bounded, so a very large diagram may not offer every
 possibility. Instantiating by hand from the signature still works in that case.
+
+## Filling in replacements in the Instantiate panel
+
+When you choose a replacement, the panel looks for the other placeholders that it determines.
+Each replacement chosen has a type in terms of other placeholders (the type of `α` is `X ∘ ! ⇒ D`),
+so replacing `α` with `α₀` is only well typed for certain replacements of `X` and `D`. The panel
+tries replacements made of the cells that the chosen ones are built from (the same bounded search
+as when attaching: composites of up to three cells), and fills in a placeholder if every way that
+makes the chosen replacements well typed agrees on it. If there are several ways, or none, or the
+search has to stop early, nothing is filled in. The search is redone each time a replacement is
+chosen or cleared, so inferred replacements never go out of date.
+
+The placeholders a cell can be instantiated at include those that the types of the placeholders it
+depends on mention, so a cell that depends on `α` is also instantiated at `X` and `D`.
 
 ## Cells that depend on placeholders they don't mention
 

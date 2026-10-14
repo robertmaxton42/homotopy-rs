@@ -1,6 +1,6 @@
 use yew::{callback::Callback, prelude::*};
 
-use super::{DrawerViewSize, Sidebar, SidebarButton, SidebarDrawer, SidebarMsg};
+use super::{DraftProps, DrawerViewSize, Sidebar, SidebarButton, SidebarDrawer, SidebarMsg};
 #[cfg(any(debug_assertions, feature = "show_debug_panel"))]
 use crate::app::debug::DebugView;
 use crate::{
@@ -44,13 +44,18 @@ macro_rules! declare_sidebar_drawers {
         }
 
         impl NavDrawer {
-            #[allow(clippy::let_underscore_untyped, clippy::let_underscore_must_use)]
+            #[allow(
+                clippy::let_underscore_untyped,
+                clippy::let_underscore_must_use,
+                clippy::too_many_arguments
+            )]
             pub(super) fn view(
                 self,
                 model_dispatch: &Callback<model::Action>,
                 sidebar_dispatch: &Callback<SidebarMsg>,
                 proof: &Proof,
                 remote_project_metadata: Option<&RemoteProjectMetadata>,
+                drafts: &DraftProps,
                 initial_width: i32,
                 drawer_view_size: DrawerViewSize,
             ) -> Html {
@@ -73,7 +78,7 @@ macro_rules! declare_sidebar_drawers {
                                         action(proof)
                                     })?
                                 >
-                                    {body(model_dispatch, proof, drawer_view_size, remote_project_metadata)}
+                                    {body(model_dispatch, proof, drawer_view_size, remote_project_metadata, drafts)}
                                 </SidebarDrawer>
                             }
                         }
@@ -116,7 +121,7 @@ declare_sidebar_drawers! {
         "Account",
         "account",
         "account_circle",
-        |dispatch, proof: &Proof, _, remote_project_metadata: Option<&RemoteProjectMetadata>| html! {
+        |dispatch, proof: &Proof, _, remote_project_metadata: Option<&RemoteProjectMetadata>, _| html! {
             <AccountView
                 dispatch={dispatch}
                 proof={proof.clone()}
@@ -130,7 +135,7 @@ declare_sidebar_drawers! {
         "Project",
         "project",
         "info",
-        |dispatch, proof: &Proof, _, _| html! {
+        |dispatch, proof: &Proof, _, _, _| html! {
             <ProjectView
                 dispatch={dispatch}
                 metadata={proof.metadata.clone()}
@@ -143,9 +148,10 @@ declare_sidebar_drawers! {
         "Signature",
         "signature",
         "list",
-        |dispatch, proof: &Proof, drawer_view_size: DrawerViewSize, _| html! {
+        |dispatch, proof: &Proof, drawer_view_size: DrawerViewSize, _, drafts: &DraftProps| html! {
             <SignatureView
                 signature={proof.signature.clone()}
+                drafts={drafts.clone()}
                 dispatch={dispatch}
                 drawer_view_size={drawer_view_size}
                 workspace={proof.workspace.as_ref().map(|ws| ws.diagram.clone())}
@@ -160,7 +166,7 @@ declare_sidebar_drawers! {
         "Stash",
         "stash",
         "bookmarks",
-        |dispatch, proof: &Proof, _, _| html! {
+        |dispatch, proof: &Proof, _, _, _| html! {
             <StashView
                 stash={proof.stash.clone()}
                 dispatch={dispatch}
@@ -174,7 +180,7 @@ declare_sidebar_drawers! {
         "Image export",
         "ImageExport",
         "output",
-        |dispatch, proof: &Proof, _, _| match proof.workspace.as_ref() {
+        |dispatch, proof: &Proof, _, _, _| match proof.workspace.as_ref() {
             None => html! {
                 <p>{"There is nothing to export."}</p>
             },
@@ -193,7 +199,7 @@ declare_sidebar_drawers! {
         "Settings",
         "settings",
         "settings",
-        |_, _, _, _| html! {
+        |_, _, _, _, _| html! {
             <SettingsView />
         },
         min_width: 250,
@@ -204,7 +210,7 @@ declare_sidebar_drawers! {
         "Debug",
         "debug",
         "bug_report",
-        |dispatch, proof: &Proof, _, _| html! {
+        |dispatch, proof: &Proof, _, _, _| html! {
             <DebugView proof={proof.clone()} dispatch={dispatch} />
         },
         min_width: 250,

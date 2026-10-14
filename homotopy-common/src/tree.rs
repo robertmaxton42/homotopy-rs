@@ -232,6 +232,17 @@ impl<T> Tree<T> {
         self.root
     }
 
+    /// Whether the trees are the same all the way down to the numbering of their nodes
+    /// (including those that were disconnected by [`remove`](Self::remove)), which `==` is not
+    /// concerned with: it only looks at what can be reached from the root.
+    #[must_use]
+    pub fn identical(&self, other: &Self) -> bool
+    where
+        T: PartialEq,
+    {
+        self.root == other.root && self.nodes == other.nodes
+    }
+
     fn reparent_at<F>(&mut self, node: Node, parent: Node, index: F)
     where
         F: FnOnce(&[Node]) -> Option<usize>,

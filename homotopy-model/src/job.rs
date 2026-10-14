@@ -1,0 +1,42 @@
+//! Computations that can take long enough to need a progress indicator and a way out.
+//!
+//! A [`Job`] is done a step at a time, so whoever drives it can do something else in between
+//! (such as letting a web page respond to input, show how far along the job is, or drop it).
+//! Jobs are transactional: they work on their own copy of whatever they compute from, and
+//! produce an output for the driver to commit in one go. Dropping a job before it is done
+//! therefore changes nothing, and a driver may run one anywhere it can: on the thread that
+//! asked for it a slice at a time, or on another thread, as long as the job's input and output
+//! make it there.
+
+/// How far along a [`Job`] is.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Progress {
+    pub done: usize,
+    pub total: usize,
+}
+
+pub trait Job {
+    type Output;
+
+    /// What the job is doing now, as a gerund phrase such as "Merging exchanges".
+    fn label(&self) -> &'static str;
+
+    /// How far along the job is, if that is known.
+    fn progress(&self) -> Option<Progress>;
+
+    /// Does a bit of the work. Returns the output once the job is done, and must not be called
+    /// again after that.
+    ///
+    /// The steps are the unit of responsiveness: the driver can only stop, show progress or
+    /// handle other input between them, so a step should be as small as the job can make it.
+    fn step(&mut self) -> Option<Self::Output>;
+}
+
+/// Runs a job to the end without interruption.
+pub fn run_to_end<J: Job>(mut job: J) -> J::Output {
+    loop {
+        if let Some(output) = job.step() {
+            return output;
+        }
+    }
+}

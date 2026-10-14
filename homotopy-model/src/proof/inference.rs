@@ -21,6 +21,11 @@ const MAX_CELLS: usize = 3;
 const MAX_CANDIDATES: usize = 64;
 /// The most complete substitutions tried.
 const MAX_SUBSTITUTIONS: usize = 512;
+/// The most replacements considered, over the whole search, when completing a substitution.
+const MAX_COMPLETION_NODES: usize = 2048;
+/// The most solutions found when completing a substitution before giving up: that many
+/// solutions means that nothing is determined.
+const MAX_COMPLETIONS: usize = 32;
 
 /// A way of attaching an instance of a schema, found by [`Signature::infer_instances`].
 #[derive(Clone, Debug)]
@@ -33,47 +38,33 @@ pub struct InferredInstance {
     pub embedding: Vec<usize>,
 }
 
-struct Search<'a> {
+/// The cells that the replacements of placeholders are made from.
+struct Pool<'a> {
     signature: &'a Signature,
+    /// The diagrams of the cells (and their inverses where invertible).
+    cells: Vec<DiagramN>,
+    zero_cells: Vec<Diagram>,
+}
+
+struct Search<'a> {
+    pool: Pool<'a>,
     schema: Generator,
     schema_diagram: DiagramN,
     parameters: Vec<Generator>,
     haystack: &'a Diagram,
     boundary: Boundary,
     point: &'a [Height],
-    /// The diagrams of the cells of the haystack (and their inverses where invertible).
-    cells: Vec<DiagramN>,
-    zero_cells: Vec<Diagram>,
     tried: usize,
     results: Vec<InferredInstance>,
 }
 
-impl Signature {
-    /// The ways to instantiate a schema so that it can be attached to `haystack` at `point`,
-    /// attaching to its `boundary` (as in the attach menu). Instances of generators that the
-    /// schema depends on must already exist for the instance to match.
-    #[must_use]
-    pub fn infer_instances(
-        &self,
-        schema: Generator,
-        haystack: &Diagram,
-        boundary: Boundary,
-        point: &[Height],
-    ) -> Vec<InferredInstance> {
-        let parameters = self.parameters(schema);
-        let Some(Diagram::DiagramN(schema_diagram)) =
-            self.generator_info(schema).map(|info| info.diagram.clone())
-        else {
-            return vec![];
-        };
-        if parameters.is_empty() || schema_diagram.dimension() != haystack.dimension() + 1 {
-            return vec![];
-        }
-
+impl<'a> Pool<'a> {
+    /// The pool of the cells of the given generators.
+    fn new(signature: &'a Signature, generators: impl IntoIterator<Item = Generator>) -> Self {
         let mut cells = vec![];
         let mut zero_cells = vec![];
-        for g in haystack.generators().into_keys() {
-            match self
+        for g in generators {
+            match signature
                 .generator_info(g)
                 .map(|info| (&info.diagram, info.invertibility))
             {
@@ -87,39 +78,10 @@ impl Signature {
                 None => {}
             }
         }
-
-        let mut search = Search {
-            signature: self,
-            schema,
-            schema_diagram,
-            parameters,
-            haystack,
-            boundary,
-            point,
+        Self {
+            signature,
             cells,
             zero_cells,
-            tried: 0,
-            results: vec![],
-        };
-        search.solve(&mut vec![]);
-        search.results
-    }
-}
-
-impl Search<'_> {
-    fn solve(&mut self, substitution: &mut Vec<(Generator, Diagram)>) {
-        if self.tried >= MAX_SUBSTITUTIONS {
-            return;
-        }
-        let Some(&placeholder) = self.parameters.get(substitution.len()) else {
-            self.tried += 1;
-            self.check(substitution);
-            return;
-        };
-        for candidate in self.candidates(placeholder, substitution) {
-            substitution.push((placeholder, candidate));
-            self.solve(substitution);
-            substitution.pop();
         }
     }
 
@@ -232,6 +194,220 @@ impl Search<'_> {
         }
         results
     }
+}
+
+impl Signature {
+    /// The ways to instantiate a schema so that it can be attached to `haystack` at `point`,
+    /// attaching to its `boundary` (as in the attach menu). Instances of generators that the
+    /// schema depends on must already exist for the instance to match.
+    #[must_use]
+    pub fn infer_instances(
+        &self,
+        schema: Generator,
+        haystack: &Diagram,
+        boundary: Boundary,
+        point: &[Height],
+    ) -> Vec<InferredInstance> {
+        let parameters = self.parameters(schema);
+        let Some(Diagram::DiagramN(schema_diagram)) =
+            self.generator_info(schema).map(|info| info.diagram.clone())
+        else {
+            return vec![];
+        };
+        if parameters.is_empty() || schema_diagram.dimension() != haystack.dimension() + 1 {
+            return vec![];
+        }
+
+        let mut search = Search {
+            pool: Pool::new(self, haystack.generators().into_keys()),
+            schema,
+            schema_diagram,
+            parameters,
+            haystack,
+            boundary,
+            point,
+            tried: 0,
+            results: vec![],
+        };
+        search.solve(&mut vec![]);
+        search.results
+    }
+}
+
+/// The search for the placeholders determined by replacements chosen for others. A complete
+/// substitution is a solution if the type of each replacement chosen is as expected.
+struct Completion<'a> {
+    pool: Pool<'a>,
+    parameters: Vec<Generator>,
+    chosen: Vec<(Generator, Diagram)>,
+    /// The index in `chosen` of each replacement whose type is checked, and the number of
+    /// parameters that must be replaced for that.
+    checks: Vec<(usize, usize)>,
+    nodes: usize,
+    solutions: Vec<Vec<(Generator, Diagram)>>,
+    /// Whether the search was cut short, so that its solutions are not all of them.
+    cut_short: bool,
+}
+
+impl Signature {
+    /// The replacements of the placeholders of a schema that are determined by the replacements
+    /// `chosen` for some of them. Each replacement chosen has a type in terms of other
+    /// placeholders, e.g. a cone `α₀ : X₀ ∘ ! ⇒ D₀` for `α : X ∘ ! ⇒ D`: so `X` and `D` must be
+    /// replaced with `X₀` and `D₀`.
+    ///
+    /// A placeholder is determined if every way of replacing the rest of the placeholders so that
+    /// the types of the replacements chosen are right agrees on it. The search is bounded, like
+    /// [`infer_instances`](Self::infer_instances), and finds nothing if it has to stop early.
+    /// Replacements are made from the cells that the replacements chosen are made of, so
+    /// placeholders that those cells say nothing about are left alone. Placeholders that were
+    /// replaced already are never returned.
+    #[must_use]
+    pub fn infer_replacements(
+        &self,
+        schema: Generator,
+        chosen: &[(Generator, Diagram)],
+    ) -> Vec<(Generator, Diagram)> {
+        let parameters = self.parameters(schema);
+        let chosen: Vec<_> = chosen
+            .iter()
+            .filter(|(p, _)| parameters.contains(p))
+            .cloned()
+            .collect();
+        if chosen.is_empty() || chosen.len() >= parameters.len() {
+            return vec![];
+        }
+
+        // A replacement can be checked once every placeholder its type mentions is replaced.
+        let checks = chosen
+            .iter()
+            .enumerate()
+            .map(|(i, (p, _))| {
+                let needed = self
+                    .parameters(*p)
+                    .into_iter()
+                    .filter_map(|q| parameters.iter().position(|r| *r == q))
+                    .map(|position| position + 1)
+                    .max()
+                    .unwrap_or(0);
+                (i, needed)
+            })
+            .collect();
+
+        let mut completion = Completion {
+            pool: Pool::new(
+                self,
+                chosen.iter().flat_map(|(_, d)| d.generators().into_keys()),
+            ),
+            parameters,
+            chosen,
+            checks,
+            nodes: 0,
+            solutions: vec![],
+            cut_short: false,
+        };
+        let mut substitution = vec![];
+        if completion.consistent(&substitution) {
+            completion.solve(&mut substitution);
+        }
+        if completion.cut_short {
+            return vec![];
+        }
+        completion.determined()
+    }
+}
+
+impl Completion<'_> {
+    fn solve(&mut self, substitution: &mut Vec<(Generator, Diagram)>) {
+        let Some(&placeholder) = self.parameters.get(substitution.len()) else {
+            self.solutions.push(substitution.clone());
+            self.cut_short |= self.solutions.len() >= MAX_COMPLETIONS;
+            return;
+        };
+        let candidates = match self.chosen.iter().find(|(p, _)| *p == placeholder) {
+            Some((_, replacement)) => vec![replacement.clone()],
+            None => self.pool.candidates(placeholder, substitution),
+        };
+        for candidate in candidates {
+            if self.cut_short || self.nodes >= MAX_COMPLETION_NODES {
+                self.cut_short = true;
+                return;
+            }
+            self.nodes += 1;
+            substitution.push((placeholder, candidate));
+            if self.consistent(substitution) {
+                self.solve(substitution);
+            }
+            substitution.pop();
+        }
+    }
+
+    /// Whether the replacements chosen that can be checked after the first placeholders are
+    /// replaced have the right types.
+    fn consistent(&self, substitution: &[(Generator, Diagram)]) -> bool {
+        self.checks
+            .iter()
+            .filter(|(_, needed)| *needed == substitution.len())
+            .all(|&(i, _)| {
+                let (placeholder, replacement) = &self.chosen[i];
+                let Some(own) = self
+                    .pool
+                    .signature
+                    .generator_info(*placeholder)
+                    .map(|info| info.diagram.clone())
+                else {
+                    return false;
+                };
+                match (own, replacement) {
+                    (Diagram::Diagram0(_), Diagram::Diagram0(_)) => true,
+                    (Diagram::DiagramN(own), Diagram::DiagramN(replacement)) => {
+                        own.dimension() == replacement.dimension()
+                            && self
+                                .pool
+                                .substitute(*placeholder, substitution, &own.source(), true)
+                                == Some(replacement.source())
+                            && self
+                                .pool
+                                .substitute(*placeholder, substitution, &own.target(), true)
+                                == Some(replacement.target())
+                    }
+                    _ => false,
+                }
+            })
+    }
+
+    /// The replacements that all solutions agree on, other than those chosen.
+    fn determined(&self) -> Vec<(Generator, Diagram)> {
+        let Some((first, rest)) = self.solutions.split_first() else {
+            return vec![];
+        };
+        first
+            .iter()
+            .enumerate()
+            .filter(|(i, (p, _))| {
+                !self.chosen.iter().any(|(q, _)| q == p)
+                    && rest.iter().all(|solution| solution[*i] == first[*i])
+            })
+            .map(|(_, replacement)| replacement.clone())
+            .collect()
+    }
+}
+
+impl Search<'_> {
+    fn solve(&mut self, substitution: &mut Vec<(Generator, Diagram)>) {
+        if self.tried >= MAX_SUBSTITUTIONS {
+            return;
+        }
+        let Some(&placeholder) = self.parameters.get(substitution.len()) else {
+            self.tried += 1;
+            self.check(substitution);
+            return;
+        };
+        for candidate in self.pool.candidates(placeholder, substitution) {
+            substitution.push((placeholder, candidate));
+            self.solve(substitution);
+            substitution.pop();
+        }
+    }
 
     /// Checks whether a complete substitution lets the schema attach at the point.
     fn check(&mut self, substitution: &[(Generator, Diagram)]) {
@@ -241,8 +417,10 @@ impl Search<'_> {
         let source = self.schema_diagram.source();
         let target = self.schema_diagram.target();
         let (Some(source), Some(target)) = (
-            self.substitute(self.schema, substitution, &source, strict_source),
-            self.substitute(self.schema, substitution, &target, !strict_source),
+            self.pool
+                .substitute(self.schema, substitution, &source, strict_source),
+            self.pool
+                .substitute(self.schema, substitution, &target, !strict_source),
         ) else {
             return;
         };
@@ -255,7 +433,7 @@ impl Search<'_> {
         for embedding in self.haystack.embeddings(&needle) {
             if needle.contains_point(self.point, &embedding) {
                 self.results.push(InferredInstance {
-                    substitution: self.signature.normalise(substitution),
+                    substitution: self.pool.signature.normalise(substitution),
                     diagram: diagram.clone(),
                     embedding,
                 });

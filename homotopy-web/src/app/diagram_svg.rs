@@ -15,7 +15,7 @@ use homotopy_core::{
     projection::{Depths, Projection},
     rewrite::RewriteN,
     signature::Signature as _,
-    Boundary, Diagram, DiagramN, Generator, Height, Orientation, SliceIndex,
+    Boundary, Diagram, DiagramN, Generator, Height, SliceIndex,
 };
 use homotopy_graphics::{
     style::{GeneratorStyle, SignatureStyleData, VertexShape},
@@ -30,6 +30,7 @@ use web_sys::Element;
 use yew::prelude::*;
 
 use self::highlight::{HighlightKind, HighlightSvg};
+use super::tooltip;
 use crate::{
     app::settings::AppSettings,
     components::{read_touch_list_abs, Finger},
@@ -44,7 +45,8 @@ pub mod highlight;
 pub struct DiagramSvg<const N: usize> {
     prepared: PreparedDiagram<N>,
     drag_start: Option<Point2D<f32>>,
-    title: Option<String>,
+    /// What the pointer is over, which the tooltip shown is for.
+    hovered: Option<Simplex<N>>,
 }
 
 #[derive(Clone, PartialEq, Properties)]
@@ -73,7 +75,7 @@ pub enum DiagramSvgMessage {
     OnMouseDown(Point2D<f32>),
     OnMouseMove(Point2D<f32>, bool),
     OnMouseUp,
-    OnMouseOut,
+    OnMouseLeave,
     OnTouchUpdate(Vec<(Finger, Point2D<f32>)>),
     OnTouchMove(Vec<(Finger, Point2D<f32>)>),
 }
@@ -178,7 +180,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
         Self {
             prepared,
             drag_start,
-            title: None,
+            hovered: None,
         }
     }
 
@@ -186,21 +188,20 @@ impl<const N: usize> Component for DiagramSvg<N> {
         match msg {
             DiagramSvgMessage::OnMouseDown(point) => {
                 self.drag_start = Some(point);
-                false
+                self.hide_tooltip();
             }
             DiagramSvgMessage::OnMouseMove(point, shift_key) => {
                 self.pointer_move(ctx, point, shift_key);
-                let mut title = self.calculate_hover_tooltip(ctx, point);
-                std::mem::swap(&mut self.title, &mut title);
-                self.title != title
+                // Not while a button is down: that is a click or a drag, not hovering.
+                if self.drag_start.is_none() {
+                    self.update_tooltip(ctx, point);
+                }
             }
             DiagramSvgMessage::OnMouseUp => {
                 self.pointer_stop(ctx);
-                false
             }
-            DiagramSvgMessage::OnMouseOut => {
-                self.title = None;
-                true
+            DiagramSvgMessage::OnMouseLeave => {
+                self.hide_tooltip();
             }
             DiagramSvgMessage::OnTouchUpdate(touches) => {
                 if self.drag_start.is_none() && touches.len() == 1 {
@@ -208,19 +209,21 @@ impl<const N: usize> Component for DiagramSvg<N> {
                 } else if touches.is_empty() {
                     self.drag_start = None;
                 }
-                false
             }
             DiagramSvgMessage::OnTouchMove(touches) => {
                 if touches.len() == 1 {
                     self.pointer_move(ctx, touches[0].1, false);
                 }
-                false
             }
         }
+        // Moving the pointer or hovering does not change what the diagram looks like.
+        false
     }
 
     fn changed(&mut self, ctx: &Context<Self>, old_props: &Self::Properties) -> bool {
         if old_props.diagram != ctx.props().diagram || old_props.style != ctx.props().style {
+            // What the tooltip said may no longer be there.
+            self.hide_tooltip();
             // re-layout
             self.prepared = PreparedDiagram::new(&ctx.props().diagram, ctx.props().style);
         }
@@ -269,10 +272,12 @@ impl<const N: usize> Component for DiagramSvg<N> {
             })
         };
 
-        let on_mouse_out = {
+        // Not `mouseout`, which also fires when the pointer moves from one element of the
+        // diagram to another, and would take the tooltip down every time.
+        let on_mouse_leave = {
             let link = ctx.link().clone();
             Callback::from(move |_e: MouseEvent| {
-                link.send_message(DiagramSvgMessage::OnMouseOut);
+                link.send_message(DiagramSvgMessage::OnMouseLeave);
             })
         };
 
@@ -310,16 +315,13 @@ impl<const N: usize> Component for DiagramSvg<N> {
                 onmousedown={on_mouse_down}
                 onmouseup={on_mouse_up}
                 onmousemove={on_mouse_move}
-                onmouseout={on_mouse_out}
+                onmouseleave={on_mouse_leave}
                 ontouchmove={on_touch_move}
                 ontouchstart={on_touch_update.clone()}
                 ontouchend={on_touch_update.clone()}
                 ontouchcancel={on_touch_update.clone()}
                 ref={ctx.props().diagram_ref.clone()}
             >
-                if let Some(title) = &self.title {
-                    <title>{title}</title>
-                }
                 {self.view_placeholder_hatch(ctx)}
                 {self.prepared.graphic.iter().enumerate().map(|(i, e)| self.view_element(ctx, i, e)).collect::<Html>()}
                 {self.view_highlight(ctx)}
@@ -613,19 +615,47 @@ impl<const N: usize> DiagramSvg<N> {
         }
     }
 
-    fn calculate_hover_tooltip(&self, ctx: &Context<Self>, point: Point2D<f32>) -> Option<String> {
-        let simplex = self.simplex_at(ctx, point)?;
+    /// Shows the tooltip for what is under the pointer, or moves it with the pointer if that
+    /// has not changed.
+    fn update_tooltip(&mut self, ctx: &Context<Self>, point: Point2D<f32>) {
+        let pointer = (f64::from(point.x), f64::from(point.y));
+        let simplex = self.simplex_at(ctx, point);
+        if simplex.is_some() && simplex == self.hovered {
+            tooltip::move_to(pointer);
+            return;
+        }
+        self.hovered = simplex;
+        match simplex.map(|simplex| self.hover_content(ctx, &simplex)) {
+            Some(content) => tooltip::show(content, pointer),
+            None => tooltip::hide(),
+        }
+    }
+
+    fn hide_tooltip(&mut self) {
+        if self.hovered.take().is_some() {
+            tooltip::hide();
+        }
+    }
+
+    /// What the tooltip says about a part of the diagram: the label of the cell there (a
+    /// formula, so that the names of generators that are formulas are shown as such), and where
+    /// in the diagram it is.
+    fn hover_content(&self, ctx: &Context<Self>, simplex: &Simplex<N>) -> tooltip::Content {
         let p = simplex[0];
         let d = match simplex {
             Simplex::Surface(_) => self.prepared.projection.generator(p),
             Simplex::Wire(_) | Simplex::Point(_) => self.prepared.projection.front_generator(p).0,
         };
-        let info = ctx.props().signature.generator_info(d.generator).unwrap();
-        let coord = p.map(|si| si.to_string()).join(", ");
-        match d.orientation {
-            Orientation::Positive => format!("{} @ {}", info.name, coord).into(),
-            Orientation::Zero => format!("{} (homotopy) @ {}", info.name, coord).into(),
-            Orientation::Negative => format!("{} (inverse) @ {}", info.name, coord).into(),
+        let props = ctx.props();
+        // A vertex may be where strands cross, or a cell is cancelled or created, which is named
+        // for that (it is a step of the diagram); wires and surfaces are named by their cell.
+        let label = match simplex {
+            Simplex::Point(_) => props.signature.describe_point(&props.diagram, &p, d),
+            Simplex::Wire(_) | Simplex::Surface(_) => props.signature.describe_cell(d),
+        };
+        tooltip::Content {
+            label,
+            detail: format!("@ {}", p.map(|si| si.to_string()).join(", ")),
         }
     }
 }

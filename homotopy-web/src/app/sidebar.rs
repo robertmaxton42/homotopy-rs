@@ -9,7 +9,11 @@ use crate::{
         icon::{Icon, IconSize},
         Visibility,
     },
-    model::{self, proof, Proof},
+    model::{
+        self,
+        proof::{self, DraftEdit, Drafts},
+        Proof,
+    },
 };
 
 mod buttons;
@@ -269,12 +273,24 @@ pub enum SidebarMsg {
     SaveDrawerWidth(i32),
     ResizeDrawerView(DrawerViewSize),
     Toggle(Option<drawers::NavDrawer>),
+    /// Change an instantiation in progress.
+    Draft(DraftEdit),
+}
+
+/// The instantiations in progress, which outlive the drawers that show them.
+#[derive(Clone, PartialEq)]
+pub struct DraftProps {
+    pub drafts: Drafts,
+    pub on_edit: Callback<DraftEdit>,
 }
 
 pub struct Sidebar {
     last_drawer_width: i32,
     drawer_view_size: DrawerViewSize,
     open: Option<drawers::NavDrawer>,
+    /// The instantiations in progress. They are kept here rather than in the signature drawer,
+    /// as that is replaced while the attach menu is open and when other drawers are opened.
+    drafts: Drafts,
     // Hold onto bindings so that they are dropped when the app is destroyed
     keybindings: Option<Closure<dyn FnMut(KeyboardEvent)>>,
 }
@@ -285,6 +301,7 @@ impl Default for Sidebar {
             last_drawer_width: SidebarDrawer::DEFAULT_WIDTH,
             drawer_view_size: DrawerViewSize::from(SidebarDrawer::DEFAULT_WIDTH),
             open: Default::default(),
+            drafts: Default::default(),
             keybindings: Default::default(),
         }
     }
@@ -324,6 +341,10 @@ impl Component for Sidebar {
                 self.open = drawer;
                 true
             }
+            SidebarMsg::Draft(edit) => {
+                self.drafts.apply(&ctx.props().proof.signature, edit);
+                true
+            }
             SidebarMsg::Dispatch(action) => {
                 if action == model::Action::Proof(proof::Action::CreateGeneratorZero)
                     && !matches!(self.open, Some(drawers::NavDrawer::DRAWER_SIGNATURE))
@@ -336,6 +357,11 @@ impl Component for Sidebar {
                 false
             }
         }
+    }
+
+    fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
+        self.drafts.retain_valid(&ctx.props().proof.signature);
+        true
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
@@ -361,6 +387,10 @@ impl Sidebar {
     fn drawer(&self, ctx: &Context<Self>) -> Html {
         let model_dispatch = &ctx.props().dispatch;
         let sidebar_dispatch = ctx.link().callback(|x| x);
+        let drafts = DraftProps {
+            drafts: self.drafts.clone(),
+            on_edit: ctx.link().callback(SidebarMsg::Draft),
+        };
 
         if let Some(options) = ctx.props().options.as_ref() {
             return html! {
@@ -389,6 +419,7 @@ impl Sidebar {
                     &sidebar_dispatch,
                     &ctx.props().proof,
                     ctx.props().remote_project_metadata.as_ref(),
+                    &drafts,
                     self.last_drawer_width,
                     self.drawer_view_size,
                 )

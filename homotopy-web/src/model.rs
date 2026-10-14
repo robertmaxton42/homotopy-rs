@@ -1,25 +1,26 @@
-use std::io::Write;
+use std::{collections::VecDeque, io::Write};
 
 pub use history::Proof;
 use history::{History, UndoState};
-use homotopy_core::{
-    common::{BoundaryPath, Generator},
-    signature::Signature,
-    typecheck::{typecheck, Mode},
-    Boundary, Diagram, DiagramN, Height, SliceIndex,
-};
+use homotopy_core::{common::Generator, signature::Signature as _, Diagram, SliceIndex};
 use homotopy_graphics::{manim, stl, svg, tikz};
-use homotopy_model::proof::{generators::GeneratorInfo, AttachOption};
-pub use homotopy_model::{history, migration, proof, serialize};
+pub use homotopy_model::{history, job, migration, proof, serialize};
+use homotopy_model::{
+    job::run_to_end,
+    proof::{ActionsJob, AttachOption, AttachOptionsJob, NoAttachment},
+};
 use serde::Serialize;
 use thiserror::Error;
 use wasm_bindgen::JsCast;
 
+pub use self::task::{ActionsKind, ExportJob, ExportOutput, Task, TaskOutput};
 use crate::app::{
     account,
     diagram_gl::{FrameCaptureControl, FRAME_CAPTURE},
     settings::AppSettings,
 };
+
+mod task;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Action {
@@ -97,6 +98,41 @@ impl Action {
     }
 }
 
+impl Action {
+    /// What the action does, as a gerund phrase, if it can take noticeably long on a realistic
+    /// project (see the policy in `CLAUDE.md`). Such actions are made into [`Task`]s that the app
+    /// runs in the background behind a busy indicator, and that it can cancel.
+    #[must_use]
+    pub const fn heavy_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Proof(action) => action.work_label(),
+            Self::ImportActions(_) => Some(proof::REPLAYING),
+            Self::SelectPoint(_, _) => Some("Finding what can be attached"),
+            Self::ExportImage(
+                ImageFormat::Stl(_) | ImageFormat::Tikz(_) | ImageFormat::Manim(_),
+                _,
+            ) => Some("Exporting"),
+            _ => None,
+        }
+    }
+
+    /// Whether the action may be performed while a task is running. Everything that changes the
+    /// project or reads it is refused, rather than put off until the task is done: the task is
+    /// working on the project as it was, and the person who asked for something else did so
+    /// without knowing that. What is allowed does not touch the project: highlighting what the
+    /// pointer is over, and housekeeping.
+    #[must_use]
+    pub const fn allowed_while_busy(&self) -> bool {
+        matches!(
+            self,
+            Self::HighlightAttachment(_)
+                | Self::HighlightSlice(_)
+                | Self::SetRemoteProjectMetadata(_)
+                | Self::Help
+        )
+    }
+}
+
 impl From<proof::Action> for Action {
     fn from(action: proof::Action) -> Self {
         Self::Proof(action)
@@ -125,6 +161,14 @@ impl Selectables {
     }
 }
 
+/// What starting to update the state came to.
+pub enum Started {
+    /// It is done; whether the project changed.
+    Done(bool),
+    /// There is work to do first: see [`Task`].
+    Running(Task),
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct State {
     pub remote_project_metadata: Option<account::RemoteProjectMetadata>,
@@ -150,33 +194,34 @@ impl State {
         }
     }
 
-    /// Update the state in response to an [Action].
+    /// Update the state in response to an [Action], doing all the work there and then.
+    ///
+    /// The app does not use this for actions that take long, but starts them with
+    /// [`start`](Self::start) and runs the tasks they need in the background.
     pub fn update(&mut self, action: Action) -> Result<bool, ModelError> {
+        let mut started = self.start(action)?;
+        loop {
+            match started {
+                Started::Done(changed) => return Ok(changed),
+                Started::Running(task) => started = self.finish(run_to_end(task))?,
+            }
+        }
+    }
+
+    /// Starts to update the state in response to an [Action]. This is either all that there is
+    /// to it, or a [`Task`] that does the rest of the work without touching the state, whose
+    /// output [`finish`](Self::finish) then commits.
+    pub fn start(&mut self, action: Action) -> Result<Started, ModelError> {
         match action {
             Action::Proof(action) => {
-                // Only exfiltrate proof actions, otherwise
-                // we risk funny business with circular action imports.
-                crate::panic::push_action(&action);
-
-                if self.history.try_redo(&action).is_err() {
-                    let mut proof = self.proof().clone();
-                    let res = proof.update(&action);
-                    if matches!(res, Err(_) | Ok(false)) {
-                        crate::panic::pop_action();
-                        return Ok(res?);
-                    }
-                    self.history.add(action.clone(), proof);
-                }
-                self.clear_selections();
-
                 // Merging is its own history step (rather than being folded into the homotopy's)
                 // so that the recorded actions replay to the same proof when exported. It cannot
                 // loop, as `MergeExchanges` is not a `Homotopy`.
-                if matches!(action, proof::Action::Homotopy(_))
-                    && AppSettings::get_merge_exchanges()
-                {
-                    self.update(Action::Proof(proof::Action::MergeExchanges))?;
-                }
+                let merge = matches!(action, proof::Action::Homotopy(_))
+                    && AppSettings::get_merge_exchanges();
+                let steps =
+                    std::iter::once(action).chain(merge.then_some(proof::Action::MergeExchanges));
+                return Ok(self.start_proof_actions(steps.collect()));
             }
 
             Action::History(history::Action::Move(dir)) => {
@@ -255,10 +300,10 @@ impl State {
 
             Action::ExportImage(ImageFormat::Png, option) => {
                 let Some(ws) = self.proof().workspace.as_ref() else {
-                    return Ok(false);
+                    return Ok(Started::Done(false));
                 };
                 let Diagram::DiagramN(diagram) = ws.visible_diagram() else {
-                    return Ok(false);
+                    return Ok(Started::Done(false));
                 };
                 let control = match option {
                     ImageOption::Single => FrameCaptureControl::One,
@@ -271,45 +316,36 @@ impl State {
             }
 
             Action::ExportImage(format, ImageOption::Single) => {
-                let signature = &self.proof().signature;
+                let signature = self.proof().signature.clone();
                 let Some(ws) = self.proof().workspace.as_ref() else {
-                    return Ok(false);
+                    return Ok(Started::Done(false));
                 };
 
-                let diagram = ws.visible_diagram();
-                let view_dimension = ws.view.dimension();
-
-                let data = render(&diagram, view_dimension, signature, format);
-
-                generate_download("homotopy_io_export", format.extension(), data.as_bytes())
-                    .map_err(ModelError::Export)?;
+                return Ok(Started::Running(Task::Export(ExportJob::single(
+                    signature,
+                    format,
+                    ws.visible_diagram(),
+                    ws.view.dimension(),
+                ))));
             }
 
             Action::ExportImage(format, ImageOption::Multiple) => {
-                let signature = &self.proof().signature;
+                let signature = self.proof().signature.clone();
                 let Some(ws) = self.proof().workspace.as_ref() else {
-                    return Ok(false);
+                    return Ok(Started::Done(false));
                 };
 
                 let Diagram::DiagramN(diagram) = ws.visible_diagram() else {
-                    return Ok(false);
+                    return Ok(Started::Done(false));
                 };
                 let view_dimension = ws.view.dimension().min(diagram.dimension() as u8 - 1);
 
-                let extension = format.extension();
-                let data = zip_files(diagram.slices().enumerate().map(|(i, slice)| {
-                    let name = match Height::from(i) {
-                        Height::Regular(i) => format!("regular{i}"),
-                        Height::Singular(i) => format!("singular{i}"),
-                    };
-                    (
-                        format!("{name}.{extension}"),
-                        render(&slice, view_dimension, signature, format),
-                    )
-                }));
-
-                generate_download("homotopy_io_export", "zip", &data)
-                    .map_err(ModelError::Export)?;
+                return Ok(Started::Running(Task::Export(ExportJob::slices(
+                    signature,
+                    format,
+                    &diagram,
+                    view_dimension,
+                ))));
             }
 
             Action::ExportActions => {
@@ -333,16 +369,19 @@ impl State {
                 let len = if safe {
                     actions.len()
                 } else {
-                    actions.len() - 1
+                    actions.len().saturating_sub(1)
                 };
 
                 // Replay actions in top of workspace
-                let mut proof = self.proof().clone();
-                for a in &actions[..len] {
-                    if proof.update(a)? {
-                        self.history.add(a.clone(), proof.clone());
-                    }
-                }
+                return Ok(Started::Running(Task::Actions {
+                    job: Box::new(ActionsJob::replay(
+                        self.proof().clone(),
+                        actions.into_iter().take(len),
+                        proof::REPLAYING,
+                    )),
+                    kind: ActionsKind::Import,
+                    redone: false,
+                }));
             }
 
             Action::Select(index) => {
@@ -365,9 +404,15 @@ impl State {
                         *tos.get(index).ok_or(ModelError::IndexOutOfBounds)?,
                     ),
                 };
-                self.update(Action::Proof(action))?;
+                return self.start(Action::Proof(action));
             }
-            Action::SelectPoint(point, weak_units) => self.select_point(&point, weak_units)?,
+            Action::SelectPoint(point, weak_units) => {
+                return match AttachOptionsJob::new(self.proof(), &point, weak_units) {
+                    Ok(job) => Ok(Started::Running(Task::AttachOptions(Box::new(job)))),
+                    Err(NoAttachment::NoWorkspace) => Ok(Started::Done(true)),
+                    Err(NoAttachment::NoBoundary) => Err(ModelError::NoAttachment),
+                };
+            }
             Action::HighlightAttachment(option) => self.highlight_attachment(option),
             Action::HighlightSlice(slice) => self.highlight_slice(slice),
             Action::ClearSelections => self.clear_selections(),
@@ -378,213 +423,96 @@ impl State {
             Action::Help => help()?,
         }
 
-        Ok(true)
+        Ok(Started::Done(true))
     }
 
-    /// Handler for [Action::SelectPoint].
-    fn select_point(&mut self, point: &[SliceIndex], weak_units: bool) -> Result<(), ModelError> {
-        let Some(workspace) = self.proof().workspace.as_ref() else {
-            return Ok(());
-        };
-
-        let mut matches: Vec<AttachOption> = Default::default();
-
-        let point = {
-            let mut point_with_path: Vec<SliceIndex> = workspace.path.iter().copied().collect();
-            point_with_path.extend(point);
-            point_with_path
-        };
-
-        let (boundary_path, point) = BoundaryPath::split(&point);
-
-        let haystack = match boundary_path {
-            None => workspace.diagram.clone(),
-            Some(boundary_path) => DiagramN::try_from(workspace.diagram.clone())
-                .ok()
-                .and_then(|diagram| diagram.boundary(boundary_path))
-                .ok_or(ModelError::NoAttachment)?,
-        };
-
-        let boundary = boundary_path.map_or(Boundary::Target, BoundaryPath::boundary);
-
-        for info in self.proof().signature.iter() {
-            macro_rules! extend {
-                ($diagram:expr, $tag:expr) => {
-                    let needle = $diagram.slice(boundary.flip()).unwrap();
-                    matches.extend(
-                        haystack
-                            .embeddings(&needle)
-                            .filter(|embedding| needle.contains_point(&point, embedding))
-                            .map(|embedding| AttachOption {
-                                generator: info.generator,
-                                diagram: $diagram,
-                                tag: $tag,
-                                boundary_path,
-                                embedding: embedding.into_iter().collect(),
-                                substitution: None,
-                            }),
-                    );
-                };
+    /// Starts to perform actions on the proof, each following the one before. Those that were
+    /// performed before from here are just redone, which takes no time; the rest is a task.
+    fn start_proof_actions(&mut self, actions: Vec<proof::Action>) -> Started {
+        let mut actions = VecDeque::from(actions);
+        let mut redone = false;
+        while let Some(action) = actions.front() {
+            if self.history.try_redo(action).is_err() {
+                break;
             }
-            let bubble = |mut diagram: DiagramN| {
-                while diagram.dimension() < haystack.dimension() + 1 {
-                    diagram = diagram.bubble().unwrap();
-                }
-                diagram
-            };
-            let weak_unit = |mut diagram: Diagram| {
-                while diagram.dimension() < haystack.dimension() + 1 {
-                    diagram = diagram.weak_identity().into();
-                }
-                DiagramN::try_from(diagram).unwrap()
-            };
-
-            match info.generator.dimension.cmp(&(haystack.dimension() + 1)) {
-                std::cmp::Ordering::Less => {
-                    if weak_units {
-                        extend!(weak_unit(info.diagram.clone()), Some("identity".to_owned()));
-                    }
-
-                    if let Diagram::DiagramN(d) = &info.diagram {
-                        if info.invertibility.is_invertible() {
-                            if weak_units {
-                                extend!(
-                                    weak_unit(d.inverse().into()),
-                                    Some("inverse identity".to_owned())
-                                );
-                            }
-
-                            extend!(bubble(d.clone()), Some("bubble".to_owned()));
-                            extend!(bubble(d.inverse()), Some("inverse bubble".to_owned()));
-                        }
-                    }
-                }
-                std::cmp::Ordering::Equal => {
-                    if let Diagram::DiagramN(d) = &info.diagram {
-                        extend!(d.clone(), None);
-                        if info.invertibility.is_invertible() {
-                            extend!(d.inverse(), Some("inverse".to_owned()));
-                        }
-                        // Instances of schemas, with placeholders inferred from the point.
-                        let signature = &self.proof().signature;
-                        for inferred in
-                            signature.infer_instances(info.generator, &haystack, boundary, &point)
-                        {
-                            matches.push(AttachOption {
-                                generator: info.generator,
-                                tag: Some(format!(
-                                    "[{}]",
-                                    signature.describe_substitution(&inferred.substitution)
-                                )),
-                                diagram: inferred.diagram,
-                                boundary_path,
-                                embedding: inferred.embedding.into_iter().collect(),
-                                substitution: Some(inferred.substitution),
-                            });
-                        }
-                        self.extend_with_reflections(
-                            &mut matches,
-                            info,
-                            d,
-                            &haystack,
-                            &point,
-                            boundary,
-                            boundary_path,
-                        );
-                    }
-                }
-                std::cmp::Ordering::Greater => (),
-            }
+            crate::panic::push_action(action);
+            self.clear_selections();
+            redone = true;
+            actions.pop_front();
         }
-
-        match matches.len() {
-            0 => {
-                self.clear_selections();
-                return Err(ModelError::NoAttachment);
-            }
-            1 => {
-                self.clear_selections();
-                self.update(Action::Proof(proof::Action::Attach(
-                    matches.into_iter().next().unwrap(),
-                )))?;
-            }
-            _ => {
-                self.options = Some(Selectables::Attach(matches));
-                self.attachment_highlight = None;
-                self.slice_highlight = None;
-            }
+        if actions.is_empty() {
+            return Started::Done(true);
         }
-
-        Ok(())
+        Started::Running(Task::Actions {
+            job: Box::new(ActionsJob::chain(self.proof().clone(), actions)),
+            kind: ActionsKind::Proof,
+            redone,
+        })
     }
 
-    /// Offers the well-typed reflections of a generator other than its inverse: duals, mates,
-    /// adjoints and so on. These are only valid when some of the generators involved are
-    /// invertible or dualisable, or when the signature has symmetries, and are typechecked only
-    /// once they are known to match. Reflections by a symmetry are tagged with its name.
-    #[allow(clippy::too_many_arguments)]
-    fn extend_with_reflections(
-        &self,
-        matches: &mut Vec<AttachOption>,
-        info: &GeneratorInfo,
-        diagram: &DiagramN,
-        haystack: &Diagram,
-        point: &[Height],
-        boundary: Boundary,
-        boundary_path: Option<BoundaryPath>,
-    ) {
-        let signature = &self.proof().signature;
-        let any_invertible = Diagram::from(diagram.clone()).generators().keys().any(|g| {
-            signature
-                .generator_info(*g)
-                .is_some_and(|info| info.invertibility.is_invertible())
-        });
-        if !any_invertible && signature.symmetries().is_empty() {
-            return;
-        }
-
-        let n = diagram.dimension();
-        for (directions, reflected) in diagram.reflections() {
-            if info.invertibility.is_invertible() && directions == [n] {
-                // Already offered as the inverse.
-                continue;
+    /// Commits what a [`Task`] came to, once it is done.
+    ///
+    /// The task worked on the proof as it was when it started, so this is only right if nothing
+    /// has changed the history since: the app refuses actions while a task runs.
+    pub fn finish(&mut self, output: TaskOutput) -> Result<Started, ModelError> {
+        match output {
+            TaskOutput::Actions {
+                outcome,
+                kind,
+                redone,
+            } => {
+                let changed = redone || !outcome.applied.is_empty();
+                for (action, proof) in outcome.applied {
+                    if kind == ActionsKind::Proof {
+                        // Only exfiltrate proof actions, otherwise
+                        // we risk funny business with circular action imports.
+                        crate::panic::push_action(&action);
+                    }
+                    self.history.add(action, proof);
+                }
+                if changed && kind == ActionsKind::Proof {
+                    self.clear_selections();
+                }
+                if let Some(error) = outcome.error {
+                    return Err(error.into());
+                }
+                Ok(Started::Done(changed || kind == ActionsKind::Import))
             }
-            let needle = reflected.slice(boundary.flip()).unwrap();
-            let embeddings: Vec<_> = haystack
-                .embeddings(&needle)
-                .filter(|embedding| needle.contains_point(point, embedding))
-                .collect();
-            if embeddings.is_empty()
-                || typecheck(&reflected.clone().into(), signature, Mode::default(), true).is_err()
-            {
-                continue;
+            TaskOutput::AttachOptions(matches) => {
+                match matches.len() {
+                    0 => {
+                        self.clear_selections();
+                        return Err(ModelError::NoAttachment);
+                    }
+                    1 => {
+                        self.clear_selections();
+                        return self.start(Action::Proof(proof::Action::Attach(
+                            matches.into_iter().next().unwrap(),
+                        )));
+                    }
+                    _ => {
+                        self.options = Some(Selectables::Attach(matches));
+                        self.attachment_highlight = None;
+                        self.slice_highlight = None;
+                    }
+                }
+                Ok(Started::Done(true))
             }
-            let mask = directions.iter().fold(0_u64, |mask, j| mask | 1 << (j - 1));
-            let tag = signature
-                .symmetries()
-                .iter()
-                .find(|symmetry| symmetry.mask() & ((1 << n) - 1) == mask)
-                .map_or_else(
-                    || {
-                        format!(
-                            "dual in {}",
-                            directions
-                                .iter()
-                                .map(|j| format!("x{}", subscript(*j)))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    },
-                    |symmetry| symmetry.name.clone(),
-                );
-            matches.extend(embeddings.into_iter().map(|embedding| AttachOption {
-                generator: info.generator,
-                diagram: reflected.clone(),
-                tag: Some(tag.clone()),
-                boundary_path,
-                embedding: embedding.into_iter().collect(),
-                substitution: None,
-            }));
+            TaskOutput::Export(ExportOutput {
+                files,
+                extension,
+                multiple,
+            }) => {
+                if multiple {
+                    let data = zip_files(files.into_iter());
+                    generate_download("homotopy_io_export", "zip", &data)
+                        .map_err(ModelError::Export)?;
+                } else if let Some((_, data)) = files.first() {
+                    generate_download("homotopy_io_export", extension, data.as_bytes())
+                        .map_err(ModelError::Export)?;
+                }
+                Ok(Started::Done(true))
+            }
         }
     }
 
@@ -652,23 +580,6 @@ fn help() -> Result<(), ModelError> {
     let document = window.document().ok_or(ModelError::Internal)?;
     let location = document.location().ok_or(ModelError::Internal)?;
     location.set_href("#help").or(Err(ModelError::Internal))
-}
-
-fn render(
-    diagram: &Diagram,
-    dimension: u8,
-    signature: &homotopy_model::proof::Signature,
-    format: ImageFormat,
-) -> String {
-    match format {
-        ImageFormat::Stl(options) => stl::render(diagram, signature, options).unwrap(),
-        ImageFormat::Tikz(options) => tikz::render(diagram, dimension, signature, options).unwrap(),
-        ImageFormat::Manim(options) => {
-            let stylesheet = manim::stylesheet(signature);
-            manim::render(diagram, dimension, signature, &stylesheet, options).unwrap()
-        }
-        _ => unreachable!(),
-    }
 }
 
 pub fn zip_files(files: impl Iterator<Item = (String, impl AsRef<[u8]>)>) -> Vec<u8> {

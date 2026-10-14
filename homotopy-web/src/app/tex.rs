@@ -1,3 +1,4 @@
+use homotopy_common::tex::{pieces, Piece};
 use web_sys::HtmlTextAreaElement;
 use yew::prelude::*;
 
@@ -163,16 +164,64 @@ impl Component for TexSpan {
     }
 }
 
+/// Renders a label as HTML: its text is escaped, and its formulas are rendered by KaTeX. See
+/// [`homotopy_common::tex`] for what is a formula.
 fn render_tex(raw_tex: &str, render_opts: &katex::Opts) -> String {
-    raw_tex
-        .split('$')
-        .enumerate()
-        .map(|(i, tex)| {
-            if i % 2 == 1 {
-                katex::render_with_opts(tex, render_opts).unwrap()
-            } else {
-                html_escape::encode_text(&tex).into_owned()
-            }
+    render_pieces(raw_tex, |math| {
+        katex::render_with_opts(math, render_opts).ok()
+    })
+}
+
+/// Renders a label as HTML, with formulas rendered by `render_math`. A formula that cannot be
+/// rendered is shown as it was written.
+fn render_pieces(raw_tex: &str, mut render_math: impl FnMut(&str) -> Option<String>) -> String {
+    pieces(raw_tex)
+        .into_iter()
+        .map(|piece| match piece {
+            Piece::Text(text) => html_escape::encode_text(text).into_owned(),
+            Piece::Dollar => "$".to_owned(),
+            Piece::Math(math) => render_math(math)
+                .unwrap_or_else(|| html_escape::encode_text(&format!("${math}$")).into_owned()),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_pieces;
+
+    /// Stands in for KaTeX, which only runs in the browser.
+    fn math(source: &str) -> Option<String> {
+        Some(format!("<math>{source}</math>"))
+    }
+
+    #[test]
+    fn formulas_are_rendered_and_text_is_not() {
+        assert_eq!(render_pieces("f $x$ g", math), "f <math>x</math> g");
+    }
+
+    #[test]
+    fn an_unmatched_dollar_does_not_make_what_follows_a_formula() {
+        assert_eq!(render_pieces("f $x", math), "f $x");
+        // Neither does it when the label is followed by other text.
+        assert_eq!(render_pieces("f $x (inverse)", math), "f $x (inverse)");
+        assert_eq!(render_pieces("a $x$ b $y", math), "a <math>x</math> b $y");
+    }
+
+    #[test]
+    fn text_cannot_inject_markup() {
+        assert_eq!(
+            render_pieces("<img src=x onerror=alert(1)> & $", math),
+            "&lt;img src=x onerror=alert(1)&gt; &amp; $"
+        );
+        assert_eq!(
+            render_pieces("</span><script>x</script>$", math),
+            "&lt;/span&gt;&lt;script&gt;x&lt;/script&gt;$"
+        );
+    }
+
+    #[test]
+    fn formulas_that_fail_are_shown_escaped() {
+        assert_eq!(render_pieces("$<b>$", |_| None), "$&lt;b&gt;$");
+    }
 }

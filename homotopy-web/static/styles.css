@@ -342,6 +342,49 @@ button, .button {
   flex: 1;
 }
 
+/* The tooltip over a diagram: a label rendered by KaTeX, and where the pointer is. It follows
+   the pointer (positioned by the app, with a transform) and never takes it. */
+
+.hover-tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1005;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  max-width: calc(100vw - 2 * var(--space-1));
+  padding: var(--space-0) var(--space-1);
+  border-radius: var(--space-1);
+  background: var(--tooltip-background);
+  color: var(--tooltip-foreground);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  animation: hover-tooltip__in 90ms ease-out;
+}
+
+@keyframes hover-tooltip__in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.hover-tooltip__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hover-tooltip__detail {
+  flex: none;
+  opacity: 0.6;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Tooltips */
 
 .tooltip {
@@ -890,8 +933,16 @@ input.signature__item-name {
   flex: 1 1 auto;
 }
 
-.signature__slot-value-composite {
+/* Replacements worked out from the others are dimmed, until they are chosen. */
+.signature__slot-inferred .signature__slot-value {
+  opacity: 0.7;
   font-style: italic;
+}
+
+.signature__slot-hint {
+  flex: 0 0 auto;
+  font-size: 0.8em;
+  opacity: 0.7;
 }
 
 .signature__dependency {
@@ -1424,49 +1475,120 @@ svg {
   }
 }
 
-/* Spinner */
+/* Busy indicator */
 
 @keyframes spin {
 	from {transform:rotate(0deg);}
 	to {transform:rotate(360deg);}
 }
 
-@keyframes fadeIn {
-  from {opacity:0;}
-  to {opacity:1;}
+/*
+ * The strip holding the pill is on the page as soon as a job starts, but fades in after 150ms
+ * (keep in sync with DELAY in components/busy.rs), so that quick jobs do not flicker. The fade
+ * and the spinner are animations that the browser can keep going even while the page itself is
+ * blocked by a step of the job that cannot be split up.
+ */
+.busy {
+  position: fixed;
+  top: var(--space-2);
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 1006;
+  animation: busy__in 120ms ease-out 150ms both;
 }
 
-.cover-spin {
-    display:block;
-    position:fixed;
-    width:100%;
-    left:0;right:0;top:0;bottom:0;
-    background-color: rgba(255,255,255,0.7);
-    opacity: 0;
-    z-index:9999;
-    animation-name: fadeIn;
-    animation-duration: .6s;
-    animation-timing-function: ease;
-    animation-iteration-count: 1;
-    animation-delay: .8s;
-    animation-fill-mode: forwards;
+/* After input was refused, it is shown right away. */
+.busy--shown {
+  animation: none;
 }
 
-.cover-spin::after {
-    content:'';
-    display:block;
-    position:absolute;
-    left:50%;top:50%;
-    width:40px;height:40px;
-    border-style:solid;
-    border-color:black;
-    border-top-color:transparent;
-    border-width: 4px;
-    border-radius:50%;
-    animation-name: spin;
-    animation-duration: .8s;
-    animation-timing-function: linear;
-    animation-iteration-count: infinite;
+@keyframes busy__in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.busy__pill {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: calc(100vw - 2 * var(--space-2));
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: 999px;
+  background: var(--sidebar-background);
+  color: var(--sidebar-foreground);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.busy__pill:focus-visible {
+  outline: 2px solid var(--drawer-selected);
+  outline-offset: 2px;
+}
+
+.busy__spinner {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.busy__progress {
+  font-variant-numeric: tabular-nums;
+}
+
+.busy__hint {
+  opacity: 0.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.busy__hint::before {
+  content: "\2014\00a0";
+}
+
+/* Input that was refused makes the pill shake. Two copies, as an animation does not run again
+   unless it changes to a different one. */
+.busy__pill--shake-a { animation: busy__shake-a 350ms; }
+.busy__pill--shake-b { animation: busy__shake-b 350ms; }
+
+@keyframes busy__shake-a {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-10px); }
+  40% { transform: translateX(10px); }
+  60% { transform: translateX(-6px); }
+  80% { transform: translateX(6px); }
+}
+
+@keyframes busy__shake-b {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-10px); }
+  40% { transform: translateX(10px); }
+  60% { transform: translateX(-6px); }
+  80% { transform: translateX(6px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .busy__spinner { animation-duration: 3s; }
+  .busy__pill--shake-a { animation: busy__flash-a 350ms; }
+  .busy__pill--shake-b { animation: busy__flash-b 350ms; }
+  @keyframes busy__flash-a {
+    0%, 100% { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35); }
+    30% { box-shadow: 0 0 0 4px #f39c12; }
+  }
+  @keyframes busy__flash-b {
+    0%, 100% { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35); }
+    30% { box-shadow: 0 0 0 4px #f39c12; }
+  }
 }
 
 /* Modal */

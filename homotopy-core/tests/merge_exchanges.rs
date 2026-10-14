@@ -117,3 +117,84 @@ fn generator_steps_are_left_alone() {
     let to_parallel = contract(&sig, &fg);
     assert_eq!(to_parallel.merge_exchanges(&sig).1, 0);
 }
+
+/// The merging as it was before it could be done a step at a time.
+fn merge_exchanges_in_one_go(diagram: &DiagramN, sig: &SignatureBuilder) -> (DiagramN, usize) {
+    use homotopy_core::{rewrite::Cospan, typecheck::typecheck_cospan};
+
+    let regular_slices = diagram.regular_slices().collect::<Vec<_>>();
+    let mut cospans: Vec<(Cospan, usize)> = Vec::new();
+    for (i, cospan) in diagram.cospans().iter().enumerate() {
+        if let Some((last, start)) = cospans.last_mut() {
+            if last.backward.is_identity() && cospan.forward.is_identity() {
+                let candidate = Cospan {
+                    forward: last.forward.clone(),
+                    backward: cospan.backward.clone(),
+                };
+                if typecheck_cospan(regular_slices[*start].clone(), candidate.clone(), sig).is_ok()
+                {
+                    *last = candidate;
+                    continue;
+                }
+            }
+        }
+        cospans.push((cospan.clone(), i));
+    }
+    let merged = diagram.size() - cospans.len();
+    (
+        DiagramN::new(
+            diagram.source(),
+            cospans.into_iter().map(|(cospan, _)| cospan).collect(),
+        ),
+        merged,
+    )
+}
+
+#[test]
+fn merging_a_step_at_a_time_gives_the_same_result() {
+    let (sig, fg) = setup();
+    let to_parallel = contract(&sig, &fg);
+    let parallel = DiagramN::try_from(to_parallel.target()).unwrap();
+    let swap = concat(&[&to_parallel, &expand(&sig, &parallel, &fg)]);
+    let gf = DiagramN::try_from(swap.target()).unwrap();
+    let to_parallel_again = contract(&sig, &gf);
+    let parallel_again = DiagramN::try_from(to_parallel_again.target()).unwrap();
+    let swap_back = concat(&[&to_parallel_again, &expand(&sig, &parallel_again, &gf)]);
+    let there_and_back = concat(&[&swap, &swap_back]);
+
+    for diagram in [&fg, &to_parallel, &swap, &there_and_back] {
+        let expected = merge_exchanges_in_one_go(diagram, &sig);
+        assert_eq!(diagram.merge_exchanges(&sig), expected);
+
+        let mut merging = diagram.merge_exchanges_steps();
+        let mut steps = 0;
+        assert_eq!(merging.progress(), (0, diagram.size()));
+        while merging.step(&sig) {
+            steps += 1;
+            assert_eq!(merging.progress(), (steps, diagram.size()));
+        }
+        assert_eq!(steps, diagram.size());
+        assert!(!merging.step(&sig), "stepping past the end does nothing");
+        assert_eq!(merging.finish(), expected);
+    }
+}
+
+#[test]
+fn stopping_early_leaves_the_rest_of_the_diagram_alone() {
+    let (sig, fg) = setup();
+    let to_parallel = contract(&sig, &fg);
+    let parallel = DiagramN::try_from(to_parallel.target()).unwrap();
+    let swap = concat(&[&to_parallel, &expand(&sig, &parallel, &fg)]);
+
+    // Before the second step is considered, there is nothing to merge yet...
+    let mut merging = swap.merge_exchanges_steps();
+    assert!(merging.step(&sig));
+    let (unmerged, count) = merging.finish();
+    assert_eq!((unmerged, count), (swap.clone(), 0));
+
+    // ...and afterwards the pair is merged.
+    let mut merging = swap.merge_exchanges_steps();
+    assert!(merging.step(&sig));
+    assert!(merging.step(&sig));
+    assert_eq!(merging.finish().1, 1);
+}

@@ -6,6 +6,7 @@
 //! schema in the signature, and are otherwise ordinary generators: nothing ever turns a diagram
 //! back into a placeholder.
 
+use homotopy_common::tex::seal;
 use homotopy_core::{
     diagram::NewDiagramError,
     signature::Signature as _,
@@ -35,33 +36,65 @@ pub enum InstantiationError {
 
 impl Signature {
     /// The placeholders a generator can be instantiated at: those its diagram mentions, those
-    /// it explicitly [depends on](GeneratorInfo::depends_on), and those that the generators its
-    /// diagram mentions explicitly depend on.
+    /// it explicitly [depends on](GeneratorInfo::depends_on) and those that their types mention,
+    /// and those that the generators its diagram mentions depend on.
     #[must_use]
     pub fn parameters(&self, generator: Generator) -> Vec<Generator> {
-        let Some(info) = self.generator_info(generator) else {
-            return vec![];
-        };
         let mut parameters = vec![];
+        self.collect_parameters(generator, &mut vec![], &mut parameters);
+        parameters.sort_by_key(|g| (g.dimension, g.id));
+        parameters.dedup();
+        parameters
+    }
+
+    /// Adds the parameters of a generator to `parameters`. `visiting` holds the generators being
+    /// visited, so that generators that depend on each other do not recurse forever.
+    fn collect_parameters(
+        &self,
+        generator: Generator,
+        visiting: &mut Vec<Generator>,
+        parameters: &mut Vec<Generator>,
+    ) {
+        let Some(info) = self.generator_info(generator) else {
+            return;
+        };
+        if visiting.contains(&generator) {
+            return;
+        }
+        visiting.push(generator);
+        self.collect_mentioned_parameters(generator, visiting, parameters);
+        for &p in &info.depends_on {
+            if p != generator && self.generator_info(p).is_some_and(|info| info.placeholder) {
+                parameters.push(p);
+                // The type of a replacement for `p` is in terms of the placeholders `p` mentions.
+                self.collect_mentioned_parameters(p, visiting, parameters);
+            }
+        }
+        visiting.pop();
+    }
+
+    /// Adds the parameters that a generator gets from the generators its diagram mentions.
+    fn collect_mentioned_parameters(
+        &self,
+        generator: Generator,
+        visiting: &mut Vec<Generator>,
+        parameters: &mut Vec<Generator>,
+    ) {
+        let Some(info) = self.generator_info(generator) else {
+            return;
+        };
         for g in info.diagram.generators().into_keys() {
             if g == generator {
                 continue;
             }
             match self.generator_info(g) {
                 Some(info) if info.placeholder => parameters.push(g),
-                // The generators a diagram mentions have lower dimensions, so this terminates.
                 Some(info) if !info.depends_on.is_empty() => {
-                    parameters.extend(self.parameters(g));
+                    self.collect_parameters(g, visiting, parameters);
                 }
                 _ => {}
             }
         }
-        parameters.extend(info.depends_on.iter().copied().filter(|&p| {
-            p != generator && self.generator_info(p).is_some_and(|info| info.placeholder)
-        }));
-        parameters.sort_by_key(|g| (g.dimension, g.id));
-        parameters.dedup();
-        parameters
     }
 
     /// Instantiates a generator by replacing placeholders it mentions with diagrams, returning
@@ -154,7 +187,7 @@ impl Signature {
             node,
             SignatureItem::Item(GeneratorInfo {
                 generator,
-                name: format!("{}[{arguments}]", info.name),
+                name: format!("{}[{arguments}]", seal(&info.name)),
                 diagram: diagram.into(),
                 placeholder: false,
                 instance: Some(instance),
@@ -237,12 +270,13 @@ impl Signature {
             .map(|info| info.generator)
     }
 
-    /// A short description of a substitution, like `Q/P, R/S`.
+    /// A short description of a substitution, like `Q/P, R/S`. The names in it are
+    /// [sealed](seal), so the description can be put in a label.
     #[must_use]
     pub fn describe_substitution(&self, substitution: &[(Generator, Diagram)]) -> String {
         substitution
             .iter()
-            .map(|(p, d)| format!("{}/{}", self.describe(d), self.name_of(*p)))
+            .map(|(p, d)| format!("{}/{}", self.describe(d), seal(&self.name_of(*p))))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -250,13 +284,6 @@ impl Signature {
     fn name_of(&self, g: Generator) -> String {
         self.generator_info(g)
             .map_or_else(|| format!("{g:?}"), |info| info.name.clone())
-    }
-
-    /// The name of the generator with the given diagram, if any.
-    fn describe(&self, diagram: &Diagram) -> String {
-        self.iter()
-            .find(|info| info.diagram == *diagram)
-            .map_or_else(|| "…".to_owned(), |info| info.name.clone())
     }
 }
 
@@ -350,6 +377,36 @@ mod tests {
     }
 
     #[test]
+    fn names_of_instances_cannot_leak_into_each_other() {
+        use homotopy_common::tex::{pieces, Piece};
+
+        let Setup {
+            mut sig, p, q, a, ..
+        } = setup();
+        // Names that leave off their last dollar sign.
+        for (generator, name) in [(a, "A $x"), (p, "P $y")] {
+            let node = sig.find_node(generator).unwrap();
+            sig.update(&crate::proof::SignatureEdit::Edit(
+                node,
+                crate::proof::SignatureItemEdit::Rename(name.to_owned()),
+            ))
+            .unwrap();
+        }
+        let instance = sig.instantiate(a, &[(p, q)]).unwrap();
+        let name = sig.generator_info(instance).unwrap().name.clone();
+        assert!(name.starts_with("A \\$x["), "{name}");
+        // None of it is a formula.
+        assert!(pieces(&name)
+            .iter()
+            .all(|piece| !matches!(piece, Piece::Math(_))));
+        let description =
+            sig.describe_substitution(&[(p, sig.generator_info(p).unwrap().diagram.clone())]);
+        assert!(pieces(&description)
+            .iter()
+            .all(|piece| !matches!(piece, Piece::Math(_))));
+    }
+
+    #[test]
     fn ill_typed_instantiations_are_refused() {
         let Setup {
             mut sig,
@@ -394,6 +451,9 @@ mod tests {
         };
         assert_eq!(e_diagram.source(), qq.clone().into());
         assert_eq!(e_diagram.target(), qq.into());
+        // The composite is named by its parts in the name of the instance, not by "…".
+        assert!(info.name.contains(r"\mathbin{;}"), "{}", info.name);
+        assert!(!info.name.contains('…'), "{}", info.name);
     }
 
     /// Limits as right Kan extensions along `! : J → 1`, with the universal property as a schema
@@ -405,7 +465,7 @@ mod tests {
             Boundary, Diagram, DiagramN, Generator, Height,
         };
 
-        use crate::proof::{Signature, SignatureEdit, SignatureItemEdit};
+        use crate::proof::{DraftEdit, Drafts, Signature, SignatureEdit, SignatureItemEdit};
 
         pub(super) struct Limits {
             pub sig: Signature,
@@ -578,6 +638,133 @@ mod tests {
                 .attach(&diagram, Boundary::Target, &found.embedding)
                 .unwrap();
             assert_eq!(instances_of(&sig, u).len(), 1);
+        }
+
+        #[test]
+        fn a_cone_determines_its_diagram_and_apex() {
+            let Limits {
+                sig,
+                d,
+                x,
+                alpha,
+                u,
+                d0,
+                x0,
+                alphas,
+                ..
+            } = setup();
+            let cone = (alpha, Diagram::from(alphas[0].clone()));
+
+            // The cone `α₀ : X₀ ∘ ! ⇒ D₀` can only be a cone over `D₀` with apex `X₀`, although
+            // `D` could also be replaced by `X₀ ∘ !`, if `α` were not to be replaced by `α₀`.
+            assert_eq!(
+                sig.infer_replacements(u, std::slice::from_ref(&cone)),
+                vec![(d, d0.clone().into()), (x, x0.clone().into())]
+            );
+
+            // Nothing is determined by a diagram alone, or when what is chosen contradicts.
+            assert!(sig
+                .infer_replacements(u, &[(d, d0.clone().into())])
+                .is_empty());
+            assert!(sig.infer_replacements(u, &[]).is_empty());
+            let bang_x0: Diagram = alphas[0].source();
+            assert!(sig
+                .infer_replacements(u, &[(d, bang_x0), cone.clone()])
+                .is_empty());
+
+            // What is determined is not returned if it was chosen.
+            assert_eq!(
+                sig.infer_replacements(u, &[(d, d0.into()), cone]),
+                vec![(x, x0.into())]
+            );
+        }
+
+        #[test]
+        fn inferred_replacements_instantiate() {
+            let Limits {
+                mut sig,
+                d,
+                x,
+                alpha,
+                u,
+                d0,
+                x0,
+                alphas,
+                ..
+            } = setup();
+            let mut drafts = Drafts::default();
+            drafts.apply(&sig, DraftEdit::Fill(u, alpha, alphas[0].clone().into()));
+            let draft = drafts.get(u);
+            assert!(!draft.is_inferred(alpha));
+            assert!(draft.is_inferred(d) && draft.is_inferred(x));
+            assert_eq!(draft.get(d), Some(&Diagram::from(d0)));
+            assert_eq!(draft.get(x), Some(&Diagram::from(x0.clone())));
+
+            // The substitution is complete, so the instance can be made.
+            let instance = sig.instantiate(u, &draft.substitution()).unwrap();
+            assert!(sig.generator_info(instance).unwrap().instance.is_some());
+        }
+
+        #[test]
+        fn inferred_replacements_can_be_overridden_and_cleared() {
+            let Limits {
+                sig,
+                d,
+                x,
+                alpha,
+                u,
+                x0,
+                alphas,
+                ..
+            } = setup();
+            let mut drafts = Drafts::default();
+            drafts.apply(&sig, DraftEdit::Fill(u, alpha, alphas[0].clone().into()));
+
+            // Choosing the diagram for an inferred placeholder makes it chosen.
+            drafts.apply(&sig, DraftEdit::Fill(u, x, x0.clone().into()));
+            assert!(!drafts.get(u).is_inferred(x));
+            assert!(drafts.get(u).is_inferred(d));
+
+            // Clearing an inferred replacement keeps it from coming back, ...
+            drafts.apply(&sig, DraftEdit::Clear(u, d));
+            assert_eq!(drafts.get(u).get(d), None);
+            drafts.apply(&sig, DraftEdit::Clear(u, x));
+            assert_eq!(drafts.get(u).get(d), None);
+            assert!(drafts.get(u).is_inferred(x));
+
+            // ... until what it was inferred from is cleared, which clears the inferred.
+            drafts.apply(&sig, DraftEdit::Clear(u, alpha));
+            assert_eq!(drafts, Drafts::default());
+            drafts.apply(&sig, DraftEdit::Fill(u, alpha, alphas[0].clone().into()));
+            assert!(drafts.get(u).is_inferred(d));
+        }
+
+        #[test]
+        fn dependencies_bring_the_placeholders_their_types_mention() {
+            let Limits {
+                mut sig,
+                d,
+                x,
+                alpha,
+                ..
+            } = setup();
+            // A cell that depends on the cone but mentions neither it nor its types.
+            let cell = sig
+                .create_generator(
+                    sig.generator_info(d).unwrap().diagram.clone(),
+                    sig.generator_info(d).unwrap().diagram.clone(),
+                    "w",
+                    Invertibility::Directed,
+                )
+                .unwrap();
+            let w = g(&cell);
+            edit(&mut sig, w, SignatureItemEdit::SetDependsOn(vec![alpha]));
+            assert_eq!(sig.parameters(w), vec![d, x, alpha]);
+
+            // Generators that depend on each other are not a problem.
+            edit(&mut sig, alpha, SignatureItemEdit::SetDependsOn(vec![d]));
+            edit(&mut sig, d, SignatureItemEdit::SetDependsOn(vec![alpha]));
+            assert_eq!(sig.parameters(w), vec![d, x, alpha]);
         }
     }
 }

@@ -134,3 +134,11 @@ extern "C" {
     #[wasm_bindgen]
     pub fn display_panic_message();
 }
+
+/// How many actions the crash dump has logged, and how big the import it starts from is, for
+/// checking that a cancelled job left the log alone.
+#[cfg(debug_assertions)]
+pub fn debug_summary() -> (usize, usize) {
+    let info = CRASH_INFO.lock().unwrap();
+    (info.actions.len(), info.import.as_ref().map_or(0, Vec::len))
+}

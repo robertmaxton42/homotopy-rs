@@ -1,9 +1,12 @@
 use std::convert::{Into, TryFrom};
 
+pub use actions_job::{ActionsJob, ActionsOutcome, REPLAYING};
+pub use attach_options::{AttachOptionsJob, NoAttachment};
+pub use drafts::{Draft, DraftEdit, Drafts};
 use homotopy::Homotopy;
 use homotopy_core::{
     common::{Boundary, BoundaryPath, Direction, Generator, Height, SliceIndex},
-    contraction::ContractionError,
+    contraction::{self, ContractionError},
     diagram::{AttachmentError, NewDiagramError},
     expansion::ExpansionError,
     signature::{Invertibility, Signature as _},
@@ -15,6 +18,7 @@ pub use inference::InferredInstance;
 pub use instances::InstantiationError;
 use serde::{Deserialize, Serialize};
 pub use signature::*;
+pub use structure::Structure;
 use thiserror::Error;
 
 use self::homotopy::{Contract, Expand};
@@ -22,10 +26,15 @@ use crate::{migration, proof::generators::GeneratorInfo, serialize};
 
 mod signature;
 
+mod actions_job;
+mod attach_options;
+mod describe;
+mod drafts;
 pub mod generators;
 pub mod homotopy;
 mod inference;
 mod instances;
+mod structure;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub struct View {
@@ -286,6 +295,31 @@ impl Action {
         }
     }
 
+    /// What the action is doing, as a gerund phrase, if it can take noticeably long (see the
+    /// policy in `CLAUDE.md`), for the busy indicator. Which actions can was decided by timing
+    /// the debug build in a browser on the examples in `tests/examples` and a project with
+    /// limits and their universal property as schemas: a homotopy takes from 10ms to 1.5s, a
+    /// theorem from 20 to 260ms, squashing from 10 to 230ms, importing a 40KB project 50ms, and
+    /// instantiating a schema 10 to 35ms; whereas merging generators, suspending and editing
+    /// the signature each took under 20ms, and everything else well under 5ms.
+    #[must_use]
+    pub const fn work_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Homotopy(Homotopy::Expand(_)) => Some("Expanding"),
+            Self::Homotopy(Homotopy::Contract(_)) => Some("Contracting"),
+            Self::Squash => Some("Squashing"),
+            Self::MergeExchanges => Some("Merging exchanges"),
+            Self::Theorem => Some("Proving theorem"),
+            Self::Instantiate(_, _)
+            | Self::Attach(AttachOption {
+                substitution: Some(_),
+                ..
+            }) => Some("Instantiating"),
+            Self::ImportProof(_) => Some("Importing project"),
+            _ => None,
+        }
+    }
+
     /// Determines if a given [Action] is experimental.
     #[must_use]
     pub const fn is_experimental(&self) -> bool {
@@ -327,6 +361,10 @@ pub enum ProofError {
     SignatureError(#[from] SignatureError),
     #[error(transparent)]
     InstantiationError(#[from] InstantiationError),
+    /// What went wrong in a job that was done somewhere else (see [`remote`](crate::remote)),
+    /// where the error itself did not make it across.
+    #[error("{0}")]
+    Remote(String),
 }
 
 impl ProofState {
@@ -775,20 +813,36 @@ impl ProofState {
     /// slice (merging changes the interior slices, but not the boundaries, of the diagram). Does
     /// nothing if there is no pair of steps to merge.
     fn merge_exchanges(&mut self) -> bool {
-        let Some(ws) = &mut self.workspace else {
+        let Some(mut merging) = self.start_merge_exchanges() else {
             return false;
         };
+        while merging.step(&self.signature) {}
+        self.finish_merge_exchanges(merging)
+    }
+
+    /// The first part of [Action::MergeExchanges], which can be done a step at a time: `None` if
+    /// the action is invalid.
+    fn start_merge_exchanges(&self) -> Option<contraction::MergeExchanges> {
+        let ws = self.workspace.as_ref()?;
         let Diagram::DiagramN(diagram) = &ws.diagram else {
-            return false;
+            return None;
         };
         if matches!(ws.path.front(), Some(SliceIndex::Interior(_))) {
-            return false;
+            return None;
         }
+        Some(diagram.merge_exchanges_steps())
+    }
 
-        let (merged, count) = diagram.merge_exchanges(&self.signature);
+    /// The last part of [Action::MergeExchanges], once the steps are done: returns whether there
+    /// was anything to merge.
+    fn finish_merge_exchanges(&mut self, merging: contraction::MergeExchanges) -> bool {
+        let (merged, count) = merging.finish();
         if count == 0 {
             return false;
         }
+        let Some(ws) = &mut self.workspace else {
+            return false;
+        };
         ws.diagram = merged.into();
         true
     }
@@ -1216,7 +1270,9 @@ pub struct AttachOption {
     pub generator: Generator,
     pub boundary_path: Option<BoundaryPath>,
     pub embedding: Vector<usize>,
-    pub tag: Option<String>,
+    /// The label to show instead of the name of the generator, for cells derived from it such as
+    /// its identity or its inverse (see [`Structure`]), if it is not just the generator.
+    pub label: Option<String>,
     pub diagram: DiagramN,
     /// If set, `generator` is a schema to be instantiated with this substitution, and the
     /// instance attached in place of `diagram` (which has the same shape).
@@ -1224,8 +1280,51 @@ pub struct AttachOption {
     pub substitution: Option<Vec<(Generator, Diagram)>>,
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SerializedData(pub Vec<u8>);
+
+// As bytes, which formats that have them (such as the one jobs are sent to a worker in) take
+// without a thought for each, and as a sequence of numbers in those that do not (JSON).
+impl Serialize for SerializedData {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for SerializedData {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = SerializedData;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("bytes")
+            }
+
+            fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Self::Value, E> {
+                Ok(SerializedData(bytes.to_vec()))
+            }
+
+            fn visit_byte_buf<E>(self, bytes: Vec<u8>) -> Result<Self::Value, E> {
+                Ok(SerializedData(bytes))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(byte) = seq.next_element()? {
+                    bytes.push(byte);
+                }
+                Ok(SerializedData(bytes))
+            }
+        }
+
+        deserializer.deserialize_byte_buf(Visitor)
+    }
+}
 
 impl std::fmt::Debug for SerializedData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -1,9 +1,11 @@
+use homotopy_common::tex::seal;
 use homotopy_core::signature::Symmetry;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 use yew_macro::function_component;
 
 use crate::{
+    app::tex::TexSpan,
     components::icon::{Icon, IconSize},
     model::{
         proof::{self, SignatureEdit, MAX_SYMMETRY_DIRECTION},
@@ -89,7 +91,10 @@ pub fn SymmetriesView(props: &Props) -> Html {
             .join(", ");
         html! {
             <li class="signature__symmetry">
-                <span class="signature__symmetry-name">{format!("{}: {directions}", symmetry.name)}</span>
+                <TexSpan
+                    class="signature__symmetry-name"
+                    raw_tex={format!("{}: {directions}", seal(&symmetry.name))}
+                />
                 <span class="signature__symmetry-remove" title="Remove symmetry" onclick={remove}>
                     <Icon name="close" size={IconSize::Icon18} />
                 </span>
@@ -105,6 +110,7 @@ pub fn SymmetriesView(props: &Props) -> Html {
                 <input
                     type="text"
                     placeholder="name"
+                    title="The name of the symmetry, which can contain LaTeX between dollar signs"
                     value={(*name).clone()}
                     oninput={oninput(&name, &invalid)}
                     onkeyup={onkeyup.clone()}

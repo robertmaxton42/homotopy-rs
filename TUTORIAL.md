@@ -22,7 +22,7 @@ We start by adding two 0-cells. Click on the `Add` button (bottom-left, keyboard
 ![Signature with two 0-cells](./doc/img/tutorial1.png)
 
 The workspace can be then cleared by clicking `Clear` (bottom-left, keyboard shortcut C).
-Clicking on the left of the generator name, we can edit the generator name to respectively $C$ and $D$. $\LaTeX$ is supported with the usual dollar-sign convention.
+Clicking on the left of the generator name, we can edit the generator name to respectively $C$ and $D$. $\LaTeX$ is supported with the usual dollar-sign convention. A dollar sign without a partner is shown as it is, and `\$` is always a dollar sign (see `doc/labels.md`).
 
 ![Renaming the 0-cells](./doc/img/tutorial2.png)
 
