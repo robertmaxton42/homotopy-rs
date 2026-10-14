@@ -302,6 +302,52 @@ fn profile_layouts(state: &model::State) -> String {
     serde_json::to_string(&timings).unwrap()
 }
 
+/// Times what saving the project in the background takes on the page: serialising it whole,
+/// and, for doing that in the worker, building the request that gives it the project (with the
+/// signature, and again without) and copying the bytes that come back.
+fn profile_autosave(state: &model::State) -> String {
+    use homotopy_model::remote::{Remote, Work};
+
+    let performance = web_sys::window().unwrap().performance().unwrap();
+    let proof = state.proof();
+    let timed = |name: &str, bytes: &mut usize, run: &mut dyn FnMut() -> usize| {
+        let start = performance.now();
+        *bytes = run();
+        serde_json::json!({ "what": name, "ms": performance.now() - start, "bytes": *bytes })
+    };
+    let (mut bytes, mut out) = (0, vec![]);
+    let work = || Work::AttachOptions {
+        point: vec![],
+        weak_units: false,
+    };
+    out.push(timed("serialize", &mut bytes, &mut || {
+        serialize::serialize(
+            proof.signature.clone(),
+            proof.workspace.clone(),
+            proof.metadata.clone(),
+        )
+        .len()
+    }));
+    let mut remote = Remote::default();
+    out.push(timed("request with signature", &mut bytes, &mut || {
+        remote.request(proof, work(), 0, false).len()
+    }));
+    out.push(timed(
+        "request with signature held",
+        &mut bytes,
+        &mut || remote.request(proof, work(), 0, false).len(),
+    ));
+    let serialized = serialize::serialize(
+        proof.signature.clone(),
+        proof.workspace.clone(),
+        proof.metadata.clone(),
+    );
+    out.push(timed("copy to a Uint8Array", &mut bytes, &mut || {
+        js_sys::Uint8Array::from(serialized.as_slice()).length() as usize
+    }));
+    serde_json::to_string(&out).unwrap()
+}
+
 #[wasm_bindgen::prelude::wasm_bindgen(
     inline_js = "export function throw_from_js() { throw new Error('thrown by the debug hooks'); }"
 )]
@@ -449,6 +495,14 @@ pub fn install(link: &Scope<App>) {
         "profileLayouts",
         Closure::<dyn Fn() -> String>::new(|| {
             STATE.with(|state| profile_layouts(&state.borrow().0))
+        })
+        .into_js_value(),
+    );
+
+    set(
+        "profileAutosave",
+        Closure::<dyn Fn() -> String>::new(|| {
+            STATE.with(|state| profile_autosave(&state.borrow().0))
         })
         .into_js_value(),
     );

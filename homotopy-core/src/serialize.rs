@@ -43,6 +43,34 @@ pub struct Store {
 }
 
 impl Store {
+    /// Moves what has been packed so far into a store of its own, to be sent on its own. This
+    /// store keeps the keys of what it packed, so that packing that again gives the same key and
+    /// puts nothing new in it: what was taken is not packed twice, and [`extend`](Self::extend)ing
+    /// a store with the pieces taken from this one, in any order, gives what this one would
+    /// have held.
+    #[must_use]
+    pub fn take_packed(&mut self) -> Self {
+        Self {
+            diagrams: std::mem::take(&mut self.diagrams),
+            rewrites: std::mem::take(&mut self.rewrites),
+            cones: std::mem::take(&mut self.cones),
+            ..Self::default()
+        }
+    }
+
+    /// Adds everything that another store holds, so that its keys can be unpacked from this one.
+    pub fn extend(&mut self, other: Self) {
+        self.diagrams.extend(other.diagrams);
+        self.rewrites.extend(other.rewrites);
+        self.cones.extend(other.cones);
+    }
+
+    /// Whether nothing is waiting in the store to be sent.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.diagrams.is_empty() && self.rewrites.is_empty() && self.cones.is_empty()
+    }
+
     pub fn pack_diagram(&mut self, diagram: &Diagram) -> Key<Diagram> {
         if let Some(key) = self.diagram_keys.get_by_left(diagram) {
             return *key;

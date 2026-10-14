@@ -93,8 +93,23 @@ pub fn serialize(
     workspace: Option<Workspace>,
     metadata: Metadata,
 ) -> Vec<u8> {
+    serialize_with(Store::default(), signature, workspace, metadata)
+}
+
+/// [`serialize`], given a store that may have some of the diagrams packed in it already.
+///
+/// See [`Packer`](crate::autosave::Packer), which does that a little at a time. Whatever the
+/// store has already given away with `take_packed` is not in the file, so this is only for stores
+/// that have not.
+#[must_use]
+pub fn serialize_with(
+    store: Store,
+    signature: Signature,
+    workspace: Option<Workspace>,
+    metadata: Metadata,
+) -> Vec<u8> {
     let mut data = Data {
-        store: Default::default(),
+        store,
         signature: Default::default(),
         workspace: Default::default(),
         metadata,
