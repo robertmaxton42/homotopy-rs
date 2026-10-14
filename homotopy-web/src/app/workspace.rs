@@ -174,6 +174,7 @@ fn view_diagram_svg<const N: usize>(
                     signature={props.signature.clone()}
                     on_select={on_select}
                     accepts_drops=true
+                    sheets=true
                     on_attach={on_attach}
                     on_homotopy={on_homotopy}
                     highlight={highlight}

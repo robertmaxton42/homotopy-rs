@@ -352,8 +352,9 @@ button, .button {
   left: 0;
   z-index: 1005;
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--space-1);
+  gap: 0 var(--space-1);
   max-width: calc(100vw - 2 * var(--space-1));
   padding: var(--space-0) var(--space-1);
   border-radius: var(--space-1);
@@ -384,6 +385,70 @@ button, .button {
   opacity: 0.6;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+/* The sheets behind a place on a diagram, listed under the label in the tooltip. */
+
+.hover-tooltip__sheets {
+  flex: 0 0 100%;
+  margin-top: 2px;
+  padding-top: 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.25);
+  font-size: 13px;
+}
+
+.hover-tooltip__crumbs {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.hover-tooltip__stack {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hover-tooltip__sheet {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding: 0 var(--space-0);
+  border-radius: 3px;
+  opacity: 0.7;
+}
+
+.hover-tooltip__sheet--current {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.22);
+  font-weight: 600;
+}
+
+.hover-tooltip__z {
+  flex: none;
+  min-width: 3.2em;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.hover-tooltip__tag {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+.hover-tooltip__more,
+.hover-tooltip__hint {
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+/* Wires that are not on the sheet that is chosen. */
+
+svg [data-dim="1"] {
+  opacity: 0.22;
 }
 
 /* Tooltips */

@@ -214,6 +214,7 @@ impl Component for App {
                 AppSettingsKey::infer_instances,
                 AppSettingsKey::infer_budget,
                 AppSettingsKey::infer_max_dimension,
+                AppSettingsKey::infer_narrow_to_sheet,
             ],
             Callback::from(|_: AppSettingsMsg| attach_inference::store()),
         );
@@ -259,6 +260,7 @@ impl Component for App {
                 AppSettingsKey::infer_instances,
                 AppSettingsKey::infer_budget,
                 AppSettingsKey::infer_max_dimension,
+                AppSettingsKey::infer_narrow_to_sheet,
             ],
             &self.inference_setting,
         );

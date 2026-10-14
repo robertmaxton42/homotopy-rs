@@ -17,6 +17,8 @@ declare_settings! {
         // Seconds; 0 for no limit.
         infer_budget: u32 = 20,
         infer_max_dimension: u32 = 7,
+        // A heuristic: only look for instances among the cells near the chosen sheet.
+        infer_narrow_to_sheet: bool = false,
         // Set for the session after searches ran out of time, not part of the kept settings.
         infer_suspended: bool = false,
 
@@ -141,6 +143,14 @@ impl Component for SettingsView {
                             attach_inference::NO_DIMENSION_LIMIT,
                         )
                     }
+                    {
+                        Self::view_checkbox(
+                            "Heuristic: infer instances only from cells near the chosen sheet",
+                            AppSettings::get_infer_narrow_to_sheet(),
+                            AppSettings::set_infer_narrow_to_sheet,
+                        )
+                    }
+                    <div class="settings__note">{"When a sheet is chosen on the diagram (Shift+wheel or [ ] over it), the replacements of placeholders are only made of cells that occur near that sheet. This is quicker but can miss instances that use cells from elsewhere; it never offers one that is not valid, and a notice says when it was used."}</div>
                     {
                         Self::view_slider(
                             "Contraction step",

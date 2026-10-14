@@ -29,6 +29,52 @@ it there, and the button tells you why. This is worked out when you pick the gen
 dimensions and which cells there are; it never searches, so it cannot say that there is a way
 to attach it at a particular point, only that there is no way at all.
 
+## Sheets: what is behind a position
+
+In the 2D view of a diagram of more than two dimensions a position of the picture stands for
+everything that the other dimensions have there, and the picture shows only the cell that is in
+front. The others are behind it: they are the **sheets** of the position (one for each singular
+height of the next dimension, `z₃`). A click is at a position, so it says nothing about which
+sheet you mean, and the search looks at everything that reaches the position. If you know which
+sheet you mean, say so, and the search only looks at attachments that reach that sheet.
+
+Hold the pointer over a position that has several sheets and the tooltip lists them, with the
+cell at each (`z₃=0 c`, `z₃=1 𝒞`, ...) and which one the picture shows (*front*). Nothing changes
+unless you choose one:
+
+- **Shift + wheel**, or **`]`** and **`[`**, move down and up the list (round the ends). The
+  chosen sheet is highlighted, and the wires that are not on it are drawn dim.
+- **Tab** fixes the sheet you are on and goes one dimension further in, to the sheets inside it
+  for the next coordinate (`z₃=1 › z₄=0`); the list is then of those. Tab again goes further in,
+  as far as the diagram has dimensions. **Shift + Tab** takes the last one back. Nothing is ever
+  fixed for you: what is in the breadcrumb is what you pressed.
+- Moving the pointer to another part of the diagram forgets the choice. Where wires (or
+  vertices) overlap on the screen, the list has the sheets of each of them, tagged *wire*,
+  *vertex*; choosing one of those chooses that wire.
+
+Then **click**, **drop** a generator from the signature, or click after **picking** one (the
+pointing hand) as before: the point that is searched is the position and the sheets you chose
+(the tooltip's breadcrumb), and what is offered is exactly the attachments of the position whose
+cell reaches the sheet. An attachment that spans several sheets is still offered as long as it
+covers the one you chose: choosing a sheet leaves out what cannot be at it, and never leaves out
+what can. This is often much quicker, as the search does not look at the rest. (While a generator is being dragged the browser passes on neither keys nor the wheel, so there
+is no choosing during a drag. Pick the generator with the pointing hand instead, choose the sheet,
+and click. A drop uses the sheet that was chosen for the position it lands on, if there is one.)
+
+Choose no sheet (leave the position and come back, or Shift + Tab all the way) and a click is
+what it has always been. The 3D view has no sheets.
+
+### Narrowing the instances to the sheet is a heuristic
+
+Settings: *Heuristic: infer instances only from cells near the chosen sheet* (off by default).
+When it is on and a sheet is chosen, the replacements tried for the placeholders of a schema are
+made of the cells that occur near that sheet in the diagram (at the heights of the point and
+those next to them) and not of all the cells of the diagram. This makes the inference quicker,
+and it can miss instances that use cells from elsewhere in the diagram; it never offers one
+that is not valid, because each is checked as before and only the pool of cells it is chosen
+from is smaller. The notice that follows the search says that it was in effect and how many of
+the diagram's cells it looked at.
+
 ## Instances of schemas are a heuristic
 
 Finding the instances of a schema that attach at a point is a search over replacements of its

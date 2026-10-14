@@ -85,6 +85,7 @@ features = [
   "HtmlElement",
   "HtmlHeadElement",
   "KeyboardEvent",
+  "NodeList",
   "Location",
   "MessageEvent",
   "OffscreenCanvas",

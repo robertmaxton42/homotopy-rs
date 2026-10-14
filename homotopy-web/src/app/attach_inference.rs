@@ -43,6 +43,8 @@ struct Kept {
     enabled: bool,
     budget_seconds: u32,
     max_dimension: u32,
+    #[serde(default)]
+    narrow_to_sheet: bool,
 }
 
 thread_local! {
@@ -64,6 +66,7 @@ pub fn limits() -> InferenceLimits {
         } else {
             max_dimension
         },
+        narrow_to_sheet: AppSettings::get_infer_narrow_to_sheet(),
     }
 }
 
@@ -76,6 +79,7 @@ pub fn load() {
     AppSettings::set_infer_instances(kept.enabled);
     AppSettings::set_infer_budget(kept.budget_seconds);
     AppSettings::set_infer_max_dimension(kept.max_dimension.clamp(1, NO_DIMENSION_LIMIT));
+    AppSettings::set_infer_narrow_to_sheet(kept.narrow_to_sheet);
 }
 
 /// Keeps the settings.
@@ -84,6 +88,7 @@ pub fn store() {
         enabled: AppSettings::get_infer_instances(),
         budget_seconds: AppSettings::get_infer_budget(),
         max_dimension: AppSettings::get_infer_max_dimension(),
+        narrow_to_sheet: AppSettings::get_infer_narrow_to_sheet(),
     };
     if let Ok(json) = serde_json::to_string(&kept) {
         write_settings(&json);
@@ -112,6 +117,14 @@ pub fn notice(report: &InferenceReport) -> Vec<String> {
                 AppSettings::get_infer_max_dimension()
             ));
         }
+    }
+    if let Some(narrowed) = report.narrowed {
+        lines.push(format!(
+            "Heuristic: instances of schemas were only looked for among the {} of the diagram's {} \
+             cells that are near the chosen sheet. Instances that use other cells are not offered. \
+             Turn this off in Settings, or choose no sheet, to look at all of them.",
+            narrowed.kept, narrowed.of
+        ));
     }
     if report.timed_out() {
         let seconds = (report.spent_ms + 500) / 1000;

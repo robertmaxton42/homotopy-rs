@@ -29,6 +29,35 @@ pub struct Content {
     pub label: String,
     /// Plain text, shown muted after the label.
     pub detail: String,
+    /// The sheets behind the place, if there are any to choose from (see `homotopy_model::sheets`).
+    pub sheets: Option<SheetStack>,
+}
+
+/// The sheets to choose from at a place: the stack that is listed under the label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SheetStack {
+    /// The sheets fixed and the one being chosen, as `z₃=2 › z₄=0`, when one is chosen.
+    pub breadcrumb: Option<String>,
+    /// The name of the coordinate that the rows are sheets of (`z₃`).
+    pub coordinate: String,
+    pub rows: Vec<SheetRow>,
+    /// Rows that are left out for lack of room.
+    pub hidden: usize,
+    /// What the keys do, or what stops them.
+    pub hint: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SheetRow {
+    /// The height of the sheet.
+    pub z: usize,
+    /// A label (see [`homotopy_common::tex`]).
+    pub label: String,
+    pub current: bool,
+    /// Whether this is the one the view draws.
+    pub front: bool,
+    /// What kind of shape the sheet is of, when the stack has those of more than one.
+    pub kind: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -113,6 +142,43 @@ impl HoverTooltip {
     }
 }
 
+impl HoverTooltip {
+    fn view_sheets(stack: &SheetStack) -> Html {
+        let coordinate = stack.coordinate.clone();
+        html! {
+            <div class="hover-tooltip__sheets" data-sheets="">
+                if let Some(breadcrumb) = &stack.breadcrumb {
+                    <div class="hover-tooltip__crumbs">{breadcrumb.clone()}</div>
+                }
+                <ul class="hover-tooltip__stack">
+                    { for stack.rows.iter().map(|row| html! {
+                        <li
+                            class={classes!(
+                                "hover-tooltip__sheet",
+                                row.current.then_some("hover-tooltip__sheet--current"),
+                            )}
+                            data-z={row.z.to_string()}
+                        >
+                            <span class="hover-tooltip__z">{format!("{coordinate}={}", row.z)}</span>
+                            <TexSpan class="hover-tooltip__sheet-label" raw_tex={row.label.clone()} />
+                            if let Some(kind) = row.kind {
+                                <span class="hover-tooltip__tag">{kind}</span>
+                            }
+                            if row.front {
+                                <span class="hover-tooltip__tag">{"front"}</span>
+                            }
+                        </li>
+                    }) }
+                </ul>
+                if stack.hidden > 0 {
+                    <div class="hover-tooltip__more">{format!("and {} more", stack.hidden)}</div>
+                }
+                <div class="hover-tooltip__hint">{stack.hint.clone()}</div>
+            </div>
+        }
+    }
+}
+
 impl Component for HoverTooltip {
     type Message = Msg;
     type Properties = ();
@@ -165,6 +231,7 @@ impl Component for HoverTooltip {
             <div class="hover-tooltip" role="tooltip" ref={self.element.clone()}>
                 <TexSpan class="hover-tooltip__label" raw_tex={content.label.clone()} />
                 <span class="hover-tooltip__detail">{content.detail.clone()}</span>
+                {content.sheets.as_ref().map(Self::view_sheets)}
             </div>
         }
     }

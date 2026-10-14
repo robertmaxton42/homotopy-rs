@@ -6,6 +6,8 @@
 //!   generator on a point of the diagram; `importActions(bytes)`
 //!   and `importProof(bytes)` do the same with a file's contents.
 //! - `state()` is a JSON summary of the project and the job in progress (see [`Summary`]).
+//! - `sheet(json)` and `sheets()` choose a sheet over the diagram, as the keys do, and say what
+//!   the choices are (see `diagram_svg::sheets`).
 //! - `layouts()` is a JSON summary of the layouts of diagrams that were made and where (see
 //!   `layout::summary`); `window.__homotopy_layout_delay_ms` makes each layout in the worker take
 //!   at least that long, and `window.__homotopy_layout_worker` does for the layout worker what
@@ -466,6 +468,22 @@ pub fn install(link: &Scope<App>) {
             Ok(())
         })
         .into_js_value(),
+    );
+
+    // `sheet(json)` chooses a sheet in the diagram under the pointer, as the keys do (`{"step":
+    // 1}`, `"drill"`, `"undrill"`, `"clear"`, `{"set": [z, ..]}`), or puts the pointer somewhere
+    // (`{"hover": [x, y]}`, in the window): it is done a moment later. `sheets()` is a JSON
+    // summary of the sheets there.
+    set(
+        "sheet",
+        Closure::<dyn Fn(String)>::new(move |json: String| {
+            super::diagram_svg::debug_command(&json);
+        })
+        .into_js_value(),
+    );
+    set(
+        "sheets",
+        Closure::<dyn Fn() -> String>::new(super::diagram_svg::debug_summary).into_js_value(),
     );
 
     let import = link.clone();
