@@ -47,7 +47,7 @@ use homotopy_core::{
 use super::{
     describe::CompositePart,
     inference::{Cells, Pool, MAX_COMPLETIONS, MAX_COMPLETION_NODES},
-    Signature,
+    Shortfall, Signature,
 };
 use crate::job::{Job, Progress};
 
@@ -81,6 +81,13 @@ pub enum ReplacementError {
     /// The replacement chosen for a placeholder has something where the type of another requires
     /// something else.
     Mismatch(Box<Mismatch>),
+    /// A replacement is required for an invertible or dualisable placeholder (by the replacement
+    /// chosen for `because`, or by its own choice if that is the placeholder) that is not as
+    /// invertible or dualisable: see [`Shortfall`].
+    NotInvertible {
+        because: Generator,
+        shortfall: Box<Shortfall>,
+    },
     /// A diagram of a replacement chosen has to be cut into the replacements of the cells of a
     /// composite, but cannot be.
     Uncuttable(Box<Uncuttable>),
@@ -281,6 +288,17 @@ impl Matcher<'_> {
                 proposed_because: root,
             }),
             None => {
+                // What replaces an invertible placeholder is invertible, however it came to be
+                // bound: chosen, or matched with a part of something chosen.
+                if let Err(shortfall) = self
+                    .signature
+                    .check_invertibility(self.parameters[index], &value)
+                {
+                    return Err(ReplacementError::NotInvertible {
+                        because: root,
+                        shortfall: Box::new(shortfall),
+                    });
+                }
                 state.bound[index] = Some((value, root));
                 Ok(())
             }
@@ -1480,6 +1498,22 @@ impl Signature {
                         self.describe(existing),
                         name(*proposed_because),
                         self.describe(proposed),
+                    )
+                }
+            }
+            ReplacementError::NotInvertible { because, shortfall } => {
+                if *because == placeholder && shortfall.placeholder == placeholder {
+                    self.describe_shortfall(shortfall)
+                } else {
+                    format!(
+                        "{}{} needs {} to be {}, but {} must be {} ({})",
+                        blame(&[*because]),
+                        name(*because),
+                        name(shortfall.placeholder),
+                        self.describe(&shortfall.value),
+                        name(shortfall.placeholder),
+                        shortfall.required.describe(),
+                        self.shortfall_reason(shortfall),
                     )
                 }
             }

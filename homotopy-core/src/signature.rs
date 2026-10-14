@@ -5,7 +5,7 @@ use crate::{
     Diagram, Diagram0, DiagramN, Generator,
 };
 
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
 pub enum Invertibility {
     Directed,
     Dualisable(usize),
@@ -36,6 +36,30 @@ impl Invertibility {
     #[must_use]
     pub const fn is_invertible(self) -> bool {
         !matches!(self, Self::Directed)
+    }
+
+    /// The invertibility of the unit and counit of a cell of this invertibility, which a cup or
+    /// cap of it is. A cell that is `k + 1` times dualisable has a dual whose unit and counit are
+    /// `k` times dualisable, and an invertible cell has invertible ones. A directed cell has no
+    /// cups and caps, and a cell that is dualisable once has them but they have no adjoints.
+    #[must_use]
+    pub const fn fold(self) -> Self {
+        match self {
+            Self::Invertible => Self::Invertible,
+            Self::Dualisable(k) if k > 0 => Self::Dualisable(k - 1),
+            Self::Dualisable(_) | Self::Directed => Self::Directed,
+        }
+    }
+
+    /// A short description of the level, as the settings show it: `Dualisable(k)` is `k + 1`
+    /// times dualisable.
+    #[must_use]
+    pub fn describe(self) -> String {
+        match self {
+            Self::Directed => "directed".to_owned(),
+            Self::Dualisable(k) => format!("dualisable (level {})", k + 1),
+            Self::Invertible => "invertible".to_owned(),
+        }
     }
 }
 
@@ -140,5 +164,22 @@ impl SignatureBuilder {
         self.0
             .push(GeneratorData(generator, diagram.clone().into()));
         Ok(diagram)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Invertibility::{Directed, Dualisable, Invertible};
+
+    #[test]
+    fn the_unit_of_a_dualisable_cell_is_dualisable_one_level_less() {
+        assert_eq!(Invertible.fold(), Invertible);
+        assert_eq!(Dualisable(3).fold(), Dualisable(2));
+        assert_eq!(Dualisable(1).fold(), Dualisable(0));
+        assert_eq!(Dualisable(0).fold(), Directed);
+        assert_eq!(Directed.fold(), Directed);
+        // The levels are ordered by how much they allow.
+        assert!(Directed < Dualisable(0) && Dualisable(0) < Dualisable(1));
+        assert!(Dualisable(100) < Invertible);
     }
 }

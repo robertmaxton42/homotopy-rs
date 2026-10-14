@@ -78,6 +78,15 @@ pub enum SignatureEdit {
 pub enum SignatureError {
     #[error("generator cannot be marked as {0} because it is being used in an incompatible way")]
     Invertibility(Invertibility),
+    #[error(
+        "{placeholder} cannot be marked as {level}: it is replaced with a diagram that is not, in \
+         the instance {instance}"
+    )]
+    InvertibilityOfReplaced {
+        placeholder: String,
+        level: String,
+        instance: String,
+    },
     #[error("invalid symmetry: {0}")]
     InvalidSymmetry(&'static str),
     #[error("symmetry cannot be removed because it is being used")]
@@ -260,6 +269,40 @@ impl Signature {
         }
     }
 
+    /// Whether the placeholder at a node can be made invertible or dualisable to `level`: not if
+    /// an instance of a schema was made with a replacement for it that is not as invertible
+    /// (see [`check_invertibility`](Self::check_invertibility)).
+    fn check_replaced_as_invertible(
+        &self,
+        node: Node,
+        level: Invertibility,
+    ) -> Result<(), SignatureError> {
+        let Some(generator) = self.find_generator(node) else {
+            return Ok(());
+        };
+        let Some(info) = self.generator_info(generator) else {
+            return Ok(());
+        };
+        if generator.dimension == 0 || level <= info.invertibility {
+            return Ok(());
+        }
+        for instance in self.iter() {
+            let Some(made) = &instance.instance else {
+                continue;
+            };
+            for (p, replacement) in &made.substitution {
+                if *p == generator && replacement.falls_short_of(level, self).is_some() {
+                    return Err(SignatureError::InvertibilityOfReplaced {
+                        placeholder: info.name.clone(),
+                        level: level.describe(),
+                        instance: instance.name.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn remove(&mut self, generator: Generator) {
         if let Some(node) = self.find_node(generator) {
             self.tree.remove(node);
@@ -269,6 +312,11 @@ impl Signature {
     pub fn update(&mut self, edit: &SignatureEdit) -> Result<(), SignatureError> {
         match edit {
             SignatureEdit::Edit(node, edit) => {
+                // A placeholder that is made more invertible than the diagrams it was replaced
+                // with are would make those instances wrong.
+                if let SignatureItemEdit::MakeInvertible(level) = edit {
+                    self.check_replaced_as_invertible(*node, *level)?;
+                }
                 self.edit(*node, edit.clone());
 
                 // Intercept edit in order to update the whole signature.
