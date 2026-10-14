@@ -1382,6 +1382,17 @@ svg {
   color: red;
 }
 
+.account__unavailable p {
+  margin: 0 0 0.75em;
+  line-height: 1.4;
+}
+
+.account__unavailable-detail {
+  opacity: 0.6;
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+
 .account__projects-view-toggles-wrapper {
   display: flex;
 }

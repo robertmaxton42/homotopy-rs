@@ -233,6 +233,7 @@ impl App {
     /// Handles an action: does it now, or starts the job that does it.
     fn dispatch(&mut self, ctx: &Context<Self>, action: model::Action) -> bool {
         tracing::info!("Received action: {:?}", action);
+        crate::panic::note_action(&action);
 
         if self.refuse_while_busy(&action) {
             return false;
@@ -306,6 +307,9 @@ impl App {
         homotopy_core::collect_garbage();
 
         if matches!(result, Ok(true)) {
+            // What a crash from here on saves (see `panic`).
+            crate::panic::remember(self.state.proof());
+
             // Instantiations in progress may be of what is no longer there.
             let signature = self.state.history.proof().signature.clone();
             self.state.drafts.retain_valid(&signature);
@@ -698,6 +702,31 @@ impl App {
         self.before_unload = Some(before_unload);
     }
 
+    /// What follows from trying to download the project that the page's URL names. If it cannot
+    /// be (Firebase may be blocked, or the person offline), the URL is reset and they are told,
+    /// and the app starts empty as for any other address.
+    fn opened_from_url(
+        result: Result<(account::RemoteProjectMetadata, Vec<u8>), account::CloudError>,
+    ) -> Vec<Message> {
+        match result {
+            Ok((project, blob)) => vec![
+                Message::Dispatch(model::Action::SetRemoteProjectMetadata(Some(project))),
+                Message::Dispatch(model::Action::Proof(model::proof::Action::ImportProof(
+                    blob.into(),
+                ))),
+            ],
+            Err(error) => {
+                tracing::warn!("Could not open the project from the address: {error}");
+                toast(Toast::error(format!(
+                    "Could not open the project at this address: {error}"
+                )));
+                // failed, reset the url
+                model::update_window_url_path("/");
+                Vec::default()
+            }
+        }
+    }
+
     // TODO: replace this with yew-router
     fn load_project_from_url_path(ctx: &Context<Self>) {
         let path_str = web_sys::window().unwrap().location().pathname().unwrap();
@@ -707,20 +736,7 @@ impl App {
             tracing::debug!("Load published project {}", path[1]);
             let tag = path[1].to_owned();
             ctx.link().send_future_batch(async move {
-                if let Some((project, blob)) =
-                    account::download_published_project(&tag, 1 /* TODO */).await
-                {
-                    vec![
-                        Message::Dispatch(model::Action::SetRemoteProjectMetadata(Some(project))),
-                        Message::Dispatch(model::Action::Proof(model::proof::Action::ImportProof(
-                            blob.into(),
-                        ))),
-                    ]
-                } else {
-                    // failed, reset the url
-                    model::update_window_url_path("/");
-                    Vec::default()
-                }
+                Self::opened_from_url(account::download_published_project(&tag, 1 /* TODO */).await)
             });
         } else if path[0] == "u" && path.len() == 3 {
             // Personal projects
@@ -728,18 +744,7 @@ impl App {
             let id = path[2].to_owned();
             tracing::debug!("Load personal project {uid}/{id}");
             ctx.link().send_future_batch(async move {
-                if let Some((project, blob)) = account::download_personal_project(&uid, &id).await {
-                    vec![
-                        Message::Dispatch(model::Action::SetRemoteProjectMetadata(Some(project))),
-                        Message::Dispatch(model::Action::Proof(model::proof::Action::ImportProof(
-                            blob.into(),
-                        ))),
-                    ]
-                } else {
-                    // failed, reset the url
-                    model::update_window_url_path("/");
-                    Vec::default()
-                }
+                Self::opened_from_url(account::download_personal_project(&uid, &id).await)
             });
         } else {
             model::update_window_url_path("/");

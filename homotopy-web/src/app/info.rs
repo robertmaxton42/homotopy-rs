@@ -152,23 +152,24 @@ pub fn get_about_message() -> Html {
 }
 
 pub fn get_panic_message() -> Html {
+    // What is in `#panic-recovery` is put there by `offer_recovery` in `index.html` when the
+    // crash happens, in plain JavaScript: nothing in it may rely on this wasm module working.
     html! {
         <div>
             <p>
                 {"It appears you have found an unexpected bug in our tool. Many apologies for the poor experience."}
             </p>
+            <div id="panic-recovery">
+                <p>{"Recovering your project..."}</p>
+            </div>
             <p>
-                {"We would be extremely grateful if you could report this issue."}
-            </p>
-            <p>
-                {"The process is rather straightforward: the button below will download a file containing some debugging information for us, you can attach it in a new issue in our "}
+                {"We would be extremely grateful if you could report this issue. The bug report above has what we need to find it; you can attach it in a new issue in our "}
                 <a href="https://github.com/homotopy-io/homotopy-rs/issues">{"GitHub tracker"}</a>
-                {", alongside a brief description of what your were doing."}
+                {", alongside a brief description of what you were doing."}
             </p>
             <p>
                 {"We'll fix the problem in no time!"}
             </p>
-            <button onclick={move |_| {crate::panic::export_dump(false).unwrap();}}>{"Download action logs"}</button>
         </div>
     }
 }

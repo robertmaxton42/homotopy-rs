@@ -14,6 +14,8 @@
 //! - `window.__homotopy_step_delay_ms`, if set, makes every step of a job take at least that long,
 //!   to make jobs slow enough to test with (also those done in the worker, which is told when
 //!   it is given the job).
+//! - `crash("panic")` panics in the app and `crash("throw")` calls JavaScript that throws and
+//!   nothing catches, to test the crash screen and recovering the project (see `panic`).
 //! - `window.__homotopy_worker` can be set to `"off"` before the app starts to do without the
 //!   worker, and to `"crash"` to have the first job given to it panic there, to test falling back.
 
@@ -298,6 +300,15 @@ fn profile_layouts(state: &model::State) -> String {
     serde_json::to_string(&timings).unwrap()
 }
 
+#[wasm_bindgen::prelude::wasm_bindgen(
+    inline_js = "export function throw_from_js() { throw new Error('thrown by the debug hooks'); }"
+)]
+extern "C" {
+    /// An import that throws and is not `catch`: what it does to the app is what a binding that
+    /// was not meant to throw does when it does.
+    fn throw_from_js();
+}
+
 pub fn install(link: &Scope<App>) {
     let window = web_sys::window().unwrap();
     let hooks = js_sys::Object::new();
@@ -377,6 +388,15 @@ pub fn install(link: &Scope<App>) {
                 proof::DraftEdit::Fill(schema, placeholder, diagram),
             )));
             Ok(())
+        })
+        .into_js_value(),
+    );
+
+    set(
+        "crash",
+        Closure::<dyn Fn(String)>::new(|kind: String| match kind.as_str() {
+            "throw" => throw_from_js(),
+            _ => panic!("crash(\"panic\") from the debug hooks"),
         })
         .into_js_value(),
     );

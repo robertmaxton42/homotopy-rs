@@ -67,9 +67,9 @@ pub enum Msg {
     ProjectsFetched(ProjectCollection),
     SaveProject,
     SaveNewProject,
-    ProjectSaved(Option<RemoteProjectMetadata>),
+    ProjectSaved(Result<RemoteProjectMetadata, CloudError>),
     PublishProject(String),
-    ProjectPublished(Option<PublishResult>),
+    ProjectPublished(Result<PublishResult, CloudError>),
     PublishProjectVersion(String),
     SetPublic(String, bool),
     ProjectPublicChanged(String, bool),
@@ -79,6 +79,12 @@ pub enum Msg {
     OpenPublishedProject(String, u64),
     ProjectDownloaded((RemoteProjectMetadata, Vec<u8>)),
     Resolved(Toast),
+    /// Tries to load Firebase again (see `static/firebase.js`).
+    Retry,
+    /// What came of that: why Firebase is still not available, or `None` if it is now.
+    Retried(Option<CloudError>),
+    /// The sign-in buttons could not be started.
+    SignInFailed(CloudError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,7 +104,54 @@ pub struct AccountView {
     projects: ProjectCollection,
     projects_view: ProjectsView,
     status: OperationStatus,
+    /// Why Firebase is not available, if it is not. It is not there for people who block
+    /// gstatic.com or are offline, and then the drawer says so and nothing else is attempted.
+    unavailable: Option<CloudError>,
+    retrying: bool,
+    sign_in_failed: Option<CloudError>,
 }
+
+/// An error from Firebase, or from there being none, as something to tell the person.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudError(String);
+
+impl CloudError {
+    fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+impl fmt::Display for CloudError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<JsValue> for CloudError {
+    /// Errors from Firebase are objects with a `message`; others are whatever was thrown.
+    fn from(value: JsValue) -> Self {
+        let message = js_sys::Reflect::get(&value, &JsValue::from_str("message"))
+            .ok()
+            .and_then(|message| message.as_string())
+            .or_else(|| value.as_string())
+            .unwrap_or_else(|| format!("{value:?}"));
+        Self(message)
+    }
+}
+
+impl From<serde_wasm_bindgen::Error> for CloudError {
+    fn from(error: serde_wasm_bindgen::Error) -> Self {
+        Self(error.to_string())
+    }
+}
+
+/// Why Firebase is not available, or `None` if it is: whether its scripts could be loaded and it
+/// started. Nothing here can throw.
+pub fn cloud_unavailable() -> Option<CloudError> {
+    cloud_error().map(CloudError::new)
+}
+
+type CloudResult<T> = Result<T, CloudError>;
 
 impl Component for AccountView {
     type Message = Msg;
@@ -112,11 +165,17 @@ impl Component for AccountView {
             projects: ProjectCollection::default(),
             projects_view: ProjectsView::Personal,
             status: OperationStatus::Updating,
+            unavailable: cloud_unavailable(),
+            retrying: false,
+            sign_in_failed: None,
         }
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        if let Some(userdata) = firebase().auth().current_user() {
+        if let Some(reason) = &self.unavailable {
+            return self.unavailable_view(ctx, reason);
+        }
+        if let Some(userdata) = current_user().ok().flatten() {
             let user_icon = if let Some(url) = &userdata.photo_url() {
                 html! {
                     <img
@@ -187,7 +246,7 @@ impl Component for AccountView {
                             .remote_project_metadata
                             .as_ref()
                             .map(|meta| meta.uid.clone())
-                            == firebase().auth().current_user().map(|user| user.uid()) =>
+                            == user_id().ok() =>
                     {
                         html! {
                             <button onclick={ctx.link().callback(move |_| Msg::PublishProjectVersion(id.clone()))}>{"Publish new version"}</button>
@@ -237,24 +296,37 @@ impl Component for AccountView {
                 </>
             }
         } else {
+            let sign_in_failed = self.sign_in_failed.as_ref().map(|error| {
+                html! {
+                    <p class="account__unavailable-detail">
+                        {format!("The sign-in options could not be shown: {error}")}
+                    </p>
+                }
+            });
             html! {
                 <div>
                     <span>{"You are not logged in. Please try the following methods."}</span>
                     <div id="firebaseui-auth-container"></div>
+                    {sign_in_failed}
                 </div>
             }
         }
     }
 
     fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
-        if firebase().auth().current_user().is_none() {
+        if self.unavailable.is_some() || self.sign_in_failed.is_some() {
+            return;
+        }
+        if current_user().ok().flatten().is_none() {
             let logged_in_cb = ctx
                 .link()
                 .callback(|()| Msg::Resolved(Toast::success("Logged in")));
             let logged_in_cb_js = Closure::once_into_js(move || {
                 logged_in_cb.emit(());
             });
-            init_ui(logged_in_cb_js);
+            if let Err(error) = init_ui(logged_in_cb_js) {
+                ctx.link().send_message(Msg::SignInFailed(error.into()));
+            }
         }
     }
 
@@ -267,22 +339,54 @@ impl Component for AccountView {
         match msg {
             Msg::LogOut => {
                 ctx.link().send_future(async {
-                    firebase().auth().sign_out().await;
-                    Msg::Resolved(Toast::success("Logged out"))
+                    match sign_out().await {
+                        Ok(()) => Msg::Resolved(Toast::success("Logged out")),
+                        Err(error) => {
+                            Msg::Resolved(Toast::error(format!("Failed to log out: {error}")))
+                        }
+                    }
                 });
                 false
+            }
+            Msg::Retry => {
+                self.retrying = true;
+                ctx.link()
+                    .send_future(async { Msg::Retried(try_again().await) });
+                true
+            }
+            Msg::Retried(reason) => {
+                self.retrying = false;
+                self.sign_in_failed = None;
+                self.unavailable = reason;
+                if self.unavailable.is_none() {
+                    toast(Toast::success("Cloud storage is available"));
+                    ctx.link().send_message(Msg::FetchProjects);
+                }
+                true
+            }
+            Msg::SignInFailed(error) => {
+                tracing::warn!("Failed to start the sign-in options: {error}");
+                self.sign_in_failed = Some(error);
+                true
             }
             Msg::SetProjectsView(view) => {
                 self.projects_view = view;
                 true
             }
             Msg::FetchProjects => {
+                // Without Firebase, or logged out, there is nothing to fetch, and nothing to
+                // complain about.
+                if self.unavailable.is_some() || user_id().is_err() {
+                    self.status = OperationStatus::Succeeded;
+                    return false;
+                }
                 self.status = OperationStatus::Updating;
                 ctx.link().send_future(async {
-                    if let Some(collection) = fetch_user_projects().await {
-                        Msg::ProjectsFetched(collection)
-                    } else {
-                        Msg::Resolved(Toast::error("Failed to fetch projects"))
+                    match fetch_user_projects().await {
+                        Ok(collection) => Msg::ProjectsFetched(collection),
+                        Err(error) => Msg::Resolved(Toast::error(format!(
+                            "Failed to fetch projects: {error}"
+                        ))),
                     }
                 });
                 false
@@ -309,9 +413,12 @@ impl Component for AccountView {
                 self.status = OperationStatus::Updating;
                 let proof = ctx.props().proof.inner().deref().clone();
                 ctx.link().send_future_batch(async {
-                    let id = fresh_id().await;
+                    let saved = match fresh_id().await {
+                        Ok(id) => save_project(&id, proof).await,
+                        Err(error) => Err(error),
+                    };
                     vec![
-                        Msg::ProjectSaved(save_project(&id, proof).await),
+                        Msg::ProjectSaved(saved),
                         Msg::FetchProjects, // TODO: fetch only the new project instead of everything
                     ]
                 });
@@ -319,30 +426,36 @@ impl Component for AccountView {
             }
             Msg::ProjectSaved(new_remote_metadata) => {
                 // Show successful save
-                if let Some(metadata) = new_remote_metadata {
-                    tracing::debug!("project saved successfully");
-                    self.status = OperationStatus::Succeeded;
-                    toast(Toast::success("Project saved successfully"));
-                    set_remote_project_metadata.emit(Some(metadata));
-                } else {
-                    self.status = OperationStatus::Failed;
-                    toast(Toast::error("Project save failed"));
+                match new_remote_metadata {
+                    Ok(metadata) => {
+                        tracing::debug!("project saved successfully");
+                        self.status = OperationStatus::Succeeded;
+                        toast(Toast::success("Project saved successfully"));
+                        set_remote_project_metadata.emit(Some(metadata));
+                    }
+                    Err(error) => {
+                        self.status = OperationStatus::Failed;
+                        toast(Toast::error(format!("Project save failed: {error}")));
+                    }
                 }
                 true
             }
             Msg::PublishProject(id) => {
                 self.status = OperationStatus::Updating;
                 ctx.link().send_future(async move {
-                    let raw = publish_project(&id).await;
-                    tracing::debug!("publish result: {:?}", &raw);
-                    let res: Option<Wrapped<PublishResult>> =
-                        serde_wasm_bindgen::from_value(raw).ok();
-                    Msg::ProjectPublished(res.map(|wrapped| wrapped.data))
+                    let res = async {
+                        let raw = publish_project(&id).await?;
+                        tracing::debug!("publish result: {:?}", &raw);
+                        let wrapped: Wrapped<PublishResult> = serde_wasm_bindgen::from_value(raw)?;
+                        CloudResult::Ok(wrapped.data)
+                    }
+                    .await;
+                    Msg::ProjectPublished(res)
                 });
                 false
             }
             Msg::ProjectPublished(res) => {
-                if let Some(res) = res {
+                if let Ok(res) = res {
                     self.status = OperationStatus::Succeeded;
                     toast(Toast::success(format!(
                         "Project published: {}v{}",
@@ -355,9 +468,9 @@ impl Component for AccountView {
                         m
                     });
                     set_remote_project_metadata.emit(meta);
-                } else {
+                } else if let Err(error) = res {
                     self.status = OperationStatus::Failed;
-                    toast(Toast::error("Project publish failed"));
+                    toast(Toast::error(format!("Project publish failed: {error}")));
                 }
                 true
             }
@@ -365,16 +478,26 @@ impl Component for AccountView {
                 self.status = OperationStatus::Updating;
                 let proof = ctx.props().proof.inner().deref().clone();
                 ctx.link().send_future(async move {
-                    publish_project_version(&tag, proof).await.unwrap();
-                    Msg::Resolved(Toast::success(format!("New version published: {tag}")))
+                    match publish_project_version(&tag, proof).await {
+                        Ok(()) => {
+                            Msg::Resolved(Toast::success(format!("New version published: {tag}")))
+                        }
+                        Err(error) => Msg::Resolved(Toast::error(format!(
+                            "Failed to publish a new version: {error}"
+                        ))),
+                    }
                 });
                 false
             }
             Msg::SetPublic(id, public) => {
                 self.status = OperationStatus::Updating;
                 ctx.link().send_future(async move {
-                    set_public(&id, public).await;
-                    Msg::ProjectPublicChanged(id, public)
+                    match set_public(&id, public).await {
+                        Ok(()) => Msg::ProjectPublicChanged(id, public),
+                        Err(error) => Msg::Resolved(Toast::error(format!(
+                            "Failed to change whether {id} is public: {error}"
+                        ))),
+                    }
                 });
                 false
             }
@@ -408,8 +531,12 @@ impl Component for AccountView {
             Msg::DeleteProject(id) => {
                 self.status = OperationStatus::Updating;
                 ctx.link().send_future(async move {
-                    delete_project(&id).await;
-                    Msg::ProjectDeleted(id.clone())
+                    match delete_project(&id).await {
+                        Ok(()) => Msg::ProjectDeleted(id.clone()),
+                        Err(error) => {
+                            Msg::Resolved(Toast::error(format!("Failed to delete {id}: {error}")))
+                        }
+                    }
                 });
                 false
             }
@@ -425,10 +552,11 @@ impl Component for AccountView {
             Msg::OpenPersonalProject(uid, id) => {
                 self.status = OperationStatus::Updating;
                 ctx.link().send_future(async move {
-                    if let Some((project, blob)) = download_personal_project(&uid, &id).await {
-                        Msg::ProjectDownloaded((project, blob))
-                    } else {
-                        Msg::Resolved(Toast::error("Failed to download project"))
+                    match download_personal_project(&uid, &id).await {
+                        Ok((project, blob)) => Msg::ProjectDownloaded((project, blob)),
+                        Err(error) => Msg::Resolved(Toast::error(format!(
+                            "Failed to download project: {error}"
+                        ))),
                     }
                 });
                 false
@@ -436,10 +564,11 @@ impl Component for AccountView {
             Msg::OpenPublishedProject(id, version) => {
                 self.status = OperationStatus::Updating;
                 ctx.link().send_future(async move {
-                    if let Some((project, blob)) = download_published_project(&id, version).await {
-                        Msg::ProjectDownloaded((project, blob))
-                    } else {
-                        Msg::Resolved(Toast::error("Failed to download project"))
+                    match download_published_project(&id, version).await {
+                        Ok((project, blob)) => Msg::ProjectDownloaded((project, blob)),
+                        Err(error) => Msg::Resolved(Toast::error(format!(
+                            "Failed to download project: {error}"
+                        ))),
                     }
                 });
                 false
@@ -485,6 +614,30 @@ struct Wrapped<T> {
 }
 
 impl AccountView {
+    /// What the drawer says when Firebase could not be loaded or started: that it is not the
+    /// person's work that is at fault, why, and how to try again without losing it.
+    fn unavailable_view(&self, ctx: &Context<Self>, reason: &CloudError) -> Html {
+        html! {
+            <div class="account__unavailable">
+                <p><strong>{"Cloud storage is unavailable"}</strong></p>
+                <p>
+                    {"Firebase couldn't be loaded (perhaps it is blocked by an extension, or you \
+                      are offline). Your work here is unaffected."}
+                </p>
+                <p>
+                    {"If you allow gstatic.com for this page, press Retry: the page does not have \
+                      to be reloaded. (Reloading would lose what has not been exported.)"}
+                </p>
+                <button
+                    onclick={ctx.link().callback(|_| Msg::Retry)}
+                    disabled={self.retrying}>
+                    { if self.retrying { "Retrying..." } else { "Retry" } }
+                </button>
+                <p class="account__unavailable-detail">{reason.to_string()}</p>
+            </div>
+        }
+    }
+
     fn user_projects_list(&self, ctx: &Context<Self>) -> Html {
         let current_project_id = ctx
             .props()
@@ -608,8 +761,36 @@ fn format_timestamp(seconds: u64) -> String {
     dt.format("%F %H:%M").to_string()
 }
 
-fn user_id() -> Option<String> {
-    firebase().auth().current_user().map(|user| user.uid())
+fn firestore() -> CloudResult<Firestore> {
+    Ok(get_firebase()?.firestore()?)
+}
+
+fn storage() -> CloudResult<Storage> {
+    Ok(get_firebase()?.storage()?)
+}
+
+fn current_user() -> CloudResult<Option<User>> {
+    Ok(get_firebase()?.auth()?.current_user()?)
+}
+
+fn user_id() -> CloudResult<String> {
+    current_user()?
+        .map(|user| user.uid())
+        .ok_or_else(|| CloudError::new("you are not logged in"))
+}
+
+async fn sign_out() -> CloudResult<()> {
+    get_firebase()?.auth()?.sign_out().await?;
+    Ok(())
+}
+
+/// Loads Firebase again, if it could not be loaded: `None` if it is now available, and why not
+/// if it is not.
+async fn try_again() -> Option<CloudError> {
+    match retry_cloud().await {
+        Ok(reason) => reason.as_string().map(CloudError::new),
+        Err(error) => Some(error.into()),
+    }
 }
 
 fn project_id(ctx: &Context<AccountView>) -> Option<String> {
@@ -619,90 +800,86 @@ fn project_id(ctx: &Context<AccountView>) -> Option<String> {
         .map(|metadata| metadata.id.clone())
 }
 
-async fn fresh_id() -> String {
+async fn fresh_id() -> CloudResult<String> {
     // get an id from the server
-    let uid = user_id().unwrap();
+    let uid = user_id()?;
     tracing::debug!("getting fresh project id");
-    let docref = firebase()
-        .firestore()
-        .collection(format!("personal-rs/{uid}/projects").as_str())
+    let docref = firestore()?
+        .collection(format!("personal-rs/{uid}/projects").as_str())?
         .add(js_sys::Object::new().into())
-        .await;
+        .await?;
     let x: &DocumentReference = docref.as_ref().unchecked_ref();
     let id = x.id();
     tracing::debug!("got fresh id: {}", id);
-    id
+    Ok(id)
 }
 
-async fn fetch_personal_project(uid: &str, id: &str) -> Option<RemoteProjectMetadata> {
-    let ds = firebase()
-        .firestore()
-        .doc(&format!("personal-rs/{uid}/projects/{id}"))
+async fn fetch_personal_project(uid: &str, id: &str) -> CloudResult<RemoteProjectMetadata> {
+    let ds = firestore()?
+        .doc(&format!("personal-rs/{uid}/projects/{id}"))?
         .get()
-        .await
+        .await?
         .unchecked_into::<DocumentSnapshot>();
-    ds.exists()
-        .then(|| {
-            let decoded = serde_wasm_bindgen::from_value::<PersonalRecord>(ds.data()).ok()?;
-            Some(RemoteProjectMetadata {
-                id: id.to_owned(),
-                uid: uid.to_owned(),
-                title: decoded.title,
-                author: decoded.author,
-                abstr: decoded.r#abstract,
-                visibility: if decoded.public {
-                    ProjectVisibility::Public
-                } else {
-                    ProjectVisibility::Private
-                },
-                updated: decoded.updated.seconds,
-                version: None,
-            })
-        })
-        .flatten()
+    if !ds.exists() {
+        return Err(CloudError::new(format!("there is no project {id}")));
+    }
+    let decoded = serde_wasm_bindgen::from_value::<PersonalRecord>(ds.data())?;
+    Ok(RemoteProjectMetadata {
+        id: id.to_owned(),
+        uid: uid.to_owned(),
+        title: decoded.title,
+        author: decoded.author,
+        abstr: decoded.r#abstract,
+        visibility: if decoded.public {
+            ProjectVisibility::Public
+        } else {
+            ProjectVisibility::Private
+        },
+        updated: decoded.updated.seconds,
+        version: None,
+    })
 }
 
-async fn fetch_published_project(id: &str, version: u64) -> Option<RemoteProjectMetadata> {
-    let uid = firebase()
-        .firestore()
-        .doc(&format!("published-rs/{id}"))
+async fn fetch_published_project(id: &str, version: u64) -> CloudResult<RemoteProjectMetadata> {
+    let uid = firestore()?
+        .doc(&format!("published-rs/{id}"))?
         .get()
-        .await
+        .await?
         .unchecked_into::<DocumentSnapshot>()
         .get("uid")
-        .as_string()?;
-    let ds = firebase()
-        .firestore()
-        .doc(&format!("published-rs/{id}/versions/v{version}"))
+        .as_string()
+        .ok_or_else(|| CloudError::new(format!("there is no published project {id}")))?;
+    let ds = firestore()?
+        .doc(&format!("published-rs/{id}/versions/v{version}"))?
         .get()
-        .await
+        .await?
         .unchecked_into::<DocumentSnapshot>();
-    ds.exists()
-        .then(|| {
-            let decoded = serde_wasm_bindgen::from_value::<PublishedRecord>(ds.data()).ok()?;
-            Some(RemoteProjectMetadata {
-                id: id.to_owned(),
-                uid,
-                title: decoded.title,
-                author: decoded.author,
-                abstr: decoded.r#abstract,
-                visibility: ProjectVisibility::Published,
-                updated: decoded.created.seconds,
-                version: Some(version),
-            })
-        })
-        .flatten()
+    if !ds.exists() {
+        return Err(CloudError::new(format!(
+            "there is no version {version} of {id}"
+        )));
+    }
+    let decoded = serde_wasm_bindgen::from_value::<PublishedRecord>(ds.data())?;
+    Ok(RemoteProjectMetadata {
+        id: id.to_owned(),
+        uid,
+        title: decoded.title,
+        author: decoded.author,
+        abstr: decoded.r#abstract,
+        visibility: ProjectVisibility::Published,
+        updated: decoded.created.seconds,
+        version: Some(version),
+    })
 }
 
 #[allow(clippy::cognitive_complexity)]
-async fn fetch_user_projects() -> Option<ProjectCollection> {
+async fn fetch_user_projects() -> CloudResult<ProjectCollection> {
     let uid = user_id()?;
-    let personal = firebase()
-        .firestore()
-        .collection(&format!("personal-rs/{uid}/projects"))
-        .order_by("updated", "desc")
+    let personal = firestore()?
+        .collection(&format!("personal-rs/{uid}/projects"))?
+        .order_by("updated", "desc")?
         .get()
-        .await
+        .await?
         .unchecked_into::<QuerySnapshot>()
         .docs()
         .into_iter()
@@ -728,54 +905,60 @@ async fn fetch_user_projects() -> Option<ProjectCollection> {
     tracing::debug!("personal collection: {:?}", &personal);
 
     let published_ids: Vec<String> = serde_wasm_bindgen::from_value(
-        firebase()
-            .firestore()
-            .doc(&format!("personal-rs/{uid}"))
+        firestore()?
+            .doc(&format!("personal-rs/{uid}"))?
             .get()
-            .await
+            .await?
             .unchecked_into::<DocumentSnapshot>()
             .get("published"),
     )
     .unwrap_or_default();
     tracing::debug!("published ids: {:?}", &published_ids);
-    let published = join_all(published_ids.into_iter().map(|id| async move {
-        let versions = &firebase()
-            .firestore()
-            .collection(&format!("published-rs/{id}/versions"))
-            .order_by("created", "desc")
-            .get()
-            .await
-            .unchecked_into::<QuerySnapshot>()
-            .docs();
-        versions
-            .iter()
-            .map(|v| {
-                let version = Some(v.id()[1..].parse().ok()?);
-                let data = v.data();
-                tracing::debug!("data: {:?}", &data);
-                let decoded = serde_wasm_bindgen::from_value::<PublishedRecord>(data).ok()?;
-                tracing::debug!("decoded: {:?}", &decoded);
-                Some(RemoteProjectMetadata {
-                    id: id.clone(),
-                    uid: user_id()?,
-                    title: decoded.title,
-                    author: decoded.author,
-                    abstr: decoded.r#abstract,
-                    visibility: ProjectVisibility::Published,
-                    updated: decoded.created.seconds,
-                    version,
-                })
-            })
-            .collect::<Vec<_>>()
+    let published = join_all(published_ids.into_iter().map(|id| {
+        let uid = uid.clone();
+        async move {
+            let versions = firestore()?
+                .collection(&format!("published-rs/{id}/versions"))?
+                .order_by("created", "desc")?
+                .get()
+                .await?
+                .unchecked_into::<QuerySnapshot>()
+                .docs();
+            CloudResult::Ok(
+                versions
+                    .iter()
+                    .map(|v| {
+                        let version = Some(v.id()[1..].parse().ok()?);
+                        let data = v.data();
+                        tracing::debug!("data: {:?}", &data);
+                        let decoded =
+                            serde_wasm_bindgen::from_value::<PublishedRecord>(data).ok()?;
+                        tracing::debug!("decoded: {:?}", &decoded);
+                        Some(RemoteProjectMetadata {
+                            id: id.clone(),
+                            uid: uid.clone(),
+                            title: decoded.title,
+                            author: decoded.author,
+                            abstr: decoded.r#abstract,
+                            visibility: ProjectVisibility::Published,
+                            updated: decoded.created.seconds,
+                            version,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
     }))
     .await
+    .into_iter()
+    .collect::<CloudResult<Vec<_>>>()?
     .into_iter()
     .flatten()
     .flatten()
     .collect();
     tracing::debug!("published collection: {:?}", &published);
 
-    Some(ProjectCollection {
+    Ok(ProjectCollection {
         personal,
         published,
     })
@@ -795,22 +978,19 @@ struct CustomMetadata {
     r#abstract: String,
 }
 
-async fn save_project(id: &str, proof: ProofState) -> Option<RemoteProjectMetadata> {
-    // get destination path
-    tracing::debug!("Saving project {id}");
-    let uid = user_id().unwrap();
-    let path = format!("personal-rs/{uid}/projects/{id}.hom");
-    let storage = firebase().storage();
-    let storageref = storage.storage_ref(&path);
+/// Uploads a project to `path` in storage, with its metadata. Returns the metadata, with the
+/// author filled in with the user's name if there was none.
+async fn upload_project(path: &str, proof: ProofState) -> CloudResult<model::proof::Metadata> {
+    let storageref = storage()?.storage_ref(path)?;
     tracing::debug!("got path: {:?}", storageref);
 
     let mut metadata = proof.metadata;
 
     // Author is filled in with user's name if applicable
     metadata.author = metadata.author.or_else(|| {
-        firebase()
-            .auth()
-            .current_user()
+        current_user()
+            .ok()
+            .flatten()
             .as_ref()
             .and_then(User::display_name)
     });
@@ -829,11 +1009,20 @@ async fn save_project(id: &str, proof: ProofState) -> Option<RemoteProjectMetada
     tracing::debug!("upload metadata: {:?}", upload_metadata);
     let task = storageref.put_with_metadata(
         Uint8Array::from(blob.as_slice()).into(),
-        serde_wasm_bindgen::to_value(&upload_metadata).expect("failed to set custom metadata"),
-    );
-    task.then(JsValue::null(), JsValue::null()).await;
+        serde_wasm_bindgen::to_value(&upload_metadata)?,
+    )?;
+    task.then(JsValue::null(), JsValue::null()).await?;
+    Ok(metadata)
+}
 
-    Some(RemoteProjectMetadata {
+async fn save_project(id: &str, proof: ProofState) -> CloudResult<RemoteProjectMetadata> {
+    // get destination path
+    tracing::debug!("Saving project {id}");
+    let uid = user_id()?;
+    let path = format!("personal-rs/{uid}/projects/{id}.hom");
+    let metadata = upload_project(&path, proof).await?;
+
+    Ok(RemoteProjectMetadata {
         id: id.to_owned(),
         uid: uid.clone(),
         title: metadata.title.unwrap_or_default(),
@@ -845,121 +1034,91 @@ async fn save_project(id: &str, proof: ProofState) -> Option<RemoteProjectMetada
     })
 }
 
-async fn publish_project_version(tag: &str, proof: ProofState) -> Option<()> {
+async fn publish_project_version(tag: &str, proof: ProofState) -> CloudResult<()> {
     // get destination path
     let path = format!("published-rs/{tag}/versions/new.hom");
-    let storage = firebase().storage();
-    let storageref = storage.storage_ref(&path);
-    tracing::debug!("got path: {:?}", storageref);
-
-    let mut metadata = proof.metadata;
-
-    // Author is filled in with user's name if applicable
-    metadata.author = metadata.author.or_else(|| {
-        firebase()
-            .auth()
-            .current_user()
-            .as_ref()
-            .and_then(User::display_name)
-    });
-
-    let blob = model::serialize::serialize(proof.signature, proof.workspace, metadata.clone());
-
-    let upload_metadata = UploadMetadata {
-        content_type: "application/msgpack",
-        custom_metadata: CustomMetadata {
-            title: metadata.title.clone().unwrap_or_default(),
-            author: metadata.author.clone().unwrap_or_default(),
-            r#abstract: metadata.abstr.clone().unwrap_or_default(),
-        },
-    };
-
-    tracing::debug!("upload metadata: {:?}", upload_metadata);
-    let task = storageref.put_with_metadata(
-        Uint8Array::from(blob.as_slice()).into(),
-        serde_wasm_bindgen::to_value(&upload_metadata).expect("failed to set custom metadata"),
-    );
-    task.then(JsValue::null(), JsValue::null()).await;
-
-    Some(())
+    upload_project(&path, proof).await?;
+    Ok(())
 }
 
-async fn delete_project(id: &str) {
+async fn delete_project(id: &str) -> CloudResult<()> {
     tracing::debug!("Deleting {id}");
-    let uid = user_id().unwrap();
+    let uid = user_id()?;
     let path = format!("personal-rs/{uid}/projects/{id}.hom");
-    let storage = firebase().storage();
-    let storageref = storage.storage_ref(&path);
+    let storageref = storage()?.storage_ref(&path)?;
     tracing::debug!("got path: {:?}", storageref);
 
-    storageref.delete().await;
+    storageref.delete().await?;
+    Ok(())
 }
 
+/// The metadata and file of a personal project. Also used to open one from its URL when the page
+/// loads, so this is where Firebase being unavailable is first noticed.
 pub(super) async fn download_personal_project(
     uid: &str,
     id: &str,
-) -> Option<(RemoteProjectMetadata, Vec<u8>)> {
+) -> CloudResult<(RemoteProjectMetadata, Vec<u8>)> {
     tracing::debug!("Downloading {id}");
     let path = format!("personal-rs/{uid}/projects/{id}.hom");
-    let storage = firebase().storage();
-    let storageref = storage.storage_ref(&path);
-    let url = storageref
-        .get_download_url()
-        .await
-        .ok()?
-        .as_string()
-        .unwrap();
-    tracing::debug!("got download URL: {url}");
-
+    let url = download_url(&path).await?;
     let blob = download(&url).await?;
     let project = fetch_personal_project(uid, id).await?;
-    Some((project, blob))
+    Ok((project, blob))
 }
 
 pub(super) async fn download_published_project(
     tag: &str,
     version: u64,
-) -> Option<(RemoteProjectMetadata, Vec<u8>)> {
+) -> CloudResult<(RemoteProjectMetadata, Vec<u8>)> {
     tracing::debug!("Downloading {tag}v{version}");
     let path = format!("published-rs/{tag}/versions/v{version}.hom");
-    let storage = firebase().storage();
-    let storageref = storage.storage_ref(&path);
-    let url = storageref
-        .get_download_url()
-        .await
-        .ok()?
-        .as_string()
-        .unwrap();
-    tracing::debug!("got download URL: {url}");
-
+    let url = download_url(&path).await?;
     let blob = download(&url).await?;
     let project = fetch_published_project(tag, version).await?;
-    Some((project, blob))
+    Ok((project, blob))
 }
 
-async fn download(url: &str) -> Option<Vec<u8>> {
+async fn download_url(path: &str) -> CloudResult<String> {
+    let url = storage()?
+        .storage_ref(path)?
+        .get_download_url()
+        .await?
+        .as_string()
+        .ok_or_else(|| CloudError::new("storage gave no download address"))?;
+    tracing::debug!("got download URL: {url}");
+    Ok(url)
+}
+
+async fn download(url: &str) -> CloudResult<Vec<u8>> {
     let opts = web_sys::RequestInit::new();
     opts.set_method("GET");
     opts.set_mode(web_sys::RequestMode::Cors);
-    let req = web_sys::Request::new_with_str_and_init(url, &opts).unwrap();
-    req.headers().set("Accept", "application/msgpack").unwrap();
-    let window = web_sys::window().unwrap();
+    let req = web_sys::Request::new_with_str_and_init(url, &opts)?;
+    req.headers().set("Accept", "application/msgpack")?;
+    let window = web_sys::window().ok_or_else(|| CloudError::new("there is no window"))?;
     let res: web_sys::Response = JsFuture::from(window.fetch_with_request(&req))
-        .await
-        .unwrap()
+        .await?
         .unchecked_into();
+    if !res.ok() {
+        return Err(CloudError::new(format!(
+            "the download failed ({} {})",
+            res.status(),
+            res.status_text()
+        )));
+    }
 
-    let array_buffer = JsFuture::from(res.array_buffer().ok()?).await.ok()?;
-    Some(Uint8Array::new(&array_buffer).to_vec())
+    let array_buffer = JsFuture::from(res.array_buffer()?).await?;
+    Ok(Uint8Array::new(&array_buffer).to_vec())
 }
 
-async fn set_public(id: &str, public: bool) {
+async fn set_public(id: &str, public: bool) -> CloudResult<()> {
     tracing::debug!("Making {id} {}", if public { "public" } else { "private" });
-    let uid = user_id().unwrap();
+    let uid = user_id()?;
     let path = format!("personal-rs/{uid}/projects/{id}");
-    let docref = firebase().firestore().doc(&path);
-    docref.update("public", public.into()).await;
+    let docref = firestore()?.doc(&path)?;
+    docref.update("public", public.into()).await?;
     tracing::debug!("done setting public");
+    Ok(())
 }
 
 #[wasm_bindgen]
@@ -1006,30 +1165,40 @@ impl Eq for User {}
 
 #[wasm_bindgen(module = "/src/app/account/account_script.js")]
 extern "C" {
+    /// Why Firebase is not available (its scripts were blocked or not loaded, or it could not
+    /// start), or `null` if it is. Everything below throws when it is not, so all of it is
+    /// imported with `catch`: a failure here is a message and not a crash.
+    #[wasm_bindgen(js_name = "cloudError")]
+    pub fn cloud_error() -> Option<String>;
+
+    /// Loads the Firebase scripts again, and resolves to what `cloud_error` is after that.
+    #[wasm_bindgen(catch, js_name = "retryCloud")]
+    pub async fn retry_cloud() -> Result<JsValue, JsValue>;
+
     #[derive(Debug, Clone)]
     pub type Firebase;
 
-    #[wasm_bindgen(js_name = "getFirebase")]
-    pub fn firebase() -> Firebase;
+    #[wasm_bindgen(catch, js_name = "getFirebase")]
+    pub fn get_firebase() -> Result<Firebase, JsValue>;
 
-    #[wasm_bindgen(method)]
-    pub fn auth(this: &Firebase) -> Auth;
+    #[wasm_bindgen(method, catch)]
+    pub fn auth(this: &Firebase) -> Result<Auth, JsValue>;
 
-    #[wasm_bindgen(method)]
-    pub fn firestore(this: &Firebase) -> Firestore;
+    #[wasm_bindgen(method, catch)]
+    pub fn firestore(this: &Firebase) -> Result<Firestore, JsValue>;
 
-    #[wasm_bindgen(method)]
-    pub fn storage(this: &Firebase) -> Storage;
+    #[wasm_bindgen(method, catch)]
+    pub fn storage(this: &Firebase) -> Result<Storage, JsValue>;
 
     // firebase.auth
     #[derive(Debug, Clone)]
     pub type Auth;
 
-    #[wasm_bindgen(method, getter, js_name = "currentUser")]
-    pub fn current_user(this: &Auth) -> Option<User>;
+    #[wasm_bindgen(method, getter, catch, js_name = "currentUser")]
+    pub fn current_user(this: &Auth) -> Result<Option<User>, JsValue>;
 
-    #[wasm_bindgen(method, js_name = "signOut")]
-    pub async fn sign_out(this: &Auth);
+    #[wasm_bindgen(method, catch, js_name = "signOut")]
+    pub async fn sign_out(this: &Auth) -> Result<JsValue, JsValue>;
 
     #[derive(Debug, Clone)]
     pub type User;
@@ -1050,40 +1219,39 @@ extern "C" {
     #[derive(Debug, Clone)]
     pub type Firestore;
 
-    #[wasm_bindgen(method)]
-    pub fn collection(this: &Firestore, collectionPath: &str) -> CollectionReference;
+    #[wasm_bindgen(method, catch)]
+    pub fn collection(
+        this: &Firestore,
+        collectionPath: &str,
+    ) -> Result<CollectionReference, JsValue>;
 
-    #[wasm_bindgen(method)]
-    pub fn doc(this: &Firestore, documentPath: &str) -> DocumentReference;
+    #[wasm_bindgen(method, catch)]
+    pub fn doc(this: &Firestore, documentPath: &str) -> Result<DocumentReference, JsValue>;
 
     #[derive(Debug, Clone)]
     pub type CollectionReference;
 
-    #[wasm_bindgen(method)]
-    pub async fn add(this: &CollectionReference, data: JsValue) -> JsValue /* DocumentReference */;
+    #[wasm_bindgen(method, catch)]
+    pub async fn add(this: &CollectionReference, data: JsValue) -> Result<JsValue, JsValue> /* DocumentReference */;
 
-    #[wasm_bindgen(method)]
-    pub async fn get(this: &CollectionReference) -> JsValue /* QuerySnapshot */;
+    #[wasm_bindgen(method, catch)]
+    pub async fn get(this: &CollectionReference) -> Result<JsValue, JsValue> /* QuerySnapshot */;
 
-    #[wasm_bindgen(method, js_name = "orderBy")]
-    pub fn order_by(this: &CollectionReference, fieldPath: &str, directionStr: &str) -> Query;
-
-    #[wasm_bindgen(method)]
-    pub fn r#where(
+    #[wasm_bindgen(method, catch, js_name = "orderBy")]
+    pub fn order_by(
         this: &CollectionReference,
         fieldPath: &str,
-        opStr: &str,
-        value: JsValue,
-    ) -> Query;
+        directionStr: &str,
+    ) -> Result<Query, JsValue>;
 
     #[derive(Debug, Clone)]
     pub type Query;
 
-    #[wasm_bindgen(method)]
-    pub async fn get(this: &Query) -> JsValue /* QuerySnapshot */;
+    #[wasm_bindgen(method, catch)]
+    pub async fn get(this: &Query) -> Result<JsValue, JsValue> /* QuerySnapshot */;
 
-    #[wasm_bindgen(method, js_name = "orderBy")]
-    pub fn order_by(this: &Query, fieldPath: &str, directionStr: &str) -> Query;
+    #[wasm_bindgen(method, catch, js_name = "orderBy")]
+    pub fn order_by(this: &Query, fieldPath: &str, directionStr: &str) -> Result<Query, JsValue>;
 
     #[derive(Debug, Clone)]
     pub type DocumentReference;
@@ -1091,11 +1259,15 @@ extern "C" {
     #[wasm_bindgen(method, getter)]
     pub fn id(this: &DocumentReference) -> String;
 
-    #[wasm_bindgen(method)]
-    pub async fn get(this: &DocumentReference) -> JsValue /* DocumentSnapshot */;
+    #[wasm_bindgen(method, catch)]
+    pub async fn get(this: &DocumentReference) -> Result<JsValue, JsValue> /* DocumentSnapshot */;
 
-    #[wasm_bindgen(method)]
-    pub async fn update(this: &DocumentReference, field: &str, value: JsValue);
+    #[wasm_bindgen(method, catch)]
+    pub async fn update(
+        this: &DocumentReference,
+        field: &str,
+        value: JsValue,
+    ) -> Result<JsValue, JsValue>;
 
     #[derive(Debug, Clone)]
     pub type DocumentSnapshot;
@@ -1131,34 +1303,39 @@ extern "C" {
     #[derive(Debug, Clone)]
     pub type Storage;
 
-    #[wasm_bindgen(method, js_name = "ref")]
-    pub fn storage_ref(this: &Storage, path: &str) -> Reference;
+    #[wasm_bindgen(method, catch, js_name = "ref")]
+    pub fn storage_ref(this: &Storage, path: &str) -> Result<Reference, JsValue>;
 
     #[derive(Debug, Clone)]
     pub type Reference;
 
-    #[wasm_bindgen(method)]
-    pub async fn delete(this: &Reference);
+    #[wasm_bindgen(method, catch)]
+    pub async fn delete(this: &Reference) -> Result<JsValue, JsValue>;
 
     #[wasm_bindgen(method, catch, js_name = "getDownloadURL")]
     pub async fn get_download_url(this: &Reference) -> Result<JsValue, JsValue> /* String */;
 
-    #[wasm_bindgen(method)]
-    pub fn put(this: &Reference, data: JsValue) -> UploadTask;
-
-    #[wasm_bindgen(method, js_name = "put")]
-    pub fn put_with_metadata(this: &Reference, data: JsValue, metadata: JsValue) -> UploadTask;
+    #[wasm_bindgen(method, catch, js_name = "put")]
+    pub fn put_with_metadata(
+        this: &Reference,
+        data: JsValue,
+        metadata: JsValue,
+    ) -> Result<UploadTask, JsValue>;
 
     #[derive(Debug, Clone)]
     pub type UploadTask;
 
-    #[wasm_bindgen(method)]
-    pub async fn then(this: &UploadTask, onFulfilled: JsValue, onRejected: JsValue) -> JsValue;
+    #[wasm_bindgen(method, catch)]
+    pub async fn then(
+        this: &UploadTask,
+        onFulfilled: JsValue,
+        onRejected: JsValue,
+    ) -> Result<JsValue, JsValue>;
 
     // firebaseui
-    #[wasm_bindgen(js_name = "initUI")]
-    pub fn init_ui(onSignInSuccessWithAuthResult: JsValue);
+    #[wasm_bindgen(catch, js_name = "initUI")]
+    pub fn init_ui(onSignInSuccessWithAuthResult: JsValue) -> Result<(), JsValue>;
 
-    #[wasm_bindgen(js_name = "publishPersonal")]
-    pub async fn publish_project(id: &str) -> JsValue;
+    #[wasm_bindgen(catch, js_name = "publishPersonal")]
+    pub async fn publish_project(id: &str) -> Result<JsValue, JsValue>;
 }

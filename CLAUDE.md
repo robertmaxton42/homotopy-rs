@@ -223,12 +223,49 @@ and check it with the debug hooks below.
   actions, timing each), `profileDrafts()`, `fillFromInstance("[schema, placeholder, instance,
   dimension]")` (each generator as `[id, dimension]`: chooses, as *Use workspace* does, the
   replacement of that dimension that an instance was made with, for diagrams that are hard to put
-  in the workspace, such as a cell whiskered by another). Setting `window.__homotopy_step_delay_ms = 50` makes
+  in the workspace, such as a cell whiskered by another), `crash("panic"|"throw")` (the crash
+  screen, see below). Setting `window.__homotopy_step_delay_ms = 50` makes
   every step of a job spin that long (also in the worker: the value is sent with each job), to
   have something slow to test with in a headless browser (watch `state().busy`, the
   `.busy__pill` element, send `Escape`). Timings of jobs are logged: "<label> took Nms in K steps
   (longest Mms)" in the page, "<label> took Nms in the worker: Wms working, Pms to prepare and Tms
   to take in the answer (A KB there, B KB back)" for the worker.
+
+## Firebase may not be there, and crashes must not lose work
+
+- **Firebase is optional.** It is only used for cloud storage (the Account drawer, and opening
+  `/p/<tag>` and `/u/<uid>/<id>` URLs). Its scripts come from gstatic.com (`index.html`, marked
+  `data-firebase`), which an extension (NoScript, uBlock) or being offline blocks. `static/firebase.js`
+  never throws: it records in `window.homotopyCloud` whether Firebase is `ready` or why not
+  (`error`); analytics and performance monitoring are optional and cannot stop it. Nothing in the
+  Rust code may assume it: every binding in `account.rs` is `catch` (a `Result`), the data layer
+  returns `CloudResult`, and failures are toasts. Before, `getFirebase()` threw `ReferenceError`
+  through wasm, which does not panic: Yew was left half way through its scheduler, so the app froze
+  with no crash screen. **Never add a Firebase binding without `catch`** (a rejected promise from a
+  non-`catch` async import is a panic).
+- The Account drawer says that cloud storage is unavailable, with *Retry*. Retry
+  (`window.homotopyCloudRetry`) inserts the missing scripts again (in order, `async = false`) and
+  initialises Firebase, so that someone who allows gstatic.com does not have to reload and lose
+  their work. Test it in headless Chromium by aborting `gstatic.com` with `page.route`, then routing
+  it to stub scripts that define `window.firebase` and `firebaseui` for the Retry that succeeds.
+- **Crash screen** (`panic.rs`, `index.html`). Before, the crash dump only had the last imported
+  file (the action log is disabled: `push_action` records nothing but imports), so everything done
+  since was lost. Now `App::updated` calls `panic::remember`, which keeps a clone of the
+  `ProofState` (shared with the history: pointers, no serialisation) as the last good project. The
+  panic hook (and `recover_after_error`, which `index.html` calls for an uncaught JavaScript
+  error that went through the wasm, as that leaves the app stuck without a panic) serialises it
+  *then*, once, and hands the bytes and a short report (panic message, place, version, the last 12
+  actions started, cut short) to `offer_recovery`, plain JavaScript that makes them two downloads
+  in the crash message. Nothing there calls back into wasm, which cannot be relied on after a
+  trap. What is lost is the action that crashed. Debug builds: `__homotopy.crash("panic")` and
+  `__homotopy.crash("throw")` (call it from a `setTimeout` so that the error is not caught by the
+  caller).
+- **Autosave (not done)**: writing the project to `localStorage` after each change would also
+  survive a closed tab or a crash of the browser, but it costs a serialisation per change (the 2.5MB
+  tangent categories project takes ~0.35s in the debug build; the optimised build was not measured), which
+  would have to be a debounced job; `localStorage` holds about 5MB of UTF-16, so projects like that
+  need IndexedDB; and a restore-on-load prompt changes what opening the app does. Left for the
+  user to decide.
 
 ## Known gaps against the policy above
 
