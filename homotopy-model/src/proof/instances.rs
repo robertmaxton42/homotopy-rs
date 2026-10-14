@@ -9,7 +9,7 @@
 use homotopy_common::tex::seal;
 use homotopy_core::{
     diagram::NewDiagramError,
-    signature::Signature as _,
+    signature::{Invertibility, Signature as _},
     substitution::{substitute, SubstitutionError},
     Diagram, DiagramN, Generator,
 };
@@ -30,11 +30,107 @@ pub enum InstantiationError {
     SubstitutionError(#[from] SubstitutionError),
     #[error("the replacement for {0} does not have the same type")]
     IllTyped(String),
+    /// The replacement for an invertible or dualisable placeholder is not as invertible or
+    /// dualisable: see [`Shortfall`]. The message is [`Signature::describe_shortfall`].
+    #[error("{0}")]
+    NotInvertible(String),
     #[error(transparent)]
     NewDiagramError(#[from] NewDiagramError),
 }
 
+/// Why a diagram cannot replace a placeholder that is invertible or dualisable.
+///
+/// The replacement has to be as invertible, which it is if every cell it is made of is (see
+/// [`Diagram::weakest_cell`]), and `cell` is not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shortfall {
+    pub placeholder: Generator,
+    /// What the placeholder is: what the replacement has to be.
+    pub required: Invertibility,
+    /// The replacement.
+    pub value: Diagram,
+    /// The weakest cell of the replacement.
+    pub cell: Generator,
+    /// What it is there: the invertibility of the cell, or, if it is folded back on itself in
+    /// the replacement (`fold`), of its cups and caps.
+    pub found: Invertibility,
+    /// Whether the cell in the replacement is a cup or a cap of `cell`.
+    pub fold: bool,
+}
+
 impl Signature {
+    /// Whether `value` is as invertible as `placeholder` is, which it must be to replace it: a
+    /// replacement for an invertible placeholder is an invertible diagram, one for a placeholder
+    /// that is dualisable to some level is dualisable to that level (or invertible), and a
+    /// directed placeholder can be replaced with anything. The placeholder is the cell of an
+    /// instance's schema that stands for any cell of its type, so a schema that uses it as
+    /// invertible (by attaching it reversed, say, or by saying that it is an isomorphism) is
+    /// only right for replacements that are.
+    ///
+    /// A diagram is as invertible as the weakest of its cells (see [`Diagram::weakest_cell`]);
+    /// identities and homotopies are invertible, and a placeholder of dimension 0 has no
+    /// invertibility to speak of.
+    ///
+    /// # Errors
+    ///
+    /// The cell that falls short: see [`Shortfall`] and
+    /// [`describe_shortfall`](Self::describe_shortfall).
+    pub fn check_invertibility(
+        &self,
+        placeholder: Generator,
+        value: &Diagram,
+    ) -> Result<(), Shortfall> {
+        let Some(info) = self.generator_info(placeholder) else {
+            return Ok(());
+        };
+        if placeholder.dimension == 0 || info.invertibility == Invertibility::Directed {
+            return Ok(());
+        }
+        match value.falls_short_of(info.invertibility, self) {
+            None => Ok(()),
+            Some((cell, found)) => Err(Shortfall {
+                placeholder,
+                required: info.invertibility,
+                value: value.clone(),
+                cell,
+                found,
+                fold: cell.dimension < value.dimension(),
+            }),
+        }
+    }
+
+    /// A sentence saying why a diagram cannot replace an invertible or dualisable placeholder,
+    /// like "P must be invertible, but Q is not (R is directed)". The names are sealed, so it can
+    /// be shown as a label.
+    #[must_use]
+    pub fn describe_shortfall(&self, shortfall: &Shortfall) -> String {
+        format!(
+            "{} must be {}, but {} is not ({})",
+            self.name_sealed(shortfall.placeholder),
+            shortfall.required.describe(),
+            self.describe(&shortfall.value),
+            self.shortfall_reason(shortfall),
+        )
+    }
+
+    /// Which cell of a replacement is not as invertible as it should be, and what it is.
+    pub(super) fn shortfall_reason(&self, shortfall: &Shortfall) -> String {
+        let Shortfall {
+            cell, found, fold, ..
+        } = shortfall;
+        if *fold {
+            format!(
+                "it folds {} back on itself, and a cup or cap of a cell that is {} is {}",
+                self.name_sealed(*cell),
+                self.generator_info(*cell)
+                    .map_or_else(String::new, |info| info.invertibility.describe()),
+                found.describe(),
+            )
+        } else {
+            format!("{} is {}", self.name_sealed(*cell), found.describe())
+        }
+    }
+
     /// The placeholders a generator can be instantiated at: those its diagram mentions, those
     /// it explicitly [depends on](GeneratorInfo::depends_on) and those that their types mention,
     /// those that the generators its diagram mentions depend on, and, for an instance, those that
@@ -180,6 +276,14 @@ impl Signature {
                     info.name,
                 ));
             }
+        }
+
+        // A replacement for an invertible placeholder is invertible, and so on.
+        for (p, replacement) in &substitution {
+            self.check_invertibility(*p, replacement)
+                .map_err(|shortfall| {
+                    InstantiationError::NotInvertible(self.describe_shortfall(&shortfall))
+                })?;
         }
 
         // An instance made with replacements that mention placeholders, instantiated at some of

@@ -213,6 +213,61 @@ impl Diagram {
             .unwrap_or(Invertibility::Invertible)
     }
 
+    /// The weakest cell that this diagram, as a cell from its source to its target, is made of,
+    /// with its invertibility there; `None` if it is made of none (an identity, or a
+    /// 0-diagram).
+    ///
+    /// The cells of a diagram of dimension `n` are the occurrences of generators of dimension `n`
+    /// (those of lower dimension are in the boundary, which does not count; identities,
+    /// interchangers and the other homotopies are not cells of any generator), and the cups
+    /// and caps in it: a generator of dimension `n - 1` that folds back on itself
+    /// ([`Orientation::Zero`]) is the unit or counit of that generator, whose invertibility is
+    /// [`fold`](Invertibility::fold) of its own. The boundary of an `n`-diagram has dimension
+    /// `n - 1` and so has no folds of such a generator, so these are always in the diagram's own
+    /// cells. Folds of generators of lower dimension are not counted, as those in the boundary
+    /// cannot be told from the new ones.
+    ///
+    /// A diagram is invertible, or dualisable to some level, if this is: if all its cells
+    /// are, then so is the composite and so are the homotopies between them. The inverse of a
+    /// diagram has the same cells, so it is as invertible as the diagram.
+    ///
+    /// Ties go to the generator that is first by dimension and number, so the result does not
+    /// depend on the order of a hash map.
+    #[must_use]
+    pub fn weakest_cell(&self, signature: &impl Signature) -> Option<(Generator, Invertibility)> {
+        let n = self.dimension();
+        self.generators()
+            .into_iter()
+            .filter_map(|(g, orientations)| {
+                let level = signature.generator_info(g)?.invertibility();
+                if g.dimension >= n {
+                    Some((level, g))
+                } else if g.dimension + 1 == n && orientations.contains(&Orientation::Zero) {
+                    Some((level.fold(), g))
+                } else {
+                    None
+                }
+            })
+            .min_by_key(|&(level, g)| (level, g.dimension, g.id))
+            .map(|(level, g)| (g, level))
+    }
+
+    /// The weakest cell of the diagram if it is weaker than `required` (see
+    /// [`weakest_cell`](Self::weakest_cell)): why the diagram is not as invertible as that. A
+    /// diagram of dimension 0 has no cells to be invertible, and falls short of nothing.
+    #[must_use]
+    pub fn falls_short_of(
+        &self,
+        required: Invertibility,
+        signature: &impl Signature,
+    ) -> Option<(Generator, Invertibility)> {
+        if self.dimension() == 0 {
+            return None;
+        }
+        self.weakest_cell(signature)
+            .filter(|&(_, level)| level < required)
+    }
+
     #[must_use]
     pub fn contains_point(&self, point: &[Height], embedding: &[RegularHeight]) -> bool {
         use Diagram::{Diagram0, DiagramN};

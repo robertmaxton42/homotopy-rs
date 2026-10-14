@@ -60,14 +60,19 @@ pub(super) struct Cells {
     /// The composites of the cells that start at a diagram, so far (see [`Composites`]): what the
     /// candidates for a placeholder are taken from, which depends on where they start and not on
     /// where they end, so that placeholders (of one schema, or of many) with the same source share
-    /// the work.
-    composites: RefCell<FastHashMap<Diagram, Rc<RefCell<Composites>>>>,
+    /// the work. A placeholder that is invertible or dualisable is only replaced with composites
+    /// of cells that are as much, so those are made of other cells and shared only with
+    /// placeholders that are as invertible.
+    composites: RefCell<FastHashMap<CompositesKey, Rc<RefCell<Composites>>>>,
     /// The placeholders that the candidates for each placeholder are in terms of.
     required: RefCell<FastHashMap<Generator, Rc<[Generator]>>>,
     /// The candidates found for a placeholder, given the replacements for those it is in terms
     /// of (and not the others, which the candidates do not depend on).
     candidates: RefCell<FastHashMap<CandidatesKey, Vec<Diagram>>>,
 }
+
+/// The diagram that composites start at, and how invertible their cells are.
+type CompositesKey = (Diagram, Invertibility);
 
 /// A placeholder with the replacements of the placeholders its candidates are in terms of.
 type CandidatesKey = (Generator, Vec<(Generator, Diagram)>);
@@ -194,14 +199,19 @@ struct Made {
 
 impl Cells {
     /// The composites that start at a diagram (kept, for a bounded number of diagrams).
-    fn composites_from(&self, source: &Diagram) -> Rc<RefCell<Composites>> {
+    fn composites_from(
+        &self,
+        source: &Diagram,
+        required: Invertibility,
+    ) -> Rc<RefCell<Composites>> {
         let mut cache = self.composites.borrow_mut();
-        if let Some(found) = cache.get(source) {
+        let key = (source.clone(), required);
+        if let Some(found) = cache.get(&key) {
             return Rc::clone(found);
         }
         let fresh = Rc::new(RefCell::new(Composites::new(source)));
         if cache.len() < MAX_CACHED_SOURCES {
-            cache.insert(source.clone(), Rc::clone(&fresh));
+            cache.insert(key, Rc::clone(&fresh));
         }
         fresh
     }
@@ -435,13 +445,25 @@ impl<'a> Pool<'a> {
         };
 
         let k = own_n.dimension();
+        // What replaces an invertible placeholder is invertible (see
+        // `Signature::check_invertibility`): a composite of cells is as invertible as the weakest
+        // of them, so cells that are not are left out, which is also less to search.
+        let required = self
+            .signature
+            .generator_info(placeholder)
+            .map_or(Invertibility::Directed, |info| info.invertibility);
         let cells: Vec<&DiagramN> = self
             .made()
             .cells
             .iter()
             .filter(|c| c.dimension() == k)
+            .filter(|c| {
+                self.signature
+                    .check_invertibility(placeholder, &Diagram::from((*c).clone()))
+                    .is_ok()
+            })
             .collect();
-        let composites = self.cells.composites_from(&source);
+        let composites = self.cells.composites_from(&source, required);
         let mut results = vec![];
         for depth in 0..=MAX_CELLS {
             let Some(level) = composites.borrow_mut().level(depth, &cells) else {
