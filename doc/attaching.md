@@ -6,8 +6,16 @@ instances of schemas that were found by a search (see [placeholders](placeholder
 big signature that search takes a while, and you may already know what you want to attach. In
 that case, say so:
 
-- **Drag it.** Drag a generator from the signature onto the diagram. The part of the diagram
-  under the pointer is outlined: that is where it would be attached. Drop it there.
+- **Drag it.** Drag a generator from the signature onto the diagram. A small copy of its row
+  follows the pointer, and the part of the diagram under the pointer is outlined: that is where it
+  would be attached. Drop it there. `Esc` (or letting go anywhere but on the diagram) puts it
+  down without attaching anything. Start the drag towards the diagram, sideways: a drag of a
+  row that starts up or down is the browser's drag, which moves the row in the signature, as it
+  always did. Press on the pointing hand (see below) instead and the drag is to the diagram
+  whichever way it starts, which is also how to drag with a finger. (A row dragged up or down
+  and then on to the diagram can still be dropped on it, but the browser gives the page neither
+  the wheel nor the keys during that kind of drag, so there is no choosing a sheet then; see
+  *Sheets*.)
 - **Or pick it.** Hover over a generator in the signature and press the pointing-hand button
   that appears at the end of its row. A chip at the top of the page says that it is waiting
   (*Attaching ... click a point in the diagram*); click a point of the diagram to attach it
@@ -62,9 +70,14 @@ pointing hand) as before: the point that is searched is the position and the she
 (the tooltip's breadcrumb), and what is offered is exactly the attachments of the position whose
 cell reaches the sheet. An attachment that spans several sheets is still offered as long as it
 covers the one you chose: choosing a sheet leaves out what cannot be at it, and never leaves out
-what can. This is often much quicker, as the search does not look at the rest. (While a generator is being dragged the browser passes on neither keys nor the wheel, so there
-is no choosing during a drag. Pick the generator with the pointing hand instead, choose the sheet,
-and click. A drop uses the sheet that was chosen for the position it lands on, if there is one.)
+what can. This is often much quicker, as the search does not look at the rest. You can choose the sheet
+**during a drag**: hold the generator over the position and use Shift + wheel, `[`, `]` and Tab
+as above; the tooltip, which follows the pointer, shows what is chosen, and dropping attaches at
+that sheet. (This is so for a drag that starts towards the diagram, or from the pointing hand,
+which are drags of the page's own; in the browser's drag of a row that was started up or down
+there are neither keys nor wheel. Then choose the sheet before the drag, over the position you
+will drop on: a drop uses the sheet that was chosen for the position it lands on, if there is
+one, or pick the generator with the pointing hand, choose the sheet, and click.)
 
 Dragging a wire sideways to expand it (a horizontal drag) acts on the sheet you chose at the
 place the drag starts from, if you chose one there before pressing the button, and else on the

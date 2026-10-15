@@ -1,6 +1,11 @@
 //! Attaching one generator that was picked from the signature, by dragging it to the diagram.
 //!
-//! A drag from the signature carries the generator in two ways: as the plain text that moving
+//! There are two kinds of drag. The main one is made of pointer events (see
+//! [`attach_drag`](super::attach_drag)), during which the page gets the wheel and the keys, so
+//! that a sheet can be chosen; it only uses [`begin`] and [`end`] from here. The other is the
+//! browser's own drag and drop, which a drag of a row that is not clearly headed for the diagram
+//! turns into (the row is draggable to move it in the signature). The rest of this comment is
+//! about that one: a drag from the signature carries the generator in two ways: as the plain text that moving
 //! generators around the signature uses (so that dropping it in the signature still moves it),
 //! and under [`MIME`], which only the diagram looks at. The browser does not let a page read
 //! what is being dragged until the drop, so the diagram, which has to say whether it takes the
@@ -49,6 +54,12 @@ pub fn start(
     transfer
         .set_data(MIME, &format!("{},{}", generator.id, generator.dimension))
         .ok();
+    begin(signature, workspace, generator);
+}
+
+/// A drag of the generator from the signature has started, whichever kind of drag it is: works
+/// out whether the diagram can take it at all, once, and remembers that.
+pub fn begin(signature: &Signature, workspace: Option<&Diagram>, generator: Generator) -> Dragged {
     let verdict = can_attach(
         signature,
         workspace,
@@ -56,7 +67,9 @@ pub fn start(
         AppSettings::get_weak_units(),
         attach_inference::limits(),
     );
-    DRAGGED.with(|dragged| *dragged.borrow_mut() = Some(Dragged { generator, verdict }));
+    let dragged = Dragged { generator, verdict };
+    DRAGGED.with(|d| *d.borrow_mut() = Some(dragged.clone()));
+    dragged
 }
 
 /// The drag is over, whether or not it was dropped.

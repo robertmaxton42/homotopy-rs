@@ -391,8 +391,45 @@ indicator: see "Laying out diagrams" below.
     on the corpus against the options that the whole search finds (`attach_only.rs`). Computing it
     walks all the cells of the workspace diagram (`Diagram::generators`, not cached: 5.5ms for the
     fixture's `start` in the debug wasm, more for the whole workspace) and is not done for rendering.
-  - Dragging: a signature row carries the generator as plain text (the node, for moving it in the
-    signature, which still works) and as `application/x-homotopy-generator` (`id,dimension`), with
+  - Dragging, with the pointer (`app/attach_drag.rs`; user decision: "VS Code allows the wheel during
+    drags", and the browser's own drag and drop passes on no wheel and no keys, so a sheet could not be
+    chosen during a drag). `onpointerdown` on a generator row (`ItemView::on_press`, from `folder.rs`) records a
+    `Press` (origin, grip, which way the diagram is) and listens on the window (no pointer capture: the wheel
+    goes to what is under the pointer anyway, and the svg then also gets the real mouse moves). Once the
+    pointer is `THRESHOLD` = 4px away the press is a drag to the diagram if `Press::is_attach`: always for a press
+    on the **pointing hand** (`.signature__item-attach`, a handle: also the way for touch, which has
+    `touch-action: none` there and no drag from the row body), and for a press on the **row** if the pointer moves
+    towards the diagram (`direction_to`: the sign of the horizontal distance between the middles of the row and
+    the diagram) within 45 degrees of the horizontal; up or down, or away, is left to the browser. **Drag vs reorder
+    (the choice, and why)**: rows stay `draggable` for moving them in the signature (HTML5 drag and drop, untouched,
+    folders too), a native `dragstart` comes after 3 or 4px with no way to take it back, so the first pixels
+    decide: `folder.rs`'s `on_drag_start` asks `attach_drag::dragstart`, which, if the drag is to the diagram,
+    `preventDefault`s it (a cancelled `dragstart` leaves the pointer events going: no `pointercancel`, tested in
+    Chromium) and starts the pointer drag at once. The alternatives were: a handle for reordering (changes the
+    muscle memory of the common sideways-and-up/down moves in the sidebar), the pointing hand only (loses
+    dragging the row), and a custom reordering too (a rewrite of drop zones, folder rules and autoscrolling, against
+    "keep HTML5 for reordering"). The price of the direction rule: a diagonal start past 45 degrees is a native
+    drag, which can still be dropped on the diagram (below) but has no wheel or keys, the same as before this
+    change. A drag is `Phase::{Idle, Pressed, Dragging}` in a thread-local; the pure part (`Press`, `direction_to`)
+    has unit tests. While dragging: a ghost (`.signature__drag-ghost`, a copy of the row without its preview and
+    buttons, `position: fixed`, `pointer-events: none`, above and right of the pointer so as not to cover the
+    cell under it or the tooltip), `body.attach-dragging` (grabbing cursor, no text selection; `--refused`:
+    not-allowed), and `attach_target::begin` (the verdict of `can_attach`, as for the native drag). The diagram under
+    the pointer (`document.elementFromPoint` against the svg of each registered sink) is told through
+    `attach_drag::register` (`DiagramSvg::drag_sink`, only with `accepts_drops`): `DragSignal::{Over, Leave, Drop}`
+    become the same `DiagramSvgMessage::{OnDragOver, OnDragLeave, OnDrop}` that the native events send, so the
+    outline, `hit_to_act_on`, `point_at`, the tooltip, `Keys::wanted` and the sheet choice are one code for both.
+    A diagram the generator cannot be attached to at all (verdict no) is not told (no outline); the ghost is dimmed
+    and a drop on it toasts why (as the pointing hand does). Drop: `pointerup` over the diagram. Cancel: `pointerup`
+    elsewhere, `pointercancel`, window `blur`, a `pointermove` with no buttons down, and `Esc`, a capturing
+    `keydown` that `App`'s own `Esc` listener, which runs first, steps aside for (`attach_drag::active()`): while a
+    drag is on, `Esc` is for the drag and not for a running job. A click right after the drag is swallowed (a
+    capturing `click` listener for 100ms) so that ending on a row does not select it. A job running refuses the
+    drop like a click (the pill shakes); the drag itself still works. Listeners are dropped a tick later
+    (`defer_drop`: they may be the ones running).
+  - The native path is kept for what the pointer drag leaves to the browser: a signature row carries the
+    generator as plain text (the node, for moving it in the
+    signature) and as `application/x-homotopy-generator` (`id,dimension`), with
     `effectAllowed = "copyMove"`. The page cannot read the data until the drop, so `attach_target` keeps
     the generator and the verdict of `can_attach` in a thread-local from `dragstart` to `dragend`.
     `DiagramSvg` (`accepts_drops`, `on_attach`) accepts a drag (`preventDefault` on `dragover`) only if
@@ -437,7 +474,12 @@ indicator: see "Laying out diagrams" below.
   - Gaps: the 3D view does not take drops or armed clicks (`DiagramGl` has no attach by clicking);
     the verdict is for the whole diagram and not the point, so a drop at a point where nothing attaches
     runs the (usually quick) search and then says "no attachment found"; the busy pill does not
-    name the generator; touch devices have the button only (no hover: it is shown all the time there).
+    name the generator; touch devices drag from the pointing hand only (shown all the time there), not from the
+    row body (which scrolls the sidebar); the pointer drag was checked in Chromium (mouse, and touch through
+    CDP) and not in Firefox or Safari (whether pointer events go on after a cancelled `dragstart` is the thing to
+    look at there); the diagram cannot be dropped on when it is scrolled out of view or under another panel (what
+    is under the pointer decides); the tooltip of a diagram the generator cannot be attached to still shows while
+    the refused ghost is over it.
 
 - **Sheets** (`Depths::fibre/sheets` in `homotopy-core/src/projection.rs`, `homotopy_model::sheets`,
   `homotopy-web/src/app/diagram_svg/sheets.rs`; user-facing text in `doc/attaching.md`). The 2D view of a
@@ -474,7 +516,11 @@ indicator: see "Laying out diagrams" below.
     component turns it into `SwitchSlice` (browsers give Shift+wheel as `deltaX`: both are read). Moving to
     another shape forgets the choice; leaving keeps it, so that a drop (`OnDragOver`/`OnDrop` use
     `hit_to_act_on`/`point_at` too, with the choice's shape outlined) or a click that comes back to the place
-    uses it. During a native drag the browser passes no keys or wheel, so there is no choosing then.
+    uses it. During a drag of a generator with the pointer (`attach_drag.rs`, see "Attaching one generator") the
+    diagram is told where the pointer is as `OnDragOver` says, which updates the tooltip and `Keys::wanted`, and
+    Shift+wheel, `[`, `]`, Tab work as over any diagram (tested in Chromium with `mouse.down/move/wheel`: two
+    sheets, the choice changes, drop uses it). During a *native* drag (a row started up or down) the browser
+    passes no keys or wheel, so there is no choosing then.
   - **The tooltip** is the stack (`tooltip::SheetStack`: `z₃=k` rows with `describe_cell` names, the current
     one highlighted, the sheet's name `S2`, *front* (per sheet: `foremost`; *drawn here* if the drawn one is not that), a breadcrumb `z₃=1 › z₄=0` when chosen, a hint for the keys), shown when there
     are several sheets, one is chosen, or the sheet has sheets inside it. Wires whose edge depth (`z + 1` in
@@ -587,8 +633,9 @@ indicator: see "Laying out diagrams" below.
     before. Contractions act on all sheets and vertical drags have no depth, so they are unchanged. Test:
     `a_horizontal_drag_expands_at_the_sheet_chosen_and_else_at_the_front` (`diagram_svg.rs`).
   - Gaps: only the first chosen
-    `z` dims wires; surfaces and vertices are not dimmed; the 3D view has no sheets; the native drag gives no
-    keys, so a drop uses a choice made before the drag (only when the pointer comes back to the same shape);
+    `z` dims wires; surfaces and vertices are not dimmed; the 3D view has no sheets; a native drag (a row
+    dragged up or down first, then to the diagram) gives no keys, so a drop uses a choice made before the drag
+    (only when the pointer comes back to the same shape), while the pointer drag has none of this gap;
     `Stack` lists the sheets of the shapes of one kind (the regions behind a wire cannot be chosen). Identity of
     sheets (`SheetId`) is only followed for the first coordinate after the position's (the sheets inside a
     sheet have none and are never `foremost`); sheets of the same cell that are never linked by an edge stay
