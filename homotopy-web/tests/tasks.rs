@@ -1151,3 +1151,360 @@ fn stopped_options(state: &State) -> Vec<proof::AttachOption> {
         _ => panic!("options are listed"),
     }
 }
+
+// Every way that a search for attachments is started lists what it finds as it goes, in the page
+// and in a worker: the instances of a schema as they are found and not when the schema is done
+// with, and what a click on a cell goes on to when it has no definition to offer.
+
+/// A project with a schema `S` that has instances at the identity on `q ; q ; q` (or, `big`, at
+/// one that has more to choose from) in the workspace, with the schema.
+fn state_with_a_schema(big: bool) -> (State, Generator) {
+    use homotopy_core::DiagramN;
+    use homotopy_model::proof::{SignatureEdit, SignatureItemEdit, Workspace};
+
+    let mut sig = proof::Signature::default();
+    let x: Diagram = sig.create_generator_zero("x").into();
+    let cell = |sig: &mut proof::Signature, s: Diagram, t: Diagram| {
+        sig.create_generator(s, t, "c", Invertibility::Directed)
+            .unwrap()
+    };
+    let p = cell(&mut sig, x.clone(), x.clone());
+    let p2 = cell(&mut sig, x.clone(), x.clone());
+    let q = cell(&mut sig, x.clone(), x.clone());
+    let e = cell(&mut sig, p.clone().into(), p.clone().into());
+    let e2 = cell(&mut sig, p2.clone().into(), p2.clone().into());
+    let u = cell(&mut sig, q.clone().into(), q.clone().into());
+    let s = cell(&mut sig, e.clone().into(), e.clone().into());
+    let g = |d: &DiagramN| d.max_generator().generator;
+    for d in [&p, &p2, &e, &e2] {
+        let node = node_of(&sig, g(d));
+        sig.update(&SignatureEdit::Edit(
+            node,
+            SignatureItemEdit::MakePlaceholder(true),
+        ))
+        .unwrap();
+    }
+    let node = node_of(&sig, g(&s));
+    sig.update(&SignatureEdit::Edit(
+        node,
+        SignatureItemEdit::SetDependsOn(vec![g(&e2)]),
+    ))
+    .unwrap();
+    let haystack: Diagram = if big {
+        let mut d = q.identity();
+        for _ in 0..3 {
+            d = d.attach(&u, Boundary::Target, &[]).unwrap();
+        }
+        d.into()
+    } else {
+        q.attach(&q, Boundary::Target, &[])
+            .unwrap()
+            .attach(&q, Boundary::Target, &[])
+            .unwrap()
+            .identity()
+            .into()
+    };
+    let data = serialize::serialize(sig, Some(Workspace::new(haystack)), Default::default());
+    let mut state = State::default();
+    state
+        .update(Action::Proof(proof::Action::ImportProof(SerializedData(
+            data,
+        ))))
+        .unwrap();
+    assert!(state.proof().workspace.is_some());
+    (state, g(&s))
+}
+
+fn instances_in(options: &[proof::AttachOption]) -> usize {
+    options
+        .iter()
+        .filter(|option| option.substitution.is_some())
+        .count()
+}
+
+/// What listing the options of a search as it goes came to.
+#[derive(Debug, Default)]
+struct Trace {
+    /// How many options were listed, and how many of them were instances, each time the list
+    /// grew while the search was not over.
+    growth: Vec<(usize, usize)>,
+    /// What the state lists when it is over.
+    done: Option<Vec<proof::AttachOption>>,
+}
+
+impl Trace {
+    fn instances_arrived_in_pieces(&self) -> bool {
+        let mut pieces = 0;
+        let mut before = 0;
+        for &(_, instances) in &self.growth {
+            if instances > before {
+                pieces += 1;
+            }
+            before = instances;
+        }
+        pieces > 1
+    }
+}
+
+/// Starts an action and runs what it needs a step at a time, taking what the searches find after
+/// each step as the app does. With `worker`, a search that is for the worker is done as the worker
+/// does it, on a thread of its own and by bytes, with the options sent ahead as it goes.
+fn listed_as_it_goes(state: &mut State, action: Action, worker: bool) -> Trace {
+    use std::sync::mpsc::channel;
+
+    fn note(state: &State, trace: &mut Trace, listed: &mut usize) {
+        if let Some(Selectables::Attach(now)) = &state.options {
+            if now.len() > *listed {
+                *listed = now.len();
+                trace.growth.push((now.len(), instances_in(now)));
+            }
+        }
+    }
+
+    let mut trace = Trace::default();
+    let mut started = state.start(action).unwrap();
+    loop {
+        let mut task = match started {
+            Started::Done(_) => break,
+            Started::Running(task) => task,
+        };
+        let mut listed = 0;
+        let output = match worker.then(|| task.offer(state.proof())).flatten() {
+            Some((proof, work)) => {
+                let mut remote = Remote::default();
+                let request = remote.request(proof, work, 0, false);
+                let (sender, receiver) = channel();
+                let answer = std::thread::spawn(move || {
+                    Executor::default().run_streaming(
+                        &request,
+                        &mut |_| {},
+                        &mut |_| {},
+                        Some(&mut |bytes| sender.send(bytes).unwrap()),
+                    )
+                })
+                .join()
+                .unwrap();
+                // (Each message is what the worker had found by one of its steps.)
+                for bytes in receiver.try_iter() {
+                    state.found(remote.options(&bytes).unwrap());
+                    note(state, &mut trace, &mut listed);
+                }
+                match remote.response(&answer).unwrap() {
+                    Answer::Done { output, .. } => task.output_of(output).unwrap(),
+                    Answer::NeedsSignature => panic!("everything was sent"),
+                }
+            }
+            None => loop {
+                let output = task.step();
+                if state.found(task.take_found()) && output.is_none() {
+                    note(state, &mut trace, &mut listed);
+                }
+                if let Some(output) = output {
+                    break output;
+                }
+            },
+        };
+        started = state.finish(output).unwrap();
+    }
+    if let Some(Selectables::Attach(options)) = &state.options {
+        trace.done = Some(options.clone());
+    }
+    trace
+}
+
+#[test]
+fn a_click_lists_what_it_finds_as_it_goes_and_instances_as_they_are_found() {
+    for big in [false, true] {
+        let (state, _schema) = state_with_a_schema(big);
+        for worker in [false, true] {
+            for action in [
+                Action::SelectPoint(vec![], false, InferenceLimits::UNLIMITED),
+                // (A click that is not on one cell is searched for as it always was.)
+                Action::SelectCell(vec![], false, InferenceLimits::UNLIMITED),
+            ] {
+                let whole = {
+                    let mut plain = state.clone();
+                    run_in_steps(&mut plain, action.clone());
+                    stopped_options(&plain)
+                };
+                let mut clicked = state.clone();
+                let trace = listed_as_it_goes(&mut clicked, action.clone(), worker);
+                assert_eq!(
+                    trace.done,
+                    Some(whole.clone()),
+                    "big {big}, worker {worker}"
+                );
+                assert!(instances_in(&whole) > 1);
+                assert!(
+                    trace.instances_arrived_in_pieces(),
+                    "big {big}, worker {worker}: {:?}",
+                    trace.growth
+                );
+                assert_eq!(clicked.listing, Listing::Complete);
+            }
+        }
+    }
+}
+
+#[test]
+fn dropping_a_schema_lists_its_instances_as_they_are_found() {
+    for big in [false, true] {
+        let (state, schema) = state_with_a_schema(big);
+        let limits = InferenceLimits::UNLIMITED;
+        let whole = {
+            let mut plain = state.clone();
+            run_in_steps(&mut plain, Action::SelectPoint(vec![], false, limits));
+            stopped_options(&plain)
+                .into_iter()
+                .filter(|option| option.generator == schema)
+                .collect::<Vec<_>>()
+        };
+        assert!(whole.len() > 1);
+        for worker in [false, true] {
+            // What a drop does, and what an armed click does after it is picked.
+            let mut dropped = state.clone();
+            let trace = listed_as_it_goes(
+                &mut dropped,
+                Action::AttachGenerator(schema, vec![], false, limits),
+                worker,
+            );
+            assert_eq!(
+                trace.done,
+                Some(whole.clone()),
+                "big {big}, worker {worker}"
+            );
+            assert!(
+                trace.instances_arrived_in_pieces(),
+                "big {big}, worker {worker}: {:?}",
+                trace.growth
+            );
+        }
+    }
+}
+
+/// A click on a cell whose only candidate definition does not attach goes on to the search for
+/// everything, which lists what it finds as it goes like any other.
+#[test]
+fn a_click_on_a_cell_with_no_definition_that_attaches_goes_on_to_a_search_that_lists_as_it_goes() {
+    use homotopy_core::{signature::Signature as _, DiagramN, Height};
+    let limits = InferenceLimits::UNLIMITED;
+    let mut found_one = false;
+    for json in [ASSOCIATOR, SYMMETRIC_MONOIDAL, MERGE_CONTRACT] {
+        let actions = recorded_actions(json);
+        let state = state_before(&actions, actions.len());
+        let Some(workspace) = state.proof().workspace.clone() else {
+            continue;
+        };
+        let Ok(diagram) = DiagramN::try_from(workspace.diagram.clone()) else {
+            continue;
+        };
+        for i in 0..diagram.size() {
+            let Some(Diagram::DiagramN(slice)) = diagram.slice(Height::Singular(i)) else {
+                continue;
+            };
+            for j in 0..slice.size() {
+                let point = vec![
+                    SliceIndex::Interior(Height::Singular(i)),
+                    SliceIndex::Interior(Height::Singular(j)),
+                ];
+                let heights = [Height::Singular(i), Height::Singular(j)];
+                let Some(cell) = proof::cell_at(&workspace.diagram, &heights) else {
+                    continue;
+                };
+                // A generator that is parallel to the cell and not in the diagram, and a
+                // "definition" of the cell from it, which cannot attach where the cell is.
+                let mut on = state.clone();
+                let info = on.proof().signature.generator_info(cell).unwrap().clone();
+                let Diagram::DiagramN(cell_diagram) = info.diagram.clone() else {
+                    continue;
+                };
+                on.history.amend(|proof| {
+                    let other = proof
+                        .signature
+                        .create_generator(
+                            cell_diagram.source(),
+                            cell_diagram.target(),
+                            "other",
+                            Invertibility::Directed,
+                        )
+                        .unwrap();
+                    proof
+                        .signature
+                        .create_generator(
+                            other.into(),
+                            info.diagram.clone(),
+                            "definition",
+                            Invertibility::Directed,
+                        )
+                        .unwrap();
+                });
+                if proof::DefinitionsJob::new(on.proof(), &point, true, limits)
+                    .map(homotopy_model::job::run_to_end)
+                    .is_none_or(|outcome| !outcome.options.is_empty())
+                {
+                    continue;
+                }
+                // What a click that looks at everything finds there (one option is attached at
+                // once; several are listed).
+                let mut plain = on.clone();
+                run_in_steps(&mut plain, Action::SelectPoint(point.clone(), true, limits));
+                let whole = match plain.options.clone() {
+                    Some(Selectables::Attach(whole)) => Some(whole),
+                    _ => None,
+                };
+                let attached = plain.history.get_actions().len() > on.history.get_actions().len();
+                assert!(whole.is_some() || attached);
+
+                // The click starts with the definitions; none attaches; the search for everything
+                // follows, and lists what it finds while it goes on.
+                let mut clicked = on.clone();
+                let Started::Running(mut task) = clicked
+                    .start(Action::SelectCell(point.clone(), true, limits))
+                    .unwrap()
+                else {
+                    panic!("looking for definitions is a task");
+                };
+                assert!(matches!(task, Task::Definitions { .. }));
+                let output = loop {
+                    if let Some(output) = task.step() {
+                        break output;
+                    }
+                };
+                let Started::Running(mut task @ Task::AttachOptions(_)) =
+                    clicked.finish(output).unwrap()
+                else {
+                    panic!("the search for everything follows");
+                };
+                let mut arrivals = 0;
+                let output = loop {
+                    let output = task.step();
+                    if clicked.found(task.take_found()) && output.is_none() {
+                        arrivals += 1;
+                        assert_eq!(clicked.listing, Listing::Searching);
+                    }
+                    if let Some(output) = output {
+                        break output;
+                    }
+                };
+                assert!(arrivals >= 1, "something was listed before it was over");
+                let mut rest = clicked.finish(output).unwrap();
+                while let Started::Running(mut task) = rest {
+                    let output = loop {
+                        if let Some(output) = task.step() {
+                            break output;
+                        }
+                    };
+                    rest = clicked.finish(output).unwrap();
+                }
+                assert_eq!(clicked.listing, Listing::Complete);
+                // The end of the search is what the search for everything came to.
+                match whole {
+                    Some(whole) => assert_eq!(clicked.options, Some(Selectables::Attach(whole))),
+                    None => assert_eq!(summary(&clicked), summary(&plain)),
+                }
+                found_one = true;
+            }
+        }
+    }
+    assert!(found_one, "an example has a cell to click on");
+}

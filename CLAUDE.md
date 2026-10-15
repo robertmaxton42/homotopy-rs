@@ -767,6 +767,27 @@ and check it with the debug hooks below.
   `Executor::run_streaming`; `components/search_status.rs`; user-facing text in `doc/attaching.md`). A search can
   take many seconds and the option wanted is often found early, so the drawer opens at the **first option found**
   and the rest are put into it as they come, instead of when the whole search is over.
+  - **Every route streams.** The ways to start a search for attachments are `SelectPoint`, `SelectCell` (its
+    `DefinitionsJob`, and when no definition attaches the `Task::AttachOptions` that `State::finish` starts, which
+    `start_attach_search` puts a stream on like any other), `SearchEverything` (`Task::AttachRest`, with the
+    definitions kept above) and `AttachGenerator` (a drop, an armed click: `only`), each in the page (`App::work`
+    takes what a slice found) and in the worker (`Executor::run_streaming`, the options sent ahead before each
+    step); `Task::AttachOptions` and `AttachRest` are the same job with the same `take_found`. What was *not*
+    streamed (PR #15 user report: "the incremental drawer only sometimes streams … I think it doesn't work
+    properly on instances"): **inferred instances were options only when the inference of their schema was over**
+    (`InferSearch::finish` was called at the end, and a schema can take the time for a generator or, for a drop
+    now, no end at all), so a click whose options were instances showed nothing until each schema was done, in
+    bursts, and a drop of a schema showed nothing until it gave up. Now `InferSearch::check` keeps the instances
+    and `AttachOptionsJob::infer` takes them after *every step* (`collect_instances`, `take_results`). Tests:
+    `inference::tests::instances_are_listed_as_they_are_found_in_the_places_they_will_have` (more than one
+    arrival for one schema, in the order of `Signature::infer_instances`), `tests/streaming.rs`
+    (`instances_are_streamed_as_they_are_found_for_a_click_and_for_one_generator`,
+    `instances_sent_ahead_by_a_worker_are_the_instances_of_the_answer`), and in `homotopy-web/tests/tasks.rs`
+    `a_click_lists_what_it_finds_as_it_goes_and_instances_as_they_are_found` (click and `SelectCell`, page and
+    worker), `dropping_a_schema_lists_its_instances_as_they_are_found` (page and worker),
+    `a_click_on_a_cell_with_no_definition_that_attaches_goes_on_to_a_search_that_lists_as_it_goes` (the
+    fall-through), with `the_rest_of_what_attaches_is_listed_below_the_definitions_as_it_is_found` for
+    `SearchEverything`.
   - **Deltas.** `take_found` hands out `matches[reported..]` (the job only appends to `matches`; `outcome` and
     `checkpoint` sort a copy, so taking is valid until the very end). In the page `App::work` takes them after
     each slice (`Task::take_found`); in the worker `run_checkpointed`'s `on_progress` hook takes them before each
@@ -779,9 +800,13 @@ and check it with the debug hooks below.
     whole as before (`streamed: None`), so the wire stays readable both ways. A garbled delta is a failure of
     the worker like a garbled answer: the job is done in the page, and `State::restart_stream` forgets what the
     worker had sent (the page's job lists them again).
-  - **Order and numbering.** The final list is the options sorted (stably) by `Slot { generator, pass }`: the
-    index of the generator in the signature and the part of the search (`Pass::rank`), i.e. exactly the old
-    `(index, rank)` sort. `Streamed` keeps a `BTreeMap<Slot, Vec<_>>` and lists it flat, so the list shown is
+  - **Order and numbering.** The final list is the options sorted (stably) by `Slot { generator, pass, key }`: the
+    index of the generator in the signature, the part of the search (`Pass::rank`) and, **for an inferred
+    instance only, the numbers of the candidates chosen for the placeholders** (`key`, empty for everything else;
+    `InferSearch` sorted its results by it at the end, which is why instances could not be handed out as found
+    with only `(generator, pass)`: an instance found later can come before one found earlier, among the
+    instances of its schema), i.e. exactly the old `(index, rank)` sort and, for instances, the order of
+    `Signature::infer_instances`. `AttachOptionsJob::matches` is a `Vec<Found>` sorted by slot. `Streamed` keeps a `BTreeMap<Slot, Vec<_>>` and lists it flat, so the list shown is
     *always* in the final order: an option is put in its slot, the list grows in the middle as well as at the
     end, and what was shown only gets further apart (test: each list is a subsequence of the next). A slot is
     filled in order by one source, so a search split over several workers (a later change, one per generator
@@ -801,11 +826,31 @@ and check it with the debug hooks below.
     label and `k of n` as the busy pill has them, from `busy::watch`, a second listener of the pill's events, so
     progress does not re-render the app) with a **Stop** button; while `Stopped`: a note. Clicking an option
     dispatches `PickStreamed(option)` while searching and `Proof(Attach(option))` otherwise.
-  - **Picking while searching** (`App::dispatch`): `PickStreamed(option)` ends the job (`end_job`: take it, hide the
-    pill, `stop` + `ensure` the worker, no toast; nothing was committed, so the project is as it was) and goes on
+  - **Picking while searching** (`App::dispatch`): `PickStreamed(option)` ends the job (`end_job(true)`: take it,
+    `stop` + `ensure` the worker, no toast; nothing was committed, so the project is as it was) and goes on
     to `State::start`, which clears the stream and starts `Proof(Attach(option))`. The option travels by value,
     not as an index, since the list grows between the render and the click; it is complete (`AttachOption`
-    holds its diagrams), so nothing of the job is needed. Test: `picking_an_option_while_the_search_goes_on_ends_it_and_attaches_exactly_that_option`.
+    holds its diagrams), so nothing of the job is needed. **PR #15 user report: "I'm also not entirely sure that
+    selecting an attachment while the search is running properly interrupts the search — it lagged, at the very
+    least, and possibly just completed."** Measured in the browser (debug build, the tangent categories project,
+    worker and page, a step delay to make the search slow) the job *was* ended at once (a
+    pending `Message::Slice` finds no job; the worker is terminated, and the attach of the option is what
+    follows), so what the user saw was: (1) **the pill vanished and, 150ms later at best, came back**, because
+    `end_job` hid it and attaching an instance (*Instantiating*) put it up again, which fades in (so for a plain
+    option there was no sign of anything between the click and the drawer closing, and for an instance the pill
+    was gone while the attach ran on the page, the new worker not being ready); now `end_job(true)` leaves the
+    pill up and `dispatch` takes it down if the pick goes on to nothing that runs (`Done`, an error) and
+    otherwise the job's `show` puts its label on it at once: no gap; (2) **every arrival of options drew the whole
+    list again** (formulas typeset for the new rows: 250 to 900ms of the debug build, 1.2 to 1.7s for the first,
+    in the page's longest gaps), so a click was handled after however many arrivals were queued before it:
+    `App::draw_options` now draws at most every `OPTIONS_DRAW_INTERVAL` (200ms; the first arrival at once, what
+    comes between with one `Message::DrawOptions` after the interval; the state has all of it at once, only the
+    drawing waits). A click in the page still waits for the step the page is in (a step cannot be interrupted),
+    which is the case for a search on the page for lack of a ready worker; the page's longest steps are one
+    generator's plain pass. Measured (debug build, tangent categories project, click at `[S1,S1]`, a pick of
+    an instance 16s into the search, worker): click to pill and drawer gone 585ms (`Instantiating` 185ms on the
+    page, the new worker not being ready), a plain option 410ms; page, steps of 150ms: 465ms; the job is ended
+    ("Ended ... for what the person picked") before the attach starts. Test: `picking_an_option_while_the_search_goes_on_ends_it_and_attaches_exactly_that_option`.
   - **Esc / pill / Stop keep the options** (`App::cancel` -> `State::stopped`): the job is dropped as ever (the
     worker ended) and `listing = Stopped`, the options stay, a notice says the search was stopped and the list
     may be incomplete (there is no report: the worker is gone), a toast says how many. If nothing had been
@@ -828,8 +873,16 @@ and check it with the debug hooks below.
     i}` (the i-th of the list on show) and `"StopSearch"` in `__homotopy.dispatch`, `state().listing`.
   - Gaps: the progress is the count of steps (generators, reflections, schemas), not "generator k of n"
     exactly; options of a stopped worker search that were found but not yet sent are lost (they are sent before
-    each step, so only the step that was running); the page renders the whole drawer list on each arrival (rows
-    are keyed, groups closed); several sources are supported by `Streamed` but there is one worker.
+    each step, so only the step that was running); the page draws the whole drawer list on an arrival (rows
+    are keyed, groups closed; at most five times a second); several sources are supported by `Streamed` but
+    there is one worker; the options of one generator's plain pass or of its reflections (a step each in a
+    search of everything) are listed when that step is over, not as each cell is matched (a search for one
+    generator is in pieces, so there they are); with more instances arriving (a schema is now streamed) the
+    stuck-worker path finds more often that the partial it holds says fewer options were sent ahead than the
+    page has (`Remote::response` refuses a count that is not its own, so the job is then done in the page): a
+    partial could be taken with `>=`. Drawing the app takes 250 to 450ms of the debug build on the tangent categories
+    project whatever is new in it (the formulas of the rows: the first drawing of the list 1.2 to 1.7s, one
+    with several new schema folders 1 to 4s), which is the floor for a click's latency during a search.
 
 - **Attach options drawer: instances in groups** (`app/attach.rs`). The inferred instances of schemas
   (`AttachOption::substitution` is `Some`) are not listed one by one: plain options stay ungrouped at the
@@ -887,7 +940,13 @@ valid (`narrowing_to_a_sheet_only_finds_valid_instances`, for the sheet heuristi
   now the same as native; native hashes are bit-identical to before.
 - Shallow clones lack a merge base: `git fetch --unshallow` first.
 - Debug web build: `.claude/dev/build-dist.sh`, then `python3 -m http.server 8765` in `dist/`.
-  It uses `.claude/dev/highs-shim.js` because the nix HiGHS build is blocked in the sandbox.
+  It uses `.claude/dev/highs-shim.js` because the nix HiGHS build is blocked in the sandbox. It honours
+  `CARGO_TARGET_DIR` (the wasm build is in `$CARGO_TARGET_DIR/wasm`) and `DIST=<dir>` (default `dist`).
+- Several git worktrees sharing one `CARGO_TARGET_DIR` overwrite each other's artifacts: cargo names the
+  artifacts of workspace members by their path *relative* to the workspace, so another worktree's build, newer
+  than your sources, is taken as fresh and you get errors about items that are in your tree but not in its
+  compiled crate (`no field reflection on AttachOption`). Give each worktree its own artifacts by changing the
+  profile hash, e.g. `CARGO_PROFILE_DEV_DEBUG=limited` in the environment of every cargo command.
 - Commit messages containing backticks: write them to a file and use `git commit -F`.
 - The worker needs no build step of its own (see above), but it is only used once ready: in a
   headless browser wait ~3s after load (or for the log line "The worker is ready") before

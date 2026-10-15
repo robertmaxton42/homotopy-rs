@@ -5,13 +5,15 @@
 
 use std::{sync::mpsc::channel, thread};
 
-use homotopy_core::{Boundary, Diagram, DiagramN, Height, SliceIndex};
+use homotopy_core::{
+    signature::Invertibility, Boundary, Diagram, DiagramN, Generator, Height, SliceIndex,
+};
 use homotopy_model::{
     history::Proof,
     job::{run_to_end, Job},
     proof::{
         Action, AttachOption, AttachOptionsJob, AttachOutcome, InferenceLimits, ProofState,
-        Streamed,
+        Signature, SignatureEdit, SignatureItemEdit, Streamed, Workspace,
     },
     remote::{Answer, Executor, Output, Remote, Work},
 };
@@ -400,4 +402,167 @@ fn the_tangent_categories_stream_is_the_search() {
     );
     assert_eq!(streamed.options(), outcome.options);
     assert!(!outcome.options.is_empty());
+}
+
+// Instances of schemas, and every way that a search for attachments is started.
+
+fn node_of(sig: &Signature, generator: Generator) -> homotopy_common::tree::Node {
+    sig.as_tree()
+        .iter()
+        .find(|(_, item)| {
+            matches!(item.inner(), homotopy_model::proof::SignatureItem::Item(info) if info.generator == generator)
+        })
+        .map(|(node, _)| node)
+        .unwrap()
+}
+
+fn make_placeholder(sig: &mut Signature, generator: Generator) {
+    let node = node_of(sig, generator);
+    sig.update(&SignatureEdit::Edit(
+        node,
+        SignatureItemEdit::MakePlaceholder(true),
+    ))
+    .unwrap();
+}
+
+/// Two independent placeholders `P, P' : x -> x` with a 2-cell each, `e : P => P` and
+/// `e' : P' => P'`; the schema `S : e ==> e` which depends on `e'`; and a diagram with cells to
+/// replace them with: the identity on `q ; q ; q`, or, `big`, one with a great deal of choice.
+/// With the schema, which the search for instances is for.
+fn schema_state(big: bool) -> (ProofState, Generator) {
+    let mut sig = Signature::default();
+    let x: Diagram = sig.create_generator_zero("x").into();
+    let cell = |sig: &mut Signature, s: Diagram, t: Diagram| {
+        sig.create_generator(s, t, "c", Invertibility::Directed)
+            .unwrap()
+    };
+    let p = cell(&mut sig, x.clone(), x.clone());
+    let p2 = cell(&mut sig, x.clone(), x.clone());
+    let q = cell(&mut sig, x.clone(), x.clone());
+    let e = cell(&mut sig, p.clone().into(), p.clone().into());
+    let e2 = cell(&mut sig, p2.clone().into(), p2.clone().into());
+    let u = cell(&mut sig, q.clone().into(), q.clone().into());
+    let s = cell(&mut sig, e.clone().into(), e.clone().into());
+    let g = |d: &DiagramN| d.max_generator().generator;
+    for d in [&p, &p2, &e, &e2] {
+        make_placeholder(&mut sig, g(d));
+    }
+    let node = node_of(&sig, g(&s));
+    sig.update(&SignatureEdit::Edit(
+        node,
+        SignatureItemEdit::SetDependsOn(vec![g(&e2)]),
+    ))
+    .unwrap();
+    let haystack: Diagram = if big {
+        let mut d = q.identity();
+        for _ in 0..3 {
+            d = d.attach(&u, Boundary::Target, &[]).unwrap();
+        }
+        d.into()
+    } else {
+        q.attach(&q, Boundary::Target, &[])
+            .unwrap()
+            .attach(&q, Boundary::Target, &[])
+            .unwrap()
+            .identity()
+            .into()
+    };
+    (
+        ProofState {
+            signature: sig,
+            workspace: Some(Workspace::new(haystack)),
+            ..ProofState::default()
+        },
+        g(&s),
+    )
+}
+
+fn instances(options: &[AttachOption]) -> usize {
+    options
+        .iter()
+        .filter(|option| option.substitution.is_some())
+        .count()
+}
+
+/// The instances of a schema come as they are found, in more than one go and before the schema
+/// is done with, in the places they have in the end, in the search for everything at a point
+/// (a click) and in the search for the schema alone (a drop, an armed click).
+#[test]
+fn instances_are_streamed_as_they_are_found_for_a_click_and_for_one_generator() {
+    for big in [false, true] {
+        let (state, schema) = schema_state(big);
+        for only in [None, Some(schema)] {
+            for every in [1, 2] {
+                let job = AttachOptionsJob::new(&state, &[], false, NO_LIMIT, only).unwrap();
+                let (outcome, streamed, _) = streamed(job, every);
+                assert_eq!(streamed.options(), outcome.options, "big {big}, {only:?}");
+                assert!(instances(&outcome.options) > 1, "big {big}");
+            }
+            // One at a time: the number of arrivals that bring instances is more than the
+            // schemas there are (one), which it would not be if they came when it was done.
+            let mut job = AttachOptionsJob::new(&state, &[], false, NO_LIMIT, only).unwrap();
+            let mut arrivals = 0;
+            loop {
+                let output = job.step();
+                arrivals += usize::from(
+                    job.take_found()
+                        .iter()
+                        .any(|found| found.option.substitution.is_some()),
+                );
+                if output.is_some() {
+                    break;
+                }
+            }
+            assert!(arrivals > 1, "big {big}, {only:?}: {arrivals}");
+        }
+    }
+}
+
+/// The same through a worker: the instances are sent ahead as they are found, in more than one
+/// message, and put together in their places they are the answer, for a click and for one
+/// generator.
+#[test]
+fn instances_sent_ahead_by_a_worker_are_the_instances_of_the_answer() {
+    for big in [false, true] {
+        let (state, schema) = schema_state(big);
+        for only in [None, Some(schema)] {
+            let here =
+                run_to_end(AttachOptionsJob::new(&state, &[], false, NO_LIMIT, only).unwrap());
+            let work = Work::AttachOptions {
+                point: vec![],
+                weak_units: false,
+                limits: NO_LIMIT,
+                only,
+            };
+            let mut remote = Remote::default();
+            let (answer, said) = elsewhere(remote.request(&state, work, 0, false));
+            let mut so_far = Streamed::default();
+            let mut shown: Vec<AttachOption> = vec![];
+            let mut with_instances = 0;
+            for event in &said {
+                if let Said::Options(bytes) = event {
+                    let found = remote.options(bytes).unwrap();
+                    with_instances += usize::from(
+                        found
+                            .iter()
+                            .any(|found| found.option.substitution.is_some()),
+                    );
+                    so_far.extend(found);
+                    let now = so_far.options();
+                    assert!(is_subsequence(&shown, &now), "what was shown moved");
+                    shown = now;
+                }
+            }
+            assert!(with_instances > 1, "big {big}, {only:?}: {with_instances}");
+            let Answer::Done {
+                output: Output::AttachOptions(there),
+                ..
+            } = remote.response(&answer).unwrap()
+            else {
+                panic!("expected options");
+            };
+            assert_eq!(here.options, there.options);
+            assert_eq!(shown, there.options);
+        }
+    }
 }

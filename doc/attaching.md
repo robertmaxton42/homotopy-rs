@@ -50,9 +50,17 @@ how far along it is) with a **Stop** button.
   there never moves. The keys `1` to `9` stand for places in the finished list, which is not known
   yet, so they do nothing while the search runs (the busy pill shakes); they work on the list
   once the search is over. (Nothing in the list is numbered on screen.)
-- **Clicking an option while the search runs** means "this is the one": the search is stopped and
-  that option is attached, as it would have been had the search finished. The search had not
-  changed the project, so nothing else is affected.
+- **Instances are listed as they are found**, one at a time, and not when the search for their
+  schema is over (which for some schemas is never): each goes in the place it has in the finished
+  list, among the instances found before it. The list is drawn at most five times a second, so
+  that a search that finds many options at once does not leave the page no time to respond (to a
+  click on an option, say); what comes between is drawn with the next.
+- **Clicking an option while the search runs** means "this is the one": the search is stopped at
+  once (a search in the background is ended, not waited for; a search on the page stops at the end
+  of the step it is in) and that option is attached, as it would have been had the search
+  finished. The busy pill stays up and says what is being done for the pick (attaching an
+  instance, *Instantiating…*, takes a moment), so there is never a gap in which nothing says what
+  is going on. The search had not changed the project, so nothing else is affected.
 - **`Esc`, the **Stop** button, or clicking the busy pill** stops the search and **keeps the
   options found so far**. The list says it was stopped and the notice says that there may be
   others; the project is unchanged (listing options does not change it). `Esc` again, or the
