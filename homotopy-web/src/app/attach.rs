@@ -94,10 +94,11 @@ fn view_definitions(
     html! {
         <>
             <li class="attach__heading">
+                <span>{"Definitions of"}</span>
                 <TexSpan
-                    class="attach__option-name"
+                    class="attach__heading-name"
                     error_color="#c004"
-                    raw_tex={format!("Definitions of {name}")}
+                    raw_tex={name}
                 />
             </li>
             { for defined.iter().map(|option| view_option(

@@ -2217,6 +2217,10 @@ body.attach-dragging--refused * {
 }
 
 .attach__heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1);
   padding-top: var(--space-2);
   font-weight: bold;
 }
