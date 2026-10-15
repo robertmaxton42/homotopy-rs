@@ -452,10 +452,11 @@ button, .button {
   opacity: 0.6;
 }
 
-/* Where sheets meet, over the diagram: a fan of pages at the point (a page for each sheet, a
-   single one where a sheet begins or ends) and echoes alongside the wires of the layers behind.
-   The pages have no backing: they are creases in the layer, a darker shade of whatever colour is
-   under them (multiplied), so that they read as part of the surface and not as a sticker on it. */
+/* Where sheets meet, over the surfaces and under the wires: a stack of pages at the point (a
+   flat ellipse for each sheet, tangent at the bottom, so that the thickness shows on top) and
+   echoes alongside the wires of the layers behind. The pages have no backing: they are creases
+   in the layer, a darker shade of whatever colour is under them (multiplied), so that they read
+   as part of the surface and not as a sticker on it. */
 
 .sheet-mark {
   fill: none;
@@ -465,8 +466,9 @@ button, .button {
   mix-blend-mode: multiply;
 }
 
-.sheet-mark--end {
-  opacity: 0.65;
+/* The lower edges of the pages, which nearly coincide: much fainter than the rims. */
+.sheet-mark--under {
+  opacity: 0.3;
 }
 
 .sheet-echo {

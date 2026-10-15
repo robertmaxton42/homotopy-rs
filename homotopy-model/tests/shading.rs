@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashSet};
 use homotopy_core::{
     complex::{make_complex, Simplex},
     layout::Layout,
-    projection::{thickness_step, Depths, Projection, Shading, SheetBoundaryKind},
+    projection::{thickness_step, Depths, Projection, Shading},
     Diagram, Height, SliceIndex,
 };
 use homotopy_graphics::svg::render::GraphicElement;
@@ -134,7 +134,7 @@ fn start_of_the_tangent_categories_project_is_shaded_for_the_sheets_the_hover_li
     assert!(surfaces > 20);
 }
 
-/// The same project: sheets meet at one vertex of `start`, with eighteen wires leaving it, and the
+/// The same project: nine sheets meet at one vertex of `start`, with eighteen wires leaving it, and the
 /// three that come from the top are on the second layer where the others are on the first.
 #[test]
 fn start_has_echoes_on_the_wires_of_the_second_layer_at_its_one_meeting() {
@@ -160,11 +160,10 @@ fn start_has_echoes_on_the_wires_of_the_second_layer_at_its_one_meeting() {
     let meetings: Vec<_> = depths
         .sheet_boundaries()
         .iter()
-        .filter(|b| b.kind == SheetBoundaryKind::MergesOrSplits)
         .map(|b| (b.to, b.branches))
         .collect();
-    assert_eq!(meetings, vec![(vertex, 18)]);
-    assert_eq!(depths.sheets_meeting_at(vertex), 18);
+    assert_eq!(meetings, vec![(vertex, 9)]);
+    assert_eq!(depths.sheets_meeting_at(vertex), 9);
 
     let mut behind = vec![];
     let mut at_the_vertex = 0;

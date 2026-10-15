@@ -1,6 +1,7 @@
-//! Where sheets meet, drawn over the 2D view: a small fan of pages at each point where sheets
-//! meet (one page for each sheet, at most four), a single page where a sheet begins or ends, and
-//! echoes alongside the wires that go into the layers behind the front one at such a point.
+//! Where sheets meet, drawn in the 2D view over the surfaces and under the wires (so that a wire
+//! in front hides them): a small stack of pages at each point where distinct sheets meet (one
+//! page for each sheet, at most four), and echoes alongside the wires that go into the layers
+//! behind the front one at such a point.
 //!
 //! What they are made of is in [`homotopy_core::projection::Depths`] (`sheet_boundaries`,
 //! `sheets_meeting_at`, `echoes`) and the geometry in [`homotopy_graphics::svg::marks`]. They are
@@ -10,11 +11,7 @@
 use std::fmt::Write as _;
 
 use euclid::default::Vector2D;
-use homotopy_common::hash::FastHashMap;
-use homotopy_core::{
-    projection::SheetBoundaryKind::{BeginsOrEnds, MergesOrSplits},
-    SliceIndex,
-};
+use homotopy_common::hash::FastHashSet;
 use homotopy_graphics::{
     style::{GeneratorRepresentation, GeneratorStyle, SignatureStyleData},
     svg::{
@@ -53,12 +50,11 @@ pub(super) struct Echo {
 /// The marks of a diagram, worked out when first drawn.
 #[derive(Default)]
 pub(super) struct SheetMarks {
-    /// Path data of the fans where sheets meet.
-    pub fans: String,
-    /// Path data of the single pages where a sheet begins or ends.
-    pub ends: String,
+    /// Path data of the rims of the stacks of pages where sheets meet.
+    pub rims: String,
+    /// Path data of the undersides of the pages, drawn faintly.
+    pub undersides: String,
     pub fan_count: usize,
-    pub end_count: usize,
     pub echoes: Vec<Echo>,
 }
 
@@ -67,30 +63,23 @@ impl SheetMarks {
         let depths = &prepared.depths;
         let mut marks = Self::default();
 
-        // The places that have boundaries, and whether sheets meet at them.
-        let mut places: FastHashMap<[SliceIndex; N], bool> = FastHashMap::default();
-        for boundary in depths.sheet_boundaries() {
-            let meets = places.entry(boundary.to).or_insert(false);
-            *meets |= boundary.kind == MergesOrSplits;
-            debug_assert!(matches!(boundary.kind, BeginsOrEnds | MergesOrSplits));
-        }
-        let meetings: Vec<_> = places
+        // The places where sheets meet.
+        let meetings: Vec<_> = depths
+            .sheet_boundaries()
             .iter()
-            .filter(|&(_, &meets)| meets)
-            .map(|(&place, _)| place)
+            .map(|boundary| boundary.to)
+            .collect::<FastHashSet<_>>()
+            .into_iter()
             .collect();
-        for (&place, &meets) in &places {
+        for &place in &meetings {
             let Some(centre) = DiagramSvg::position(prepared, place) else {
                 continue;
             };
-            if meets {
-                marks.fan_count += 1;
-                let pages = depths.sheets_meeting_at(place).min(MAX_PAGES);
-                marks.fans.push_str(&fan(centre, pages, point_radius * 1.5));
-            } else {
-                marks.end_count += 1;
-                marks.ends.push_str(&fan(centre, 1, point_radius * 1.5));
-            }
+            marks.fan_count += 1;
+            let pages = depths.sheets_meeting_at(place).min(MAX_PAGES);
+            let fan = fan(centre, pages, point_radius);
+            marks.rims.push_str(&fan.rims);
+            marks.undersides.push_str(&fan.undersides);
         }
 
         // The wires at those places, on a layer behind.
@@ -135,9 +124,9 @@ impl SheetMarks {
 }
 
 impl<const N: usize> DiagramSvg<N> {
-    /// Marks where sheets meet or end (see the [module](self)): over the diagram, a halo under
-    /// each so that they show on any colour. Nothing for a diagram with no more dimensions than
-    /// the view, or if it is off.
+    /// Marks where sheets meet (see the [module](self)): the stacks of pages, and the echoes
+    /// behind them, to be drawn over the surfaces and under the wires and vertices. Nothing for a
+    /// diagram with no more dimensions than the view, or with one sheet, or if it is off.
     pub(super) fn view_sheet_marks(ctx: &Context<Self>, prepared: &PreparedDiagram<N>) -> Html {
         if !ctx.props().sheets || !AppSettings::get_sheet_outlines() {
             return html! {};
@@ -145,7 +134,7 @@ impl<const N: usize> DiagramSvg<N> {
         let marks = prepared
             .marks
             .get_or_init(|| SheetMarks::new(prepared, ctx.props().style.point_radius));
-        if marks.fan_count + marks.end_count + marks.echoes.len() == 0 {
+        if marks.fan_count + marks.echoes.len() == 0 {
             return html! {};
         }
         let pages = |class: &'static str, d: &String| {
@@ -167,12 +156,11 @@ impl<const N: usize> DiagramSvg<N> {
                 class="sheet-marks"
                 pointer-events="none"
                 data-fans={marks.fan_count.to_string()}
-                data-ends={marks.end_count.to_string()}
                 data-echoes={marks.echoes.len().to_string()}
             >
                 {echoes}
-                {pages("sheet-mark--fan", &marks.fans)}
-                {pages("sheet-mark--end", &marks.ends)}
+                {pages("sheet-mark--under", &marks.undersides)}
+                {pages("sheet-mark--fan", &marks.rims)}
             </g>
         }
     }

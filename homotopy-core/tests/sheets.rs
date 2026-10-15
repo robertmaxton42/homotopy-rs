@@ -119,7 +119,7 @@ fn sheets_are_the_singular_heights_of_the_fibre() {
 // The identity of sheets, and where they end.
 
 use homotopy_core::{
-    projection::{thickness_steps, SheetBoundaryKind},
+    projection::thickness_steps,
     scaffold::{Explodable, Scaffold, ScaffoldNode},
     Rewrite,
 };
@@ -334,38 +334,39 @@ fn of_two_strands_that_overlap_in_part_one_is_in_front_throughout() {
     }
 }
 
+/// A meeting is at a point of the picture, at a height where two or more distinct sheets of a
+/// neighbour that carries them in are merged, and the sheets it lists are the ones that are.
 #[test]
-fn boundaries_are_ends_and_junctions_with_a_sheet_and_a_neighbour() {
-    fn check<const N: usize>(diagram: &DiagramN) -> (usize, usize) {
+fn meetings_are_of_distinct_sheets_at_the_points_of_the_picture() {
+    fn check<const N: usize>(diagram: &DiagramN) -> usize {
         let diagram: Diagram = diagram.clone().into();
         let depths = Depths::<N>::new(&diagram).unwrap();
-        let (mut ends, mut junctions) = (0, 0);
+        let mut meetings = 0;
         for b in depths.sheet_boundaries() {
             let at = depths.sheets(b.to, &[]);
             assert_eq!(at[b.z].id, Some(b.sheet));
+            assert_eq!(at[b.z].merges, b.branches);
             assert!(depths.sheet_boundaries_at(b.to).contains(&b));
+            assert_eq!(depths.sheets_meeting_at(b.to), b.branches);
             assert_ne!(b.from, b.to);
-            match b.kind {
-                SheetBoundaryKind::BeginsOrEnds => {
-                    ends += 1;
-                    assert_eq!(b.branches, 1);
-                    // It comes from a neighbour that has sheets.
-                    assert!(!sheet_ids(&depths, b.from).is_empty());
-                }
-                SheetBoundaryKind::MergesOrSplits => {
-                    junctions += 1;
-                    assert!(b.branches >= 3);
-                }
-            }
+            // At a point: every coordinate is a singular height.
+            assert!(b
+                .to
+                .iter()
+                .all(|index| matches!(index, SliceIndex::Interior(Height::Singular(_)))));
+            // Several distinct sheets are merged, and the neighbour has at least two heights.
+            assert!(b.branches >= 2 && b.branches <= depths.sheet_count());
+            assert!(sheet_ids(&depths, b.from).len() >= 2);
+            meetings += 1;
         }
         // Nothing is made of positions that are not there.
         assert!(depths
             .sheet_boundaries_at([SliceIndex::Boundary(Boundary::Source); N])
             .iter()
             .all(|b| b.to == [SliceIndex::Boundary(Boundary::Source); N]));
-        (ends, junctions)
+        meetings
     }
-    let (mut ends, mut junctions) = (0, 0);
+    let mut meetings = 0;
     for diagram in [
         examples::matchsticks().1,
         examples::stacks().1,
@@ -373,32 +374,21 @@ fn boundaries_are_ends_and_junctions_with_a_sheet_and_a_neighbour() {
         examples::two_monoid().1,
         examples::bubble().1,
     ] {
-        let (e, j) = check::<1>(&diagram);
-        ends += e;
-        junctions += j;
+        meetings += check::<1>(&diagram);
     }
     for (_, diagram) in examples_in_2d() {
-        let (e, j) = check::<2>(&diagram);
-        ends += e;
-        junctions += j;
+        meetings += check::<2>(&diagram);
     }
-    assert!(ends > 0, "some sheet ends");
-    assert!(junctions > 0, "some sheets meet");
-    // Strands that only cross do not end or meet, and a wire has no ends along its sides.
+    assert!(meetings > 0, "some sheets meet");
+    // Strands that only cross do not meet: the vertex where they cross has a height for each, and
+    // a point of a wire where nothing happens has the heights of its neighbours one to one.
     for diagram in [
         examples::crossing().1,
         examples::touching().1,
         examples::half_braid().1,
     ] {
-        assert_eq!(check::<2>(&diagram), (0, 0));
+        assert_eq!(check::<2>(&diagram), 0);
     }
-    // A wire that is cut off at a vertex ends there, not along its length.
-    let stacks: Diagram = examples::stacks().1.into();
-    let depths = Depths::<1>::new(&stacks).unwrap();
-    assert!(depths
-        .sheet_boundaries()
-        .iter()
-        .all(|b| matches!(b.to[0], SliceIndex::Interior(Height::Singular(_)))));
 }
 
 /// The regular slices that `Depths` leaves out of the scaffold have the cones of the edges that
@@ -688,14 +678,14 @@ fn only_wires_behind_the_front_wires_at_a_meeting_have_echoes() {
 }
 
 #[test]
-fn the_associator_has_one_vertex_where_ten_sheets_meet_and_one_wire_behind() {
+fn the_associator_has_one_vertex_where_five_sheets_meet_and_one_wire_behind() {
     let diagram: Diagram = examples::associator().1.into();
     let depths = Depths::<2>::new(&diagram).unwrap();
     let vertex = [
         SliceIndex::Interior(Height::Singular(0)),
         SliceIndex::Interior(Height::Singular(0)),
     ];
-    assert_eq!(depths.sheets_meeting_at(vertex), 10);
+    assert_eq!(depths.sheets_meeting_at(vertex), 5);
     let behind: Vec<_> = make_complex::<2>(&diagram)
         .into_iter()
         .filter_map(|(simplex, _)| match simplex {

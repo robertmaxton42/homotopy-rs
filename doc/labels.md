@@ -52,8 +52,7 @@ of the cells, text or formula, put in as they are):
 | an identity on any diagram | `\mathrm{id}_{f \mathbin{;} g}`; `\mathrm{id}^{k}_{f}` for `k` identities on top of each other |
 | a composite, from the source to the target of the diagram | `f \mathbin{;} g \mathbin{;} h` (longer ones are cut short with `\cdots`) |
 | a cell with other cells or wires beside it | the name of the cell, `f` (`f^{-1}` if it is the inverse of an invertible one, `f^{*}` for a 1-cell that is only dualisable, `\overline{f}` for other cells that are drawn reversed), with what is beside it as whiskers, see below: `p \triangleright T`, `S \triangleleft p`, `S \triangleleft p \triangleright T` |
-| an exchange of two cells | `\mathrm{ex}_{f,g}`, with `f` the cell that is lowest in the source |
-| a braid | `\beta_{f,g}`, or `\beta^{-1}_{f,g}` for passing on the other side |
+| an exchange of two cells, a braid | `\beta_{f,g}`, with `f` the cell that is lowest in the source; `\beta^{-1}_{f,g}` for passing on the other side, when that is known |
 | a cell cancelled with its reverse | the counit `\varepsilon_{f}` for `f ; f^{*}` becoming nothing, and `\varepsilon_{f^{*}}` for `f^{*} ; f` |
 | a cell created with its reverse | the unit `\eta_{f}` for `f^{*} ; f` created out of nothing, and `\eta_{f^{*}}` for `f ; f^{*}` |
 | any other homotopy | `\mathrm{h}` |
@@ -75,7 +74,7 @@ it. A step of a composite has its own whiskers: `p \triangleright b \mathbin{;} 
 An exchange is a braid when the cells are attached to nothing, so that nothing but the
 exchange says on which side of each other they are (such as two scalars, `id ⇒ id` on one
 0-cell); there are two ways for such cells to pass, `\beta` and `\beta^{-1}`. If either cell is
-attached to wires, the exchange is `\mathrm{ex}`. The cups that the attach menu calls
+attached to wires, the exchange is `\beta` too, with no sign. The cups that the attach menu calls
 `\mathrm{bub}_{f}` are creations of a cell with its reverse: `\mathrm{bub}_{f}` is the same cell
 as `\eta_{f^{*}}`, and `\mathrm{bub}_{f^{-1}}` is `\eta_{f}`. The name that the menu uses is kept for
 a cup that is exactly the bubble of a generator; beside other cells, it is the unit.
@@ -105,8 +104,8 @@ always shows its own cell.
 
 A vertex where no cell of the dimension of the diagram is, but things happen at once, is named by
 the step of the diagram that it belongs to, as in the table above, also when the diagram is
-projected from higher dimensions: where two strands cross, `\mathrm{ex}_{f,g}` or
-`\beta_{f,g}` (`\beta^{-1}_{f,g}` for the other way of passing), and where a cell is cancelled or
+projected from higher dimensions: where two strands cross, `\beta_{f,g}`
+(`\beta^{-1}_{f,g}` for the other way of passing, where that is known), and where a cell is cancelled or
 created, the counit `\varepsilon_{f}` or the unit `\eta_{f}`. A homotopy that is not recognised is
 `\mathrm{h}(f)` if the vertex is drawn as a fold, and the cell as drawn otherwise.
 

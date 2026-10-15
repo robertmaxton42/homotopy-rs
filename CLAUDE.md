@@ -627,27 +627,55 @@ indicator: see "Laying out diagrams" below.
       is kept. Tested against the scaffold with every edge (`leaving_out_regular_slices_loses_no_unit_cone`).
       Identity is checked on kept edges only: across the diagonals it differs where the way round passes a
       junction, which cuts the sheet.
-  - **Where sheets meet: fans and echoes** (`Depths::sheet_boundaries`, `sheets_meeting_at`, `echoes`;
+  - **Where sheets meet: stacks of pages and echoes** (`Depths::sheet_boundaries`, `sheets_meeting_at`, `echoes`;
     `homotopy-graphics/src/svg/marks.rs` for the geometry; `diagram_svg/marks.rs`; setting *Show where sheets meet
-    (fans and echoes)*, still `sheet_outlines`, on by default; workspace diagram only). These replace the rings
-    and dashed stretches that were drawn at boundaries, which got attention and did not say what they were about.
-    Only at *points* of the picture (every coordinate singular: where the cells are): a height there that **one**
-    edge carries a height into is where a sheet *ends* (`BeginsOrEnds`; `matchsticks`, `stacks`, `monoid_unit`),
-    and one that **three or more** carry heights into is where sheets *meet* (`MergesOrSplits`; the 3-cell of the
-    associator: 10, of the snake: 6, the vertex of `start`: 18; `Sheet::arms` is the carried-in count). It is
-    **not** "a cone with `source_len() == 0`": every edge goes from a position to one of a dimension less, so a
-    sheet that lies along a wire has such a cone on every edge from the regions beside it (32 of them for
-    `crossing`, which has none), and the junction rule at every position rang every vertex of the associator's
-    wires (11, against the 1 now). Sheets that end or meet along a wire are not marked: the wire is drawn.
-    - **Fan**: at a meeting, thin arcs about the vertex on its up and right side, one for each sheet that meets
-      there (`sheets_meeting_at`, at most `MAX_PAGES` = 4), like the edge of a stack of pages; where a sheet
-      only begins or ends, a single arc. A still picture (no curl, no arrow). Tried first: pages radiating from
-      the vertex (looked like a claw) and arcs shifted like a stack (heavy); nested arcs about the vertex read best.
-      No backing (user: it should read as part of the layer's material, not a stick pasted on top): the arcs
-      are a translucent dark stroke with `mix-blend-mode: multiply`, a darker shade of the colour under them,
-      like creases in the surface; `pointer-events: none`, in a `g.sheet-marks`
-      (`data-fans`/`data-ends`/`data-echoes`), over everything, made once for the prepared diagram (`OnceCell`).
-    - **Echoes** (`Depths::echoes(wire)`, at most `MAX_ECHOES` = 3): a wire (a segment between a meeting and the
+    (fans and echoes)*, still `sheet_outlines`, on by default; workspace diagram only). Only at *points* of the
+    picture (every coordinate singular: where the cells are). **A meeting is where several distinct sheets of
+    a neighbouring position become one**: a height `z` at a point that an edge into it takes two or more
+    heights of one neighbour's fibre to (a cone with `source_len() >= 2`), whose source heights are at least two
+    distinct `SheetId`s, **and** whose own sheet is at this position alone (`places(id)`: no other position has
+    the cell). `SheetBoundary { from, to, z, sheet, branches }`, `branches` the distinct sheets merged (the 3-cell
+    of the associator: 5, the vertex of `start`: 9); `Sheet::merges` is the same per height; there is no
+    `SheetBoundaryKind` any more.
+    - **Why it was wrong before** (user, on the workspace and on `p`/`ε`: "every vertex on overlapping sheets is
+      marked", "that screenshot is of p, which has only one sheet"). The rule was "three or more edges carry a
+      height into `z`" (`carried`), which counts *neighbouring positions*, not distinct sheets: a point of a
+      wire has four neighbours, each carrying its one height in, so every point of every wire at the height of
+      some vertex was a "meeting". And `p` has one height of the third coordinate at every position (the cell
+      `𝒞`, with a line `T` and a vertex `p` in it): the identity of sheets is by *cell* (the max generator of the
+      height's slice: 𝒞 in the regions, `T` on the line, `p` at the vertex), so those were three `SheetId`s and
+      the vertex "merged" three of them although no edge joins two heights. A cone that joins heights is what a
+      meeting is made of. The second condition is for what that leaves: where the sheets beside a wire end on it
+      (two heights in the region, one on the wire) the cone joins them at every point of the wire, including the
+      ones at the heights where something else happens; the wire's sheet is the same cell at the next point, so it
+      is not at this one alone, and nothing happens here. Tested on the tangent categories project
+      (`homotopy-model/tests/sheet_meetings.rs`, with `HOMOTOPY_TANGENT_FIXTURE`; skipped without): `p` and `ε`
+      have none and no echoes; the workspace has one (at its one dot, `[S0,S0]`); the target of the definition of
+      `T(Tp)₍₂₎ → (T²p)₍₂₎` (a diagram of the shape of the user's, 3 dots and 2 more) has exactly one at each of
+      its five dots and none on the left wire's points. Core: `meetings_are_of_distinct_sheets_at_the_points_of_the_picture`.
+    - **Ends are not marked.** An earlier version marked where a sheet *begins or ends* (one height carried in: a
+      single arc), which on `ε` and every line that stops at a vertex of a single sheet said nothing true. What
+      can be seen of an end from the heights alone is one neighbour that carries a height in, which is also what a
+      line that stops looks like inside one sheet; `matchsticks`, `stacks` and `monoid_unit` no longer have marks.
+    - **The stack of pages** (`marks::fan`, `Fan { rims, undersides }`; user: "slightly-non-concentric ellipsoids
+      with the centres tracking upward from the vertex and mostly degenerate below, so that the thickness of the
+      stack is only visible on top"). One flat ellipse for each distinct sheet that meets (`sheets_meeting_at`, at
+      most `MAX_PAGES` = 4), each taller and wider than the one before and all tangent at the bottom, so that
+      their centres rise from the vertex, their lower edges are one curve and their tops part: like plates seen
+      from a little above. The upper half of each is drawn as the *rim* (the strong stroke), the lower half faintly
+      (`sheet-mark--under`, 0.3 opacity). The first is `2.1` and `1.2` vertex radii in half width and half
+      height, each next `0.42` radii more (`PAGE_WIDTH`, `PAGE_HEIGHT`, `PAGE_RISE`). Variants mocked first on a
+      blue ground with a wire and a dot (`marks-v3/fan-variants.png`): A full nested ellipses tangent at the
+      bottom, B equal ellipses shifted up (a coil), C upper arcs only (ripples), D = A with faint undersides, E, F
+      smaller; D read best (C and D are the only ones whose bottoms do not clutter the vertex; D keeps the sense of
+      a disc). A still picture. No backing (it should read as part of the layer's material, not a stick pasted on
+      top): a translucent dark stroke with `mix-blend-mode: multiply`, a darker shade of the colour under it, like
+      creases in the surface; `pointer-events: none`. It is drawn **over the surfaces and under the wires and
+      vertices** (`view_sheet_marks` is called after the surfaces and the highlight under them), so that wires
+      pass over it, and the vertex dot over its middle; in a `g.sheet-marks`
+      (`data-fans`/`data-echoes`), made once for the prepared diagram (`OnceCell`).
+    - **Echoes** (`Depths::echoes(wire)`, at most `MAX_ECHOES` = 3), only on the wires that leave a meeting (so,
+      now, only those of the dots that are meetings): a wire (a segment between a meeting and the
       position beside it) gets one echo for each *step* it is behind the front-most of the wires at that point.
       A wire's layer is the height `z` that the hover marks as drawn at the position beside the point
       (`node_depth`), and a step is a different `z` among the wires there, so the wires of the first layer have
@@ -657,12 +685,16 @@ indicator: see "Laying out diagrams" below.
       echo is the wire's own path (the layout's curve) again, translated by a few pixels to the up and right side
       of the wire (`echo_side`), in the wire's colour, stroked with a gradient (`reach_from`: 36px from the
       vertex) that fades out, over a paler wider one for contrast. The gradient element is made with `VTag`
-      because `html!` lowercases `linearGradient`.
-    The tooltip's detail still says "a sheet begins or ends here" / "sheets merge or split here". Gaps: where
-    several wires leave in nearly one direction (the three at `start`) their echoes overlap; echoes are made for
-    the wires of the diagram's own layout and so need no new geometry, but are not interrupted by wires in front;
-    the 3D view has none; the fan for a sheet that ends was checked in a mock, not on an example (none of the
-    five example projects or `start` has one in the 2D view).
+      because `html!` lowercases `linearGradient`. **They are under the wires too** (user: the echo "is
+      visible over the top wire" where a wire braids in front): the layer is under every wire and vertex, so a
+      wire that crosses an echo hides it, whichever of the two is in front (wires hide each other by masks, not by
+      the order they are drawn in, so no echo can be put "just under its wire").
+    The tooltip says "sheets merge or split here" at a meeting. Gaps: where several wires leave in nearly one
+    direction (the three at `start`) their echoes overlap; an echo of a front wire is also hidden by a wire behind
+    it that crosses it (rare: within 36px of the vertex); the 3D view has none; a meeting where an `N`-fold
+    merging cone is at a position that is also a vertex of the same cell elsewhere (a cell that appears at two
+    points of the picture and is joined by an edge) is not marked, which is the price of "this sheet is here
+    alone".
   - **Highlighting a sheet** (`diagram_svg/sheet_highlight.rs`; `Depths::sheet_places`, `sheet_ids_at`). The
     current sheet of the stack under the pointer (the one chosen with Shift+wheel, `[`/`]`, Tab, or the
     default; the outer sheet when one is fixed) is highlighted over the whole diagram, wherever it is: the

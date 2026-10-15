@@ -1,7 +1,7 @@
 //! The geometry of the marks that show where sheets meet in the 2D view.
 //!
-//! See `Depths::echoes` and `Depths::sheets_meeting_at`: the fan of pages at a point where sheets
-//! meet, and the echoes of the wires behind, which run along the wire and fade out.
+//! See `Depths::echoes` and `Depths::sheets_meeting_at`: the stack of pages at a point where
+//! sheets meet, and the echoes of the wires behind, which run along the wire and fade out.
 //!
 //! All of it is in the coordinates of the picture (y down), and is a few pixels in size whatever
 //! the diagram is.
@@ -17,14 +17,14 @@ use super::shape::Point;
 /// there are several.
 pub const MAX_PAGES: usize = 4;
 
-/// How far each page of a fan reaches either side of its direction, in degrees, and how much
-/// further out each is than the one before (as a part of the radius of the first).
-const FAN_SPAN: f32 = 38.0;
-const PAGE_GAP: f32 = 0.34;
+/// The size of the first page of a fan, in the radius of the vertex it is about: its half width
+/// and its half height. The ratio is the flattening of a disc seen from a little above.
+const PAGE_WIDTH: f32 = 2.1;
+const PAGE_HEIGHT: f32 = 1.2;
 
-/// Where the middle of a fan points, in degrees (y is down: up and to the right). The echoes are
-/// on the same side of their wires.
-const FAN_DIRECTION: f32 = -45.0;
+/// How much taller each next page is than the one before, in the radius of the vertex (and how
+/// much wider, in the same proportion as the first).
+const PAGE_RISE: f32 = 0.42;
 
 /// The path as a polyline, from its first point to its last (the first sub-path only).
 #[must_use]
@@ -85,30 +85,48 @@ pub fn echo_side(direction: Vector2D<f32>) -> Option<Vector2D<f32>> {
     )
 }
 
-/// The path data of a fan of `pages` pages (at most [`MAX_PAGES`]) at `centre`.
+/// The marks of a fan: the rims of the pages and their undersides, as path data.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Fan {
+    /// The upper edge of each page: an arc from one end of its width over the top to the other.
+    pub rims: String,
+    /// The whole of each page's outline, of which the lower half is the underside, to be drawn
+    /// faintly under the rims: they nearly coincide there.
+    pub undersides: String,
+}
+
+/// A fan of `pages` pages (at most [`MAX_PAGES`]) at `centre`, a vertex of radius `radius`.
 ///
-/// They are thin arcs about it, on the side that is up and to the right, the first at `radius` from it and each next a
-/// little further out, like the edge of a stack of pages. It is a still picture, with no curl or
-/// arrow to it.
+/// It is a stack of discs seen from a little above, one for each sheet that meets there: flat
+/// ellipses that are each taller and wider than the one before and are all tangent at the bottom,
+/// so that their centres rise from the vertex and their lower edges are one curve, and the
+/// thickness of the stack shows only on its upper side, as the rims of the pages. A still picture
+/// about the vertex, with no backing (the vertex is drawn over its middle).
 #[must_use]
-pub fn fan(centre: Point, pages: usize, radius: f32) -> String {
+pub fn fan(centre: Point, pages: usize, radius: f32) -> Fan {
     let pages = pages.min(MAX_PAGES);
-    let mut d = String::new();
+    let mut fan = Fan::default();
+    let (width, height) = (PAGE_WIDTH * radius, PAGE_HEIGHT * radius);
+    let grow = PAGE_RISE * radius;
+    let ratio = width / height;
     for page in 0..pages {
-        let r = radius * (1.0 + PAGE_GAP * page as f32);
-        let at = |degrees: f32| {
-            let angle = degrees.to_radians();
-            Point::new(centre.x + r * angle.cos(), centre.y + r * angle.sin())
-        };
-        let (from, to) = (at(FAN_DIRECTION - FAN_SPAN), at(FAN_DIRECTION + FAN_SPAN));
+        let ry = height + grow * page as f32;
+        let rx = width + grow * ratio.sqrt() * page as f32;
+        // Tangent at the bottom, which is the same for every page.
+        let cy = centre.y + height - ry;
+        let (left, right) = (centre.x - rx, centre.x + rx);
         write!(
-            d,
-            "M{:.2} {:.2}A{r:.2} {r:.2} 0 0 1 {:.2} {:.2}",
-            from.x, from.y, to.x, to.y
+            fan.rims,
+            "M{left:.2} {cy:.2}A{rx:.2} {ry:.2} 0 0 1 {right:.2} {cy:.2}"
+        )
+        .ok();
+        write!(
+            fan.undersides,
+            "M{left:.2} {cy:.2}A{rx:.2} {ry:.2} 0 0 0 {right:.2} {cy:.2}"
         )
         .ok();
     }
-    d
+    fan
 }
 
 #[cfg(test)]
@@ -176,19 +194,56 @@ mod tests {
         assert!(echo_side(Vector2D::zero()).is_none());
     }
 
+    fn numbers(d: &str) -> Vec<f32> {
+        d.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+            .filter_map(|number| number.parse().ok())
+            .collect()
+    }
+
     #[test]
     fn a_fan_has_a_page_for_each_sheet_up_to_four() {
-        let pages = |n| fan(Point::new(10.0, 10.0), n, 12.0).matches('M').count();
+        let pages = |n| {
+            fan(Point::new(10.0, 10.0), n, 9.0)
+                .rims
+                .matches('M')
+                .count()
+        };
         assert_eq!(
             (pages(0), pages(1), pages(3), pages(4), pages(18)),
             (0, 1, 3, 4, 4)
         );
-        // The pages are within the radius of the last of the centre, and not within the first's.
-        let d = fan(Point::new(0.0, 0.0), 4, 10.0);
-        for number in d.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-')) {
-            if let Ok(v) = number.parse::<f32>() {
-                assert!(v.abs() <= 10.0 * (1.0 + 3.0 * PAGE_GAP) + 1e-3, "{d}");
-            }
+        assert!(fan(Point::new(0.0, 0.0), 0, 9.0).undersides.is_empty());
+    }
+
+    /// The pages are all tangent at the bottom, so that they are one curve there, and each is
+    /// higher than the one before at the top, so that the thickness shows above.
+    #[test]
+    fn the_pages_of_a_fan_meet_at_the_bottom_and_part_at_the_top() {
+        let (centre, radius) = (Point::new(50.0, 50.0), 9.0);
+        let fan = fan(centre, 4, radius);
+        // Each page is `M left cy A rx ry 0 0 1 right cy`: its ends are at the height of its
+        // centre, which rises, and it has a radius in y that grows by as much again.
+        let pages: Vec<_> = fan.rims.split('M').skip(1).map(numbers).collect();
+        assert_eq!(pages.len(), 4);
+        let (mut bottoms, mut tops) = (vec![], vec![]);
+        for page in &pages {
+            let (left, cy, rx, ry, right) = (page[0], page[1], page[2], page[3], page[7]);
+            assert!(((left + right) / 2.0 - centre.x).abs() < 1e-2, "centred");
+            assert!((right - left - 2.0 * rx).abs() < 2e-2, "{page:?}");
+            assert!(ry < rx, "flat: {page:?}");
+            bottoms.push(cy + ry);
+            tops.push(cy - ry);
         }
+        for bottom in &bottoms {
+            assert!((bottom - bottoms[0]).abs() < 2e-2, "{bottoms:?}");
+        }
+        for pair in tops.windows(2) {
+            assert!(pair[1] < pair[0] - 1.0, "each page is higher: {tops:?}");
+        }
+        // The first page is about the vertex: its centre is not above it.
+        assert!((pages[0][1] - centre.y).abs() < 1e-2);
+        // The underside is the same ellipses, the other way round.
+        assert_eq!(fan.undersides.matches("0 0 0").count(), 4);
+        assert_eq!(fan.rims.matches("0 0 1").count(), 4);
     }
 }

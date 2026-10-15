@@ -14,22 +14,35 @@
 //! from it), and makes a line that lies along a wire one sheet from one end to the other, whatever
 //! the positions that it passes through do beside it.
 //!
-//! # Boundaries
+//! # Where sheets meet
 //!
-//! A *boundary* is a place where the sheets that there are change (see [`SheetBoundary`]), at a
-//! point of the picture (a position with every coordinate singular, where the cells of the
-//! diagram are) and a height `z` there. Count the heights that the edges into the position carry
-//! into it (`arms`): where one is carried in, a sheet ends or begins there; where three or
-//! more are, sheets meet at the cell (two are a sheet that passes through, with a cell on it).
+//! A *meeting* (see [`SheetBoundary`]) is at a point of the picture (a position with every
+//! coordinate singular, where the cells of the diagram are) and a height `z` there, and it is
+//! where several *distinct* sheets of a neighbouring position become one: a cone of the rewrite
+//! along an edge into the point that takes two or more heights of the neighbour's fibre to `z`,
+//! and whose source heights are not all the same sheet.
 //!
-//! This is not "a cone with no source heights", which is not what a sheet's end is: every edge
-//! of the scaffold goes from a position to one of a dimension less (a regular height becomes a
-//! singular one), and a sheet that lies along a wire is not at the regions beside it, so the
-//! rewrites into the wire have such a cone for it on every edge from them. That is what it is to
-//! be a line, not a place where it begins, and listing them would put a boundary along both
-//! sides of every wire. Sheets that end or meet along a wire (surfaces joined along a line) are
-//! not boundaries of the picture either: the wire is drawn. At a point, though, there is
-//! nothing else to say that the sheet is there.
+//! What is not a meeting, and was one in an earlier version that counted the edges that carry a
+//! height into `z` (three or more were "sheets meeting"):
+//!
+//! - A point of a wire that a sheet passes through, which is any point of a wire at a height where
+//!   something else happens. Its neighbours (the points beside it on the wire, and the regions
+//!   either side) each carry their one height into `z`, so that there are four of them, and no
+//!   two are heights of one fibre that are joined. Where the sheets beside the wire end on it
+//!   (two heights of the region, one of the wire) the cone does join them, at every point of the
+//!   wire, so it is also required that the sheet at `z` is at this point alone: if it is at the
+//!   neighbouring points of the wire too (the cell is the same there), it is the wire continuing
+//!   and nothing happens at the point.
+//! - A diagram whose fibres have one height everywhere (`p` and `ε` of the tangent categories
+//!   project in the 2D view: a cell of the third coordinate with a line and a vertex in it). There
+//!   is one sheet; the line and the vertex are in it and not sheets of their own. The identity of
+//!   sheets (above) is made of the cell that is at the height, which is a different cell on the
+//!   line and at the vertex, so that their ids are different, but they are not different
+//!   *heights*, and a cone that joins heights is what a meeting is made of.
+//!
+//! Where a sheet *begins or ends* is not marked: what can be seen of it from the heights alone
+//! is one neighbour that carries a height in, which is also what a line that stops at a vertex
+//! of a single sheet looks like.
 //!
 //! The scaffold of [`Depths`](super::Depths) leaves out the regular slices of the later
 //! coordinates (the edges from a regular height to a singular one of the next position). Such
@@ -46,6 +59,7 @@
 //! overlap on only a part of their length are one foremost and one behind along the whole of
 //! theirs, and not one front where it happens to be alone and the other where they meet.
 
+use homotopy_common::hash::FastHashMap;
 use petgraph::{graph::NodeIndex, unionfind::UnionFind, visit::EdgeRef};
 
 use super::{Coordinate, Depths};
@@ -64,32 +78,22 @@ impl SheetId {
     }
 }
 
-/// What happens to a sheet at a boundary (see the [module](self)).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum SheetBoundaryKind {
-    /// A sheet ends here, at a point of the picture: one height is carried into this one. Seen
-    /// from the other side, it begins.
-    BeginsOrEnds,
-    /// Sheets meet here, at a point of the picture: three or more of the edges into the position
-    /// carry heights into the same one. Several merge into one or, seen from the other side, one
-    /// splits.
-    MergesOrSplits,
-}
-
-/// A place where a sheet ends, or where sheets meet.
+/// A place where sheets meet, at a point of the picture.
+///
+/// It is a height whose neighbours carry two or more distinct sheets into it (see the
+/// [module](self)). Several merge into one or, seen from the other side, one splits.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct SheetBoundary<const N: usize> {
-    /// The neighbour that carries the sheet in (for a junction, the first that does): the sheet
-    /// runs along the edge from here to `to`.
+    /// The neighbour that carries sheets in (the first that does, if several): the sheets run
+    /// along the edge from here to `to`.
     pub from: Coordinate<N>,
-    /// The position that the sheet ends at, or that the sheets meet at.
+    /// The position that the sheets meet at.
     pub to: Coordinate<N>,
-    /// The singular height at `to` that this is a boundary of.
+    /// The singular height at `to` that they meet at.
     pub z: usize,
     /// The sheet at `to` at that height.
     pub sheet: SheetId,
-    pub kind: SheetBoundaryKind,
-    /// How many heights are carried into that one: 1 for an end, 3 or more for a junction.
+    /// How many distinct sheets are merged into it, over all the edges into `to`: at least 2.
     pub branches: usize,
 }
 
@@ -100,8 +104,9 @@ pub(super) struct SheetData<const N: usize> {
     sizes: Vec<usize>,
     /// The sheet of each (node, height).
     ids: Vec<SheetId>,
-    /// How many heights the edges into each (node, height) carry into it.
-    carried: Vec<usize>,
+    /// How many distinct sheets the cones of the edges into each (node, height) merge into it, at
+    /// a point of the picture: 0 if fewer than two.
+    merged: Vec<usize>,
     /// Whether each sheet is foremost.
     foremost: Vec<bool>,
     boundaries: Vec<SheetBoundary<N>>,
@@ -184,9 +189,6 @@ impl<const N: usize> SheetData<N> {
             })
             .collect();
 
-        // How many heights are carried into each, and from where (the first).
-        let mut carried = vec![0_usize; total];
-        let mut carried_from = vec![NodeIndex::end(); total];
         // Every edge carries each height of its source to one of its target.
         let mut union = UnionFind::new(total);
         if total > 0 {
@@ -196,10 +198,6 @@ impl<const N: usize> SheetData<N> {
                         return;
                     }
                     let (source, target) = (offsets[from.index()] + z, offsets[to.index()] + image);
-                    carried[target] += 1;
-                    if carried_from[target] == NodeIndex::end() {
-                        carried_from[target] = from;
-                    }
                     // It is the same sheet when it is the same cell.
                     if generators[source] == generators[target] {
                         union.union(source, target);
@@ -253,28 +251,56 @@ impl<const N: usize> SheetData<N> {
             }
         }
 
+        // Where sheets meet: the distinct sheets that the cones merging several heights of a
+        // neighbour take to a height of a point of the picture (and the first neighbour to).
+        let mut merging: FastHashMap<usize, (NodeIndex, Vec<SheetId>)> = FastHashMap::default();
+        for (from, to, rewrite) in edges(depths) {
+            if stratum_dimension(&graph[to].key) != 0 {
+                continue;
+            }
+            for cone in rewrite.cone_views() {
+                if cone.source_len() < 2 || cone.target() >= sizes[to.index()] {
+                    continue;
+                }
+                let (_, sheets) = merging
+                    .entry(offsets[to.index()] + cone.target())
+                    .or_insert_with(|| (from, vec![]));
+                let start = offsets[from.index()] + cone.source_start();
+                sheets.extend_from_slice(&ids[start..start + cone.source_len()]);
+            }
+        }
+        let mut merged = vec![0_usize; total];
         let mut boundaries = vec![];
         let mut boundaries_to = vec![vec![]; graph.node_count()];
         for n in graph.node_indices() {
             for z in 0..sizes[n.index()] {
                 let at = offsets[n.index()] + z;
-                if stratum_dimension(&graph[n].key) != 0 {
+                let Some((from, sheets)) = merging.get_mut(&at) else {
+                    continue;
+                };
+                sheets.sort_unstable();
+                sheets.dedup();
+                // The same sheet at two heights (a fold) is not several sheets.
+                if sheets.len() < 2 {
                     continue;
                 }
-                let kind = match carried[at] {
-                    1 => SheetBoundaryKind::BeginsOrEnds,
-                    3.. => SheetBoundaryKind::MergesOrSplits,
-                    _ => continue,
-                };
-                let (from, branches) = (carried_from[at], carried[at]);
+                // Where the cell is the same as at the neighbours' it is a point of a wire that the
+                // sheet continues along, where the sheets beside the wire end on it, and nothing
+                // happens at the point: the sheet that they meet in is only at this one.
+                if places[ids[at].0 as usize]
+                    .iter()
+                    .any(|&(node, _)| node != n)
+                {
+                    continue;
+                }
+                merged[at] = sheets.len();
                 boundaries_to[n.index()].push(boundaries.len() as u32);
                 boundaries.push(SheetBoundary {
-                    from: graph[from].key,
+                    from: graph[*from].key,
                     to: graph[n].key,
                     z,
                     sheet: ids[at],
-                    kind,
-                    branches,
+                    branches: sheets.len(),
                 });
             }
         }
@@ -283,7 +309,7 @@ impl<const N: usize> SheetData<N> {
             offsets,
             sizes,
             ids,
-            carried,
+            merged,
             foremost,
             boundaries,
             boundaries_to,
@@ -305,9 +331,9 @@ impl<const N: usize> SheetData<N> {
         (z < self.sizes[node.index()]).then(|| self.ids[self.offsets[node.index()] + z])
     }
 
-    pub(super) fn arms(&self, node: NodeIndex, z: usize) -> usize {
+    pub(super) fn merged(&self, node: NodeIndex, z: usize) -> usize {
         if z < self.sizes[node.index()] {
-            self.carried[self.offsets[node.index()] + z]
+            self.merged[self.offsets[node.index()] + z]
         } else {
             0
         }

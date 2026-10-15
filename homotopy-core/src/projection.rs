@@ -30,9 +30,7 @@ use crate::{
 mod sheets;
 
 use self::sheets::SheetData;
-pub use self::sheets::{
-    thickness_step, thickness_steps, Shading, SheetBoundary, SheetBoundaryKind, SheetId,
-};
+pub use self::sheets::{thickness_step, thickness_steps, Shading, SheetBoundary, SheetId};
 
 type Coordinate<const N: usize> = [SliceIndex; N];
 
@@ -384,7 +382,7 @@ impl<const N: usize> Depths<N> {
             .then(|| self.coord_to_node.get(&coord).copied())
             .flatten();
         let data = node.map(|_| self.sheet_data());
-        let arms = |z: usize| node.zip(data).map_or(0, |(n, data)| data.arms(n, z));
+        let merges = |z: usize| node.zip(data).map_or(0, |(n, data)| data.merged(n, z));
         fibre
             .singular_slices()
             .enumerate()
@@ -396,7 +394,7 @@ impl<const N: usize> Depths<N> {
                     front: front == Some(z),
                     id,
                     foremost: id.zip(data).is_some_and(|(id, data)| data.foremost(id)),
-                    arms: arms(z),
+                    merges: merges(z),
                 }
             })
             .collect()
@@ -410,16 +408,17 @@ impl<const N: usize> Depths<N> {
         self.sheet_data().count()
     }
 
-    /// The places where a sheet begins or ends, or where sheets merge or split: the cones of the
-    /// rewrites along the edges of the scaffold that are not one height to one (see
-    /// [`SheetBoundary`]). Empty for a diagram that has only the dimensions of the projection.
+    /// The places where distinct sheets meet: the cones of the rewrites along the edges of the
+    /// scaffold that take two or more heights that are different sheets to one (see
+    /// [`SheetBoundary`]). Empty for a diagram that has only the dimensions of the projection, and
+    /// for one with a single sheet.
     #[must_use]
     pub fn sheet_boundaries(&self) -> &[SheetBoundary<N>] {
         self.sheet_data().boundaries()
     }
 
-    /// The boundaries of sheets that end at the position `coord`: the sheets there that begin
-    /// or are merged out of several, as seen from its neighbours.
+    /// The meetings of sheets at the position `coord`: its heights that several distinct sheets
+    /// of its neighbours are merged into.
     #[must_use]
     pub fn sheet_boundaries_at(&self, coord: Coordinate<N>) -> Vec<&SheetBoundary<N>> {
         match self.coord_to_node.get(&coord) {
@@ -450,14 +449,12 @@ impl<const N: usize> Depths<N> {
             .collect()
     }
 
-    /// How many sheets meet at the position `coord`, if some do: the most heights of the
-    /// neighbouring positions that the edges carry into one of its heights, three or more (see
-    /// [`SheetBoundaryKind::MergesOrSplits`]). 0 if no sheets meet there.
+    /// How many distinct sheets meet at the position `coord`, if some do: the most that are merged
+    /// into one of its heights, two or more (see [`SheetBoundary`]). 0 if no sheets meet there.
     #[must_use]
     pub fn sheets_meeting_at(&self, coord: Coordinate<N>) -> usize {
         self.sheet_boundaries_at(coord)
             .iter()
-            .filter(|b| b.kind == SheetBoundaryKind::MergesOrSplits)
             .map(|b| b.branches)
             .max()
             .unwrap_or(0)
@@ -483,11 +480,7 @@ impl<const N: usize> Depths<N> {
         ) else {
             return 0;
         };
-        let meets = |n: NodeIndex| {
-            self.sheet_data()
-                .boundaries_to(n)
-                .any(|b| b.kind == SheetBoundaryKind::MergesOrSplits)
-        };
+        let meets = |n: NodeIndex| self.sheet_data().boundaries_to(n).next().is_some();
         let vertex = if meets(second) {
             second
         } else if meets(first) {
@@ -569,12 +562,10 @@ pub struct Sheet {
     /// `None` for the sheets *inside* a sheet (`within` of [`Depths::sheets`] not empty): only
     /// the identity of the sheets of the first coordinate after the position's is followed.
     pub id: Option<SheetId>,
-    /// How many heights of the neighbouring positions the edges into this position carry into
-    /// this one (see the `sheets` module): 1 where a sheet ends (at a point of the picture), 2
-    /// where it passes through, 3 or more where sheets meet at a cell, and 0 for a sheet that
-    /// lies in the position and not in the ones beside it, such as a line along a wire. 0 for
-    /// sheets inside a sheet.
-    pub arms: usize,
+    /// How many distinct sheets of the neighbouring positions the edges into this position merge
+    /// into this one, where sheets meet (see the `sheets` module): 2 or more at a point of the
+    /// picture where they do, and 0 everywhere else, and for sheets inside a sheet.
+    pub merges: usize,
     /// Whether the sheet is in front along its whole length, which is not what [`front`](Self::front)
     /// says: it is not hidden by another sheet, or is hidden at fewer of the positions that it
     /// shares with others than it is the front-most at (see the `sheets` module).

@@ -683,9 +683,9 @@ impl<const N: usize> Component for DiagramSvg<N> {
                 {Self::view_placeholder_hatch(ctx, prepared)}
                 {prepared.graphic.iter().enumerate().take(surfaces).map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
                 {Self::view_sheet_highlight_under(ctx)}
+                {Self::view_sheet_marks(ctx, prepared)}
                 {prepared.graphic.iter().enumerate().skip(surfaces).map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
                 {Self::view_sheet_highlight_over(ctx)}
-                {Self::view_sheet_marks(ctx, prepared)}
                 {self.view_highlight(ctx)}
                 {self.view_drop_target(prepared)}
             </svg>
@@ -1219,26 +1219,17 @@ impl<const N: usize> DiagramSvg<N> {
 }
 
 impl<const N: usize> DiagramSvg<N> {
-    /// What to say of the place, if a sheet ends or sheets meet there (when they are outlined).
+    /// What to say of the place, if distinct sheets meet there (when they are marked).
     fn boundary_note(
         ctx: &Context<Self>,
         prepared: &PreparedDiagram<N>,
         position: [SliceIndex; N],
     ) -> Option<&'static str> {
-        use homotopy_core::projection::SheetBoundaryKind::{BeginsOrEnds, MergesOrSplits};
-
         if !ctx.props().sheets || !AppSettings::get_sheet_outlines() {
             return None;
         }
-        let boundaries = prepared.depths.sheet_boundaries_at(position);
-        let meets = boundaries.iter().any(|b| b.kind == MergesOrSplits);
-        let ends = boundaries.iter().any(|b| b.kind == BeginsOrEnds);
-        match (ends, meets) {
-            (_, true) if ends => Some("sheets begin, end, merge or split here"),
-            (_, true) => Some("sheets merge or split here"),
-            (true, false) => Some("a sheet begins or ends here"),
-            (false, false) => None,
-        }
+        (!prepared.depths.sheet_boundaries_at(position).is_empty())
+            .then_some("sheets merge or split here")
     }
 }
 
