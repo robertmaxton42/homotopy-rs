@@ -464,3 +464,88 @@ fn thickness_is_stepped_from_the_thinnest() {
     // One step is no shading at all.
     assert_eq!(thickness_steps(&[1, 5, 9], 1), vec![0, 0, 0]);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Shading agrees with the sheets that the hover lists.
+
+use homotopy_core::{
+    complex::{make_complex, Simplex},
+    projection::{thickness_step, Shading},
+};
+
+/// The visible surfaces of a diagram in 2D, with the number of sheets that the hover lists for
+/// each (`Depths::sheets` at the position of the surface), and the step that it is shaded.
+fn shaded_surfaces(diagram: &DiagramN) -> (Vec<(usize, usize, usize)>, usize) {
+    let diagram: Diagram = diagram.clone().into();
+    let depths = Depths::<2>::new(&diagram).unwrap();
+    let surfaces: Vec<_> = make_complex::<2>(&diagram)
+        .into_iter()
+        .filter_map(|(simplex, visible)| match simplex {
+            Simplex::Surface(corners) if visible => Some(corners),
+            _ => None,
+        })
+        .collect();
+    let shading = Shading::new(&depths, surfaces.iter().copied(), 4);
+    // What the hover says, worked out without `Shading` (and without `surface_thickness`).
+    let listed: Vec<usize> = surfaces
+        .iter()
+        .map(|corners| depths.sheets(corners[0], &[]).len())
+        .collect();
+    let (min, max) = (
+        listed.iter().copied().min().unwrap_or(0),
+        listed.iter().copied().max().unwrap_or(0),
+    );
+    let mut old_min_of_corners_differs = 0;
+    let rows = surfaces
+        .iter()
+        .zip(&listed)
+        .map(|(corners, &count)| {
+            // The surface is a region: no singular height in the two coordinates of the view.
+            assert!(
+                corners[0]
+                    .iter()
+                    .all(|si| !matches!(si, SliceIndex::Interior(Height::Singular(_)))),
+                "the first corner of {corners:?} is a region"
+            );
+            let step = shading.step(&depths, corners);
+            assert_eq!(step, thickness_step(count, min, max, 4), "{corners:?}");
+            let fewest = corners
+                .iter()
+                .map(|corner| depths.thickness(*corner))
+                .min()
+                .unwrap();
+            old_min_of_corners_differs += usize::from(fewest != count);
+            (count, step, fewest)
+        })
+        .collect();
+    (rows, old_min_of_corners_differs)
+}
+
+#[test]
+fn a_surface_is_shaded_for_the_sheets_that_the_hover_lists_at_its_region() {
+    let mut surfaces = 0;
+    let mut shaded = 0;
+    let mut min_of_corners_would_differ = 0;
+    for (name, diagram) in examples_in_2d() {
+        let (rows, differs) = shaded_surfaces(&diagram);
+        surfaces += rows.len();
+        shaded += rows.iter().filter(|(_, step, _)| *step > 0).count();
+        min_of_corners_would_differ += differs;
+        // Surfaces with more sheets are never shaded less than those with fewer.
+        let mut by_count: Vec<(usize, usize)> = rows.iter().map(|r| (r.0, r.1)).collect();
+        by_count.sort_unstable();
+        by_count.dedup();
+        for pair in by_count.windows(2) {
+            assert!(pair[0].1 <= pair[1].1, "{name}: {pair:?}");
+            // and the same count is always the same step
+            assert!(pair[0].0 != pair[1].0, "{name}: {pair:?}");
+        }
+    }
+    assert!(surfaces > 100, "{surfaces} surfaces");
+    assert!(shaded > 0, "some surfaces are shaded");
+    // (The old rule read the fewest of the three corners, and went wrong on these.)
+    assert!(
+        min_of_corners_would_differ > 0,
+        "some surface has a corner with fewer sheets than its region"
+    );
+}

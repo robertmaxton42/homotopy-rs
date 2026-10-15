@@ -636,8 +636,17 @@ indicator: see "Laying out diagrams" below.
   - **Thickness shading** (`thickness_step(s)` in `projection/sheets.rs`, `GraphicElement::build_shaded`,
     `DiagramSvg`, setting *Shade surfaces by the sheets behind them*, `sheet_shading`, on by default; workspace
     diagram only). A surface's thickness is the number of sheets through it: `Depths::thickness`, the number
-    of singular heights of the fibre, the fewest of the three corners of the surface (the corners on wires have
-    the wire's sheets too). It is normalised to the thinnest *surface drawn* (0, as it always was), scaled into
+    of singular heights of the fibre, **at the region the triangle belongs to** (`Depths::surface_position`, its
+    first corner: the same position that hovering over it lists the sheets of, so a surface shaded for `k` is one
+    that the hover says has `k` sheets; `Shading` in `projection/sheets.rs` is the range and the step). It was
+    the fewest of the three corners, which was wrong: two of them are on the wire and the vertex beside the
+    region, and where a sheet ends on a wire the wire has fewer sheets than the region, so a two-sheet region
+    was shaded as one (20 of the 74 triangles of `start` of the tangent categories project, 16 of 44 of the
+    associator; tested against `Stack` in `homotopy-model/tests/shading.rs`, with the fixture when
+    `HOMOTOPY_TANGENT_FIXTURE` is set, and against `Depths::sheets` on the 3D examples in
+    `homotopy-core/tests/sheets.rs`). The shade follows the grid of regions (one position each) and not the
+    coloured areas of a generator, which can hold positions of different thickness; that is what the hover says.
+    It is normalised to the thinnest *surface drawn* (0, as it always was), scaled into
     `SHADING_STEPS` = 4 steps (0 to 3: differences from the minimum when the range fits, else scaled and
     rounded so that anything thicker than the thinnest is at least 1 and the thickest is 3; tested). Surfaces
     of the same generator and step are merged as before, so the elements are those of `build` split by

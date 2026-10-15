@@ -13,7 +13,7 @@ use homotopy_core::{
     complex::{make_complex, Simplex},
     contraction::Bias,
     layout::Layout,
-    projection::{thickness_step, Depths, Projection},
+    projection::{Depths, Projection, Shading},
     rewrite::RewriteN,
     signature::Signature as _,
     Boundary, Diagram, DiagramN, Generator, Height, SliceIndex,
@@ -197,37 +197,25 @@ impl<const N: usize> PreparedDiagram<N> {
         let complex = make_complex(diagram);
         let depths = Depths::new(diagram).unwrap();
         let projection = Projection::new(diagram, &layout, &depths).unwrap();
-        // How many sheets pass through a surface: the fewest of its corners (those on wires and
-        // vertices have the sheets of the wire or vertex as well).
-        let thickness = |corners: &[[SliceIndex; N]; 3]| {
-            corners
-                .iter()
-                .map(|corner| depths.thickness(*corner))
-                .min()
-                .unwrap_or(0)
-        };
-        let (min, max) = shade
-            .then(|| {
-                let counts = complex
+        // How many sheets pass through a surface: those of the region it belongs to, which is
+        // the position that hovering over it lists the sheets of (see `Shading`).
+        let shading = shade.then(|| {
+            Shading::new(
+                &depths,
+                complex
                     .iter()
                     .filter_map(|(simplex, visible)| match simplex {
-                        Simplex::Surface(corners) if *visible => Some(thickness(corners)),
+                        Simplex::Surface(corners) if *visible => Some(*corners),
                         _ => None,
-                    });
-                counts.fold(None, |range: Option<(usize, usize)>, count| {
-                    Some(range.map_or((count, count), |(lo, hi)| (lo.min(count), hi.max(count))))
-                })
-            })
-            .flatten()
-            .unwrap_or_default();
-        let varies = max > min;
+                    }),
+                SHADING_STEPS,
+            )
+        });
         let (graphic, steps): (Vec<_>, Vec<_>) =
             GraphicElement::build_shaded(&complex, &layout, &projection, &depths, |corners| {
-                if varies {
-                    thickness_step(thickness(corners), min, max, SHADING_STEPS)
-                } else {
-                    0
-                }
+                shading
+                    .as_ref()
+                    .map_or(0, |shading| shading.step(&depths, corners))
             })
             .into_iter()
             .unzip();

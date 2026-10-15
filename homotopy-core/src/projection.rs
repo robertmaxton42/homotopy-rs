@@ -31,7 +31,7 @@ mod sheets;
 
 use self::sheets::SheetData;
 pub use self::sheets::{
-    thickness_step, thickness_steps, SheetBoundary, SheetBoundaryKind, SheetId,
+    thickness_step, thickness_steps, Shading, SheetBoundary, SheetBoundaryKind, SheetId,
 };
 
 type Coordinate<const N: usize> = [SliceIndex; N];
@@ -434,6 +434,22 @@ impl<const N: usize> Depths<N> {
             Some(Diagram::DiagramN(fibre)) => fibre.size(),
             _ => 0,
         }
+    }
+
+    /// The position of the projection that a triangle of a surface belongs to, and so whose sheets
+    /// are the ones behind it: its first corner, which is the one that is a region (in the
+    /// coordinates of the view, no singular height) for the triangles that a cube of the mesh is
+    /// cut into. Hovering over the surface lists the sheets of this position.
+    #[must_use]
+    pub const fn surface_position(corners: &[Coordinate<N>; 3]) -> Coordinate<N> {
+        corners[0]
+    }
+
+    /// How many sheets pass through a triangle of a surface: those of its
+    /// [position](Self::surface_position).
+    #[must_use]
+    pub fn surface_thickness(&self, corners: &[Coordinate<N>; 3]) -> usize {
+        self.thickness(Self::surface_position(corners))
     }
 
     #[must_use]

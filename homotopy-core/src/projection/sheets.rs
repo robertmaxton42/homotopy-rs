@@ -320,6 +320,68 @@ fn fibre_size(fibre: &Diagram) -> usize {
     }
 }
 
+/// How surfaces are shaded by the sheets behind them: the thickness of each, in a few steps from
+/// the thinnest surface drawn.
+///
+/// A surface of the picture is a triangle of the simplicial complex, and it belongs to the
+/// position that is its first corner ([`Depths::surface_position`]): a region, where the cells of
+/// the projection are in the two coordinates of the view, with its own fibre and so its own
+/// number of sheets. That number is the thickness of the triangle (not the fewest of its three
+/// corners, which are mostly on the wires and vertices around the region, and those have fewer
+/// sheets than the region next to them where sheets end on the wire). It is the same position
+/// that hovering over the triangle lists the sheets of, so that a surface shaded for `k` is one
+/// that the hover says has `k` sheets.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Shading {
+    min: usize,
+    max: usize,
+    levels: usize,
+}
+
+impl Shading {
+    /// The shading of these surfaces (the visible triangles of a diagram), in `levels` steps.
+    ///
+    /// # Panics
+    ///
+    /// If `levels` is 0.
+    pub fn new<const N: usize>(
+        depths: &Depths<N>,
+        surfaces: impl IntoIterator<Item = [Coordinate<N>; 3]>,
+        levels: usize,
+    ) -> Self {
+        assert!(levels > 0, "there is at least one step");
+        let (min, max) = surfaces
+            .into_iter()
+            .map(|corners| depths.surface_thickness(&corners))
+            .fold(None, |range: Option<(usize, usize)>, count| {
+                Some(range.map_or((count, count), |(lo, hi)| (lo.min(count), hi.max(count))))
+            })
+            .unwrap_or_default();
+        Self { min, max, levels }
+    }
+
+    /// Whether every surface is as thin as every other, so that none is shaded.
+    #[must_use]
+    pub const fn is_flat(&self) -> bool {
+        self.max <= self.min
+    }
+
+    /// The step of the surface with these corners, from 0 (as thin as the thinnest) up.
+    #[must_use]
+    pub fn step<const N: usize>(&self, depths: &Depths<N>, corners: &[Coordinate<N>; 3]) -> usize {
+        if self.is_flat() {
+            0
+        } else {
+            thickness_step(
+                depths.surface_thickness(corners),
+                self.min,
+                self.max,
+                self.levels,
+            )
+        }
+    }
+}
+
 /// How thick one surface is, in a few steps.
 ///
 /// `count` sheets pass through it, and the thinnest and thickest surfaces of the diagram have
