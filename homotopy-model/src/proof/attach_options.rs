@@ -300,6 +300,68 @@ impl InferenceReport {
     }
 }
 
+/// Where an option comes in the final list of the search.
+///
+/// That is the index of its generator, and the
+/// part of the search for the generator that it is from (see `Pass::rank`). The final list is
+/// the options sorted by this (stably: the options of one slot are in the order that they were
+/// found), which is what makes it possible to show the options as they are found without ever
+/// reordering what is shown: an option goes to its slot, and the slots are in their order whatever
+/// the order that the generators are searched in.
+///
+/// A slot is only ever filled by one source, in order (the generators are searched one after the
+/// other, and a search split over several workers would give each its own generators).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Slot {
+    pub generator: u32,
+    pub pass: u8,
+}
+
+/// An option as the search finds it, with its place in the final list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Found {
+    pub slot: Slot,
+    pub option: AttachOption,
+}
+
+/// The options found so far, from however many places, in the order that the final list will be
+/// in. Adding options never moves the ones that are there: they only get further apart.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Streamed {
+    slots: std::collections::BTreeMap<Slot, Vec<AttachOption>>,
+    len: usize,
+}
+
+impl Streamed {
+    pub fn extend(&mut self, found: impl IntoIterator<Item = Found>) {
+        for Found { slot, option } in found {
+            self.slots.entry(slot).or_default().push(option);
+            self.len += 1;
+        }
+    }
+
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The options, in the order of the final list.
+    #[must_use]
+    pub fn options(&self) -> Vec<AttachOption> {
+        self.slots.values().flatten().cloned().collect()
+    }
+
+    #[must_use]
+    pub fn into_options(self) -> Vec<AttachOption> {
+        self.slots.into_values().flatten().collect()
+    }
+}
+
 /// The ways to attach, and what there is to say about how they were found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttachOutcome {
@@ -351,8 +413,11 @@ pub struct AttachOptionsJob {
     point: Vec<Height>,
     weak_units: bool,
     limits: InferenceLimits,
-    /// The options with the generator they are for and their part of the search.
+    /// The options with the generator they are for and their part of the search, in the order
+    /// that they were found (they are only added to).
     matches: Vec<(usize, u8, AttachOption)>,
+    /// How many of `matches` have been handed out by [`take_found`](Self::take_found).
+    reported: usize,
     /// The point as it was asked for, relative to what the workspace shows.
     asked_for: Vec<SliceIndex>,
 
@@ -525,6 +590,7 @@ impl AttachOptionsJob {
             weak_units,
             limits,
             matches: vec![],
+            reported: 0,
             asked_for,
             only,
             pieces: None,
@@ -1040,14 +1106,44 @@ impl AttachOptionsJob {
         self.checkpoint_due = !self.to_infer.is_empty();
     }
 
-    fn outcome(&mut self) -> AttachOutcome {
-        let mut matches = std::mem::take(&mut self.matches);
+    /// The options found since the last time this was asked, with their places in the final
+    /// list (see [`Slot`]). Together they are, in the end, exactly the options of the outcome:
+    /// putting them in their slots gives the same list in the same order.
+    ///
+    /// This is for showing the options while the search goes on; the search itself does not
+    /// depend on it being asked.
+    pub fn take_found(&mut self) -> Vec<Found> {
+        let found = self.matches[self.reported..]
+            .iter()
+            .map(|(index, rank, option)| Found {
+                slot: Slot {
+                    generator: *index as u32,
+                    pass: *rank,
+                },
+                option: option.clone(),
+            })
+            .collect();
+        self.reported = self.matches.len();
+        found
+    }
+
+    /// The options in the order of the final list: those of the generators in the order of the
+    /// generators, each generator's in the order of the passes and then of being found.
+    fn sorted_options(&self) -> Vec<AttachOption> {
+        let mut matches: Vec<&(usize, u8, AttachOption)> = self.matches.iter().collect();
         matches.sort_by_key(|(index, rank, _)| (*index, *rank));
+        matches
+            .into_iter()
+            .map(|(_, _, option)| option.clone())
+            .collect()
+    }
+
+    fn outcome(&mut self) -> AttachOutcome {
         self.report.spent_ms = self.spent.as_millis() as u64;
         self.report.plain.spent_ms = self.plain_spent_ms();
         self.report.longest_step_ms = self.longest_step.as_millis() as u64;
         AttachOutcome {
-            options: matches.into_iter().map(|(_, _, option)| option).collect(),
+            options: self.sorted_options(),
             inference: std::mem::take(&mut self.report),
         }
     }
@@ -1092,8 +1188,6 @@ impl Job for AttachOptionsJob {
             return None;
         }
         self.checkpoint_due = false;
-        let mut matches = self.matches.clone();
-        matches.sort_by_key(|(index, rank, _)| (*index, *rank));
         let mut report = self.report.clone();
         report.forced = true;
         report.spent_ms = self.spent.as_millis() as u64;
@@ -1158,7 +1252,7 @@ impl Job for AttachOptionsJob {
             }
         }
         Some(AttachOutcome {
-            options: matches.into_iter().map(|(_, _, option)| option).collect(),
+            options: self.sorted_options(),
             inference: report,
         })
     }

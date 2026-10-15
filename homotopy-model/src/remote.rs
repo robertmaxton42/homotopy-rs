@@ -37,8 +37,8 @@ use crate::{
     proof::{
         generators::{GeneratorInfo, Instance},
         ActionsJob, ActionsOutcome, AttachOption, AttachOptionsJob, AttachOutcome, FolderInfo,
-        InferenceLimits, InferenceReport, Metadata, ProofError, ProofState, SelectedBoundary,
-        Signature, SignatureItem, View, Workspace, REPLAYING,
+        Found, InferenceLimits, InferenceReport, Metadata, ProofError, ProofState,
+        SelectedBoundary, Signature, SignatureItem, Slot, Streamed, View, Workspace, REPLAYING,
     },
     serialize::serialize,
 };
@@ -193,6 +193,10 @@ enum WireOutput {
     AttachOptions {
         options: Vec<WireAttachOption>,
         inference: InferenceReport,
+        /// If the options were sent ahead as they were found (see [`Delta`]): how many, and
+        /// then `options` is empty, as the asker has them already.
+        #[serde(default)]
+        streamed: Option<u32>,
     },
     /// The file is in the trailer.
     Serialized,
@@ -207,6 +211,22 @@ struct WireAttachOption {
     label: Option<String>,
     diagram: Key<Diagram>,
     substitution: Option<Vec<(Generator, Key<Diagram>)>>,
+}
+
+/// An option with its place in the final list.
+#[derive(Serialize, Deserialize)]
+struct WireFound {
+    slot: Slot,
+    option: WireAttachOption,
+}
+
+/// The options that a search for attachments found since it last said, sent ahead of the
+/// answer so that they can be shown while the search goes on. Only what is new is in it, and
+/// what it has is complete (the diagrams are in its own store).
+#[derive(Serialize, Deserialize)]
+struct Delta {
+    store: Store,
+    found: Vec<WireFound>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -401,6 +421,9 @@ pub struct Remote {
     /// For debugging: which steps the delay of a request applies to (see
     /// [`slow_only`](Self::slow_only)).
     slow_label: String,
+    /// The options of the last request that the executor sent ahead (see
+    /// [`options`](Self::options)), which an answer that says it has sent them refers to.
+    streamed: Streamed,
 }
 
 /// What came of a request.
@@ -478,6 +501,7 @@ impl Remote {
             Work::Actions { actions, .. } => actions.clone(),
             Work::AttachOptions { .. } | Work::Serialize => vec![],
         };
+        self.streamed = Streamed::default();
         let signature = match &self.holds {
             Some((number, held)) if !send_signature && held.identical(&proof.signature) => {
                 SignatureRef::Held(*number)
@@ -499,6 +523,34 @@ impl Remote {
             step_delay_ms,
             step_delay_label: self.slow_label.clone(),
         })
+    }
+
+    /// Makes sense of options that a search for attachments sent ahead of its answer (see
+    /// [`Executor::run_streaming`]): the options that were found since the last, each with its
+    /// place in the final list. They are kept, for the answer to refer to. An `Err` is as for
+    /// [`response`](Self::response).
+    pub fn options(&mut self, bytes: &[u8]) -> Result<Vec<Found>, String> {
+        let result = self.decode_options(bytes);
+        if result.is_err() {
+            self.forget();
+        }
+        result
+    }
+
+    fn decode_options(&mut self, bytes: &[u8]) -> Result<Vec<Found>, String> {
+        let Delta { mut store, found } = rmp_serde::from_slice(bytes).map_err(|e| e.to_string())?;
+        let found: Vec<Found> = found
+            .into_iter()
+            .map(|WireFound { slot, option }| {
+                Some(Found {
+                    slot,
+                    option: unpack_option(&mut store, option)?,
+                })
+            })
+            .collect::<Option<_>>()
+            .ok_or(CORRUPT)?;
+        self.streamed.extend(found.iter().cloned());
+        Ok(found)
     }
 
     /// Makes sense of the answer to a request. An `Err` is a failure of the executor (and what
@@ -544,15 +596,28 @@ impl Remote {
                     error: error.map(ProofError::Remote),
                 })
             }
-            WireOutput::AttachOptions { options, inference } => {
-                Output::AttachOptions(AttachOutcome {
-                    options: options
+            WireOutput::AttachOptions {
+                options,
+                inference,
+                streamed,
+            } => {
+                let options = match streamed {
+                    // They were all sent ahead, and are put in their places: if one is missing
+                    // the answer is not one to use.
+                    Some(count) => {
+                        let streamed = std::mem::take(&mut self.streamed);
+                        if streamed.len() != count as usize || !options.is_empty() {
+                            return Err(CORRUPT.to_owned());
+                        }
+                        streamed.into_options()
+                    }
+                    None => options
                         .into_iter()
                         .map(|option| unpack_option(&mut store, option))
                         .collect::<Option<_>>()
                         .ok_or(CORRUPT)?,
-                    inference,
-                })
+                };
+                Output::AttachOptions(AttachOutcome { options, inference })
             }
             WireOutput::Serialized => {
                 let start = bytes.len().checked_sub(done.trailer).ok_or(CORRUPT)?;
@@ -596,10 +661,27 @@ impl Executor {
         before_step: &mut dyn FnMut(Step),
         on_checkpoint: &mut dyn FnMut(Vec<u8>),
     ) -> Vec<u8> {
-        let (response, trailer) = match self.try_run(request, before_step, on_checkpoint) {
-            Ok(done) => done,
-            Err(message) => (Response::Failed(message), vec![]),
-        };
+        self.run_streaming(request, before_step, on_checkpoint, None)
+    }
+
+    /// [`run_with_checkpoints`](Self::run_with_checkpoints), and a search for attachments gives
+    /// `on_options` the bytes of the options it has found since it last did, as it goes (before
+    /// each of its steps), for [`Remote::options`]. The answer then does not repeat them, so the
+    /// asker has to have taken in all of them before the answer, and every checkpoint (which is
+    /// given after the options it refers to) is only the report. Without `on_options` the
+    /// answer has all of the options.
+    pub fn run_streaming(
+        &mut self,
+        request: &[u8],
+        before_step: &mut dyn FnMut(Step),
+        on_checkpoint: &mut dyn FnMut(Vec<u8>),
+        on_options: Option<&mut dyn FnMut(Vec<u8>)>,
+    ) -> Vec<u8> {
+        let (response, trailer) =
+            match self.try_run(request, before_step, on_checkpoint, on_options) {
+                Ok(done) => done,
+                Err(message) => (Response::Failed(message), vec![]),
+            };
         homotopy_core::collect_garbage();
         let mut bytes = encode(&response);
         bytes.extend(trailer);
@@ -620,6 +702,7 @@ impl Executor {
         request: &[u8],
         before_step: &mut dyn FnMut(Step),
         on_checkpoint: &mut dyn FnMut(Vec<u8>),
+        on_options: Option<&mut dyn FnMut(Vec<u8>)>,
     ) -> Result<(Response, Vec<u8>), String> {
         let Request {
             mut store,
@@ -694,19 +777,51 @@ impl Executor {
             } => {
                 let job = AttachOptionsJob::new(&state, &point, weak_units, limits, only)
                     .map_err(|e| format!("nothing to attach to: {e:?}"))?;
-                let outcome = run_checkpointed(job, step_delay_ms, before_step, &mut |outcome| {
-                    // What a job that is ended in the middle comes to: an answer as any other.
-                    let mut partial = Store::default();
-                    let output = pack_attach_outcome(&mut partial, outcome);
-                    on_checkpoint(encode(&Response::Done(Box::new(Done {
-                        store: partial,
-                        holds: number,
-                        output,
-                        worked_ms: started.elapsed().as_secs_f64() * 1000.0,
-                        trailer: 0,
-                    }))));
-                });
-                pack_attach_outcome(&mut store, outcome)
+                // How many options were sent ahead (when they are).
+                let sent = std::cell::Cell::new(0_usize);
+                let mut on_options = on_options;
+                let streaming = on_options.is_some();
+                let outcome = run_checkpointed(
+                    job,
+                    step_delay_ms,
+                    before_step,
+                    &mut |outcome| {
+                        // What a job that is ended in the middle comes to: an answer as any other.
+                        let mut partial = Store::default();
+                        let output = pack_attach_outcome(
+                            &mut partial,
+                            outcome,
+                            streaming.then(|| sent.get()),
+                        );
+                        on_checkpoint(encode(&Response::Done(Box::new(Done {
+                            store: partial,
+                            holds: number,
+                            output,
+                            worked_ms: started.elapsed().as_secs_f64() * 1000.0,
+                            trailer: 0,
+                        }))));
+                    },
+                    &mut |job: &mut AttachOptionsJob| {
+                        let Some(on_options) = on_options.as_mut() else {
+                            return;
+                        };
+                        let found = job.take_found();
+                        if found.is_empty() {
+                            return;
+                        }
+                        sent.set(sent.get() + found.len());
+                        let mut store = Store::default();
+                        let found = found
+                            .into_iter()
+                            .map(|Found { slot, option }| WireFound {
+                                slot,
+                                option: pack_option(&mut store, option),
+                            })
+                            .collect();
+                        on_options(encode(&Delta { store, found }));
+                    },
+                );
+                pack_attach_outcome(&mut store, outcome, streaming.then(|| sent.get()))
             }
             Work::Serialize => {
                 trailer = serialize(state.signature, state.workspace, state.metadata);
@@ -731,16 +846,19 @@ const CHECKPOINT_COST_FACTOR: u32 = 10;
 
 /// Runs a job to the end, saying what it is doing before each step.
 fn run_with<J: Job>(job: J, delay_ms: u32, before_step: &mut dyn FnMut(Step)) -> J::Output {
-    run_checkpointed(job, delay_ms, before_step, &mut |_| {})
+    run_checkpointed(job, delay_ms, before_step, &mut |_| {}, &mut |_| {})
 }
 
 /// [`run_with`], passing on what the job would come to if it were ended whenever it says it has
-/// something new to say about that.
+/// something new to say about that. `on_progress` is given the job before each step, and once
+/// more when it is over, to take what it found from it (before the checkpoint of that step, so
+/// that whatever a checkpoint refers to has been taken).
 fn run_checkpointed<J: Job>(
     mut job: J,
     delay_ms: u32,
     before_step: &mut dyn FnMut(Step),
     on_checkpoint: &mut dyn FnMut(J::Output),
+    on_progress: &mut dyn FnMut(&mut J),
 ) -> J::Output {
     // A checkpoint is as costly as an answer is (the diagrams of the options are packed, and
     // may be large), so they are not made again until their cost is a tenth of the time since:
@@ -759,6 +877,7 @@ fn run_checkpointed<J: Job>(
             }),
             delay_ms,
         });
+        on_progress(&mut job);
         if not_before.is_none_or(|time| Instant::now() >= time) {
             if let Some(checkpoint) = job.checkpoint() {
                 let started = Instant::now();
@@ -769,19 +888,34 @@ fn run_checkpointed<J: Job>(
             }
         }
         if let Some(output) = job.step() {
+            on_progress(&mut job);
             return output;
         }
     }
 }
 
-fn pack_attach_outcome(store: &mut Store, outcome: AttachOutcome) -> WireOutput {
+/// The outcome of a search for attachments as it goes on the wire. If `sent` says how many of
+/// the options were sent ahead and that is all of them, they are not repeated.
+fn pack_attach_outcome(
+    store: &mut Store,
+    outcome: AttachOutcome,
+    sent: Option<usize>,
+) -> WireOutput {
     let AttachOutcome { options, inference } = outcome;
+    if let Some(sent) = sent.filter(|sent| *sent == options.len()) {
+        return WireOutput::AttachOptions {
+            options: vec![],
+            inference,
+            streamed: Some(u32::try_from(sent).unwrap_or(u32::MAX)),
+        };
+    }
     WireOutput::AttachOptions {
         options: options
             .into_iter()
             .map(|option| pack_option(store, option))
             .collect(),
         inference,
+        streamed: None,
     }
 }
 

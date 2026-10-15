@@ -2,8 +2,9 @@ use std::convert::{Into, TryFrom};
 
 pub use actions_job::{ActionsJob, ActionsOutcome, REPLAYING};
 pub use attach_options::{
-    can_attach, AttachOptionsJob, AttachOutcome, CannotAttach, InferenceLimits, InferenceReport,
-    Narrowed, NoAttachment, PlainReport, DEFAULT_GENERATOR_MS, SHEET_REACH,
+    can_attach, AttachOptionsJob, AttachOutcome, CannotAttach, Found, InferenceLimits,
+    InferenceReport, Narrowed, NoAttachment, PlainReport, Slot, Streamed, DEFAULT_GENERATOR_MS,
+    SHEET_REACH,
 };
 pub use completion::{
     Ambiguity, InferJob, Inference, Mismatch, Part, ReplacementError, Status, Uncuttable,
