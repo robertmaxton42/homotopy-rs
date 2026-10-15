@@ -7,17 +7,15 @@
 //! Firefox both fire these events for the buttons, and cancelling the default action of any of
 //! them prevents navigation in both.
 //!
-//! The page makes no history entries of its own (it only replaces the current one), and the
-//! prompt before leaving catches any navigation that is not prevented, so there is no need for a
-//! guard on `popstate`.
+//! A mouse that sends its buttons to the browser as navigation commands, without any of these
+//! events, is handled by [`history_trap`], which also sees to it that a mouse that does both
+//! undoes once.
 
 use homotopy_core::Direction;
 use wasm_bindgen::{closure::Closure, JsCast};
 use web_sys::{AddEventListenerOptions, EventTarget, MouseEvent};
-use yew::Callback;
 
-use super::settings::AppSettings;
-use crate::model::{history, Action};
+use super::{history_trap, settings::AppSettings};
 
 /// The events that browsers navigate on, or that tell the page about the buttons.
 const EVENTS: [&str; 3] = ["mousedown", "mouseup", "auxclick"];
@@ -43,7 +41,7 @@ pub struct MouseButtons {
 
 impl MouseButtons {
     /// Starts listening, dispatching undo and redo as long as the setting is on.
-    pub fn install(dispatch: Callback<Action>) -> Self {
+    pub fn install() -> Self {
         let listener = Closure::wrap(Box::new(move |event: MouseEvent| {
             let Some(direction) = direction(event.button()) else {
                 return;
@@ -55,9 +53,8 @@ impl MouseButtons {
             event.prevent_default();
             event.stop_propagation();
             if event.type_() == "mouseup" {
-                dispatch.emit(Action::History(history::Action::Move(
-                    history::Direction::Linear(direction),
-                )));
+                // Through the history trap, which sees a mouse that also navigates only once.
+                history_trap::mouse(direction);
             }
         }) as Box<dyn FnMut(_)>);
 

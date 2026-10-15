@@ -715,11 +715,6 @@ valid (`narrowing_to_a_sheet_only_finds_valid_instances`, for the sheet heuristi
   worker, cached, cancelled, pending) are for testing. `__homotopy.profileLayouts()` times the
   layout and geometry of every diagram of the project and its slices next to their weight, for
   choosing the thresholds.
-- **Temporary input logger** (`app/input_log.rs`, for diagnosing the mouse back/forward buttons and the
-  history-trap redesign; remove when done): with `localStorage["homotopy-log-input"] = "1"` (read once at
-  startup) the console logs `[homotopy input] ...` lines for mouse buttons above 2 (all of `auxclick`),
-  `Browser*` keys and Alt+Left/Right, `popstate` (history length and state), `beforeunload` and `pagehide`.
-  It works in the release build and only logs.
 - `.claude/dev/highs-shim.js` and `flake.nix`'s `post.js` assign `self.Highs_*` rather than
   `window.Highs_*`, so that HiGHS is there in a worker too. The shim was tested here; the `flake.nix`
   edit (a textual replacement of `window.` by `self.` in `post.js`, which goes through the Closure
@@ -746,6 +741,39 @@ valid (`narrowing_to_a_sheet_only_finds_valid_instances`, for the sheet heuristi
   limits the delay to steps whose label contains it (`"Inferring"`), and `window.__homotopy_infer_grace_ms`
   sets how long past the time for a step the page lets the worker be silent before it ends it (see "The limit is
   hard").
+
+## The history trap (mouse back/forward, Alt+Left/Right)
+
+`app/history_trap.rs` (glue) and `app/history_trap/machine.rs` (the pure state machine, unit-tested
+natively), active only while *Mouse back and forward buttons undo and redo* is on. Some mice (a
+Logitech under Firefox, found with the now removed input logger) send back/forward to the browser as
+navigation commands with no DOM mouse event, no `Browser*` key and no `popstate`, and the page, having
+no entries of its own, was simply left. So the page keeps `[back, centre, forward]` in the history
+(same URL, `state` `{homotopy: "back"|"centre"|"forward"}`) and sits on the centre; a navigation is
+then a `popstate` that is turned into undo (landed on `back`) or redo (`forward`), through the normal
+dispatch (refused with the pill shaking while a job runs), and the page goes home with `history.go(+-1)`.
+- **Installing** at the first trusted `pointerdown` or `keydown` (not Escape or a lone modifier): browsers
+  skip entries made without user activation. `replaceState(back)`, `pushState(centre)`,
+  `pushState(forward)`, `go(-1)`. A page reloaded on a `centre` adopts the entries it finds.
+- **Forward survives** because nothing pushes after installing: not in `popstate` (restoring is `go`), not
+  for the app's own address changes (`model::update_window_url_path` -> `history_trap::url_changed`:
+  `replaceState` that keeps the state and puts the marker on the centre; the sentinels get the new URL
+  as they are landed on) and not for links to a fragment (the modals use `href="#about"`/`"#"`, and `help()`
+  sets `#help`, which push an entry): a capturing click handler and `history_trap::fragment` use
+  `location.replace` and put the state back. Any new code that pushes history entries must not (use
+  `fragment`/`url_changed`), or the machine finds an unmarked entry and installs again from there.
+- **Dedupe**: key/button navigation and the DOM path of `mouse_buttons.rs` both go through the machine
+  (`history_trap::mouse`); a press seen by the *other* source in the same direction within 300 ms is
+  dropped, two quick presses of one source are two undos. Alt+Left/Right and `BrowserBack/Forward` have no
+  keydown handler on purpose: the `popstate` that follows is the only thing that acts (also in text fields:
+  the history is global; the browser decides whether the key navigates).
+- **Off**: from the centre `go(-1)` once onto the first sentinel and clear its marker, so one more back
+  leaves the page; on again installs at once (a gesture has been seen). Setting changes in the middle of a
+  move are applied when it lands. Every move has a 1 s timeout that looks where the page is and starts
+  again if it is not home (`Wait`/`TimedOut`, with an epoch so that stale ones do nothing).
+- **Inherent**: the toolbar's back/forward buttons undo/redo as well while it is on, and the first back from
+  the first entry never leaves the page; the setting's note says so. `beforeunload` still guards unsaved work.
+- Not tested: Firefox (not available in the sandbox); Chromium with Playwright is.
 
 ## Firebase may not be there, and crashes must not lose work
 

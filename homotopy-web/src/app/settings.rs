@@ -99,6 +99,7 @@ impl Component for SettingsView {
                             AppSettings::set_mouse_undo,
                         )
                     }
+                    <div class="settings__note">{"Browsers send the back and forward buttons of some mice (and Alt+Left and Alt+Right) as navigation, not as clicks, so while this is on the page keeps an entry on each side of the current one in the browser's history and turns going back or forward into undo and redo. That includes the browser's own back and forward buttons: to leave the page with them, turn this off (one more back then leaves). Closing the tab or typing an address still asks before losing unsaved work."}</div>
                     {
                         Self::view_checkbox(
                             "Render 3D diagrams as movies",

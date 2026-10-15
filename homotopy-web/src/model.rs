@@ -685,9 +685,8 @@ pub enum ModelError {
 
 fn help() -> Result<(), ModelError> {
     let window = web_sys::window().ok_or(ModelError::Internal)?;
-    let document = window.document().ok_or(ModelError::Internal)?;
-    let location = document.location().ok_or(ModelError::Internal)?;
-    location.set_href("#help").or(Err(ModelError::Internal))
+    window.document().ok_or(ModelError::Internal)?;
+    crate::app::history_trap::fragment("#help").or(Err(ModelError::Internal))
 }
 
 pub fn zip_files(files: impl Iterator<Item = (String, impl AsRef<[u8]>)>) -> Vec<u8> {
@@ -731,15 +730,8 @@ pub fn generate_download(name: &str, ext: &str, data: &[u8]) -> Result<(), wasm_
 pub fn update_window_url_path(new_path: &str) {
     let window = web_sys::window().unwrap();
     let origin = window.location().origin().unwrap();
-    window
-        .history()
-        .unwrap()
-        .replace_state_with_url(
-            &None::<u8>.into(),
-            "title",
-            Some(&format!("{origin}{new_path}")),
-        )
-        .unwrap();
+    // Replaces the entry and keeps its state, which carries the history trap's marker.
+    crate::app::history_trap::url_changed(&format!("{origin}{new_path}"));
 }
 
 #[must_use]

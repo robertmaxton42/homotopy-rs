@@ -5,6 +5,7 @@
 //!   `{"AttachGenerator": [{"id": 48, "dimension": 6}, [{"Regular": 1}], false]}` for dropping a
 //!   generator on a point of the diagram; `importActions(bytes)`
 //!   and `importProof(bytes)` do the same with a file's contents.
+//! - `setUrl(path)` changes the page's address as the app does when a project is opened.
 //! - `state()` is a JSON summary of the project and the job in progress (see [`Summary`]).
 //! - `sheet(json)` and `sheets()` choose a sheet over the diagram, as the keys do, and say what
 //!   the choices are (see `diagram_svg::sheets`).
@@ -495,6 +496,14 @@ pub fn install(link: &Scope<App>) {
             )));
         })
         .into_js_value(),
+    );
+
+    // `setUrl(path)`: the app changes the address of the page as opening a project does (to test
+    // that the history trap survives it).
+    set(
+        "setUrl",
+        Closure::<dyn Fn(String)>::new(|path: String| model::update_window_url_path(&path))
+            .into_js_value(),
     );
 
     let import = link.clone();
