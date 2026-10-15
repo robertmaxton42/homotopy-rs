@@ -342,6 +342,24 @@ impl App {
         tracing::info!("Received action: {:?}", action);
         crate::panic::note_action(&action);
 
+        match &action {
+            model::Action::StopSearch => return self.cancel(),
+            // The option picked from a list that is still being filled in is "this is the one":
+            // the search is ended (it has committed nothing), and it is attached as any option.
+            model::Action::PickStreamed(_) => {
+                if let Some(job) = &self.job {
+                    if !job.task.is_attach_search() {
+                        busy::refused();
+                        return false;
+                    }
+                    self.end_job();
+                }
+            }
+            // Closing the list while it is being filled in puts the search away.
+            model::Action::ClearSelections if self.state.is_searching() => self.end_job(),
+            _ => {}
+        }
+
         if self.refuse_while_busy(&action) {
             return false;
         }
@@ -401,7 +419,9 @@ impl App {
     fn start_job(&mut self, ctx: &Context<Self>, task: model::Task, resets_panzoom: bool) -> bool {
         // What inferring is for was changed to start it (the replacement chosen), and that is
         // shown while the job runs.
-        let changed_at_start = matches!(task, model::Task::Infer(_));
+        // (And the list of what else attaches, where definitions are on show, is now being filled in.)
+        let changed_at_start =
+            matches!(task, model::Task::Infer(_) | model::Task::AttachRest { .. });
         self.next_job += 1;
         let job = Running {
             id: self.next_job,
@@ -573,6 +593,7 @@ impl App {
                 self.worker_partial(job, bytes);
                 false
             }
+            worker::Event::Options { job, bytes } => self.worker_options(ctx, job, &bytes),
             worker::Event::Done { job, bytes } => self.worker_done(ctx, job, &bytes),
             worker::Event::Crashed { job, message } => self.worker_crashed(ctx, job, &message),
         }
@@ -608,6 +629,34 @@ impl App {
         remote.partial = Some(bytes);
         // (Making it took part of the time since the last word, and the step is yet to come.)
         remote.heard = Instant::now();
+    }
+
+    /// The worker sends the options that the running search has found since it last did: they
+    /// are shown in the list as they come. An answer the page cannot read is a failure of the
+    /// worker, like any other.
+    fn worker_options(&mut self, ctx: &Context<Self>, id: u64, bytes: &[u8]) -> bool {
+        if self
+            .job
+            .as_ref()
+            .is_none_or(|job| job.id != id || job.remote.is_none())
+        {
+            // (From a job that was cancelled or is over.)
+            return false;
+        }
+        match self.worker.remote().options(bytes) {
+            Ok(found) => {
+                // (Taking them in took part of the time since the worker last said anything, and
+                // its next step is yet to come.)
+                if let Some(remote) = self.job.as_mut().and_then(|job| job.remote.as_mut()) {
+                    remote.heard = Instant::now();
+                }
+                self.state.found(found)
+            }
+            Err(message) => {
+                let job = self.job.take().expect("a job was being done");
+                self.worker_failed(ctx, job, &message)
+            }
+        }
     }
 
     /// Looks at whether the worker is stuck: a job that has a limit for its steps (for the search
@@ -685,6 +734,7 @@ impl App {
             "The background worker did not stop in time, and what it had found could not be \
              used; searching here instead",
         ));
+        self.state.restart_stream();
         job.started = Instant::now();
         self.work(ctx, job)
     }
@@ -748,6 +798,8 @@ impl App {
         self.worker.stop();
         self.worker.ensure();
         job.remote = None;
+        // (What it had sent ahead is found again where the job is done now.)
+        self.state.restart_stream();
         job.started = Instant::now();
         if job.task.next_step_may_block() {
             self.wait(ctx, job)
@@ -767,9 +819,16 @@ impl App {
         if doing {
             let running = self.job.take().expect("a job was being done");
             busy::hide();
+            // A search keeps what it had found, as when it is stopped.
+            let kept = self.state.stopped();
             toast(Toast::error(format!(
-                "The background worker crashed while {}: {message}. The project is unchanged.",
-                running.task.label().to_lowercase()
+                "The background worker crashed while {}: {message}. The project is unchanged{}.",
+                running.task.label().to_lowercase(),
+                if kept.is_some() {
+                    ", and the options found so far are listed"
+                } else {
+                    ""
+                }
             )));
         }
         if !self.worker.ensure() {
@@ -865,6 +924,8 @@ impl App {
             }
         }
 
+        // What the search found in this slice is listed while it goes on.
+        let found = self.state.found(job.task.take_found());
         let id = job.id;
         Self::show(&job);
         self.job = Some(job);
@@ -872,7 +933,7 @@ impl App {
             TimeoutFuture::new(0).await;
             Message::Slice(id)
         });
-        false
+        found
     }
 
     /// Commits the output of a job that the worker did.
@@ -906,7 +967,9 @@ impl App {
     }
 
     /// Drops the running job, if there is one. It worked on a copy, so the project, its
-    /// history, and the log of actions for the crash dump are exactly as they were.
+    /// history, and the log of actions for the crash dump are exactly as they were. A search for
+    /// attachments keeps the options it had found, which are listed (marked as stopped, and the
+    /// notice says that there may be more): listing options changes nothing in the project.
     fn cancel(&mut self) -> bool {
         let Some(job) = self.job.take() else {
             return false;
@@ -923,10 +986,42 @@ impl App {
             self.worker.stop();
             self.worker.ensure();
         }
-        toast(Toast::success(format!("Cancelled: {}", job.label())));
+        if let Some(count) = self.state.stopped() {
+            self.inference_notice = vec![NoticeLine::Text(format!(
+                "The search for attachments was stopped before it was done. The {count} option{} \
+                 it had found {} listed; they are valid, but there may be others.",
+                if count == 1 { "" } else { "s" },
+                if count == 1 { "is" } else { "are" },
+            ))];
+            toast(Toast::success(format!(
+                "Stopped: {count} option{} found so far",
+                if count == 1 { "" } else { "s" },
+            )));
+        } else {
+            toast(Toast::success(format!("Cancelled: {}", job.label())));
+        }
         // What the job was started for may be shown differently now (an inference that was
         // cancelled leaves the replacements chosen and says that nothing was inferred).
         true
+    }
+
+    /// Ends the running job without a word, to do something else with the project (what was
+    /// found stays in the state, for the action that follows to put away or use).
+    fn end_job(&mut self) {
+        let Some(job) = self.job.take() else {
+            return;
+        };
+        tracing::info!(
+            "Ended {} after {:.1}ms and {} steps, for what the person picked",
+            job.label(),
+            job.started.elapsed().as_secs_f64() * 1000.0,
+            job.steps
+        );
+        busy::hide();
+        if job.remote.is_some() {
+            self.worker.stop();
+            self.worker.ensure();
+        }
     }
 
     /// Listens for `Esc` anywhere on the page. In the capture phase so that what has focus does
@@ -1093,6 +1188,7 @@ impl App {
                     proof={proof.clone()}
                     options={state.options.clone()}
                     definitions={state.definitions.clone()}
+                    listing={state.listing}
                     drafts={state.drafts.clone()}
                     armed={state.armed}
                     remote_project_metadata={state.remote_project_metadata.clone()}

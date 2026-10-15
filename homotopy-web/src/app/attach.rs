@@ -1,14 +1,18 @@
 use std::cell::RefCell;
 
-use homotopy_common::{hash::FastHashSet, tex::seal};
+use homotopy_common::{
+    hash::{FastHashMap, FastHashSet},
+    tex::seal,
+};
 use homotopy_core::{common::Generator, signature::Signature as _};
 use yew::prelude::*;
 
 use crate::{
     app::tex::TexSpan,
+    components::search_status::SearchStatus,
     model::{
         proof::{self, AttachOption, Signature},
-        Action, Definitions, Selectables,
+        Action, Definitions, Listing, Selectables,
     },
 };
 
@@ -20,7 +24,18 @@ pub struct Props {
     /// search for the rest may not have been done).
     #[prop_or_default]
     pub definitions: Option<Definitions>,
+    /// Whether the list is complete, still being filled in by a search that is going on, or what
+    /// a search that was stopped had found.
+    #[prop_or_default]
+    pub listing: Listing,
     pub signature: Signature,
+}
+
+impl Props {
+    /// Whether picking an option ends a search that is going on first.
+    fn searching(&self) -> bool {
+        self.listing == Listing::Searching
+    }
 }
 
 #[function_component]
@@ -37,20 +52,40 @@ pub fn AttachView(props: &Props) -> Html {
             let entries = group_instances(att, |option| {
                 option.substitution.is_some().then_some(option.generator)
             });
+            let keys = option_keys(att);
+            let searching = props.searching();
             html! {
                 <>
+                    // While the search goes on: what it is doing, and how to stop it. The list
+                    // under it only grows.
+                    if searching {
+                        <SearchStatus on_stop={props.dispatch.reform(|()| Action::StopSearch)} />
+                    } else if props.listing == Listing::Stopped {
+                        <li class="attach__note attach__stopped">
+                            {"The search was stopped before it was done: these are the options \
+                              it had found, and there may be others."}
+                        </li>
+                    }
                     if let Some(definitions) = props.definitions.as_ref().filter(|_| shown > 0) {
                         { view_definitions(props, definitions, defined, !att.is_empty()) }
                     }
                     { for entries.into_iter().map(|entry| match entry {
-                        Entry::Item(index) => view_attach_option(props, &att[index]),
+                        Entry::Item(index) => view_option(
+                            &props.dispatch,
+                            &props.signature,
+                            &att[index],
+                            "attach__option",
+                            searching,
+                            keys[index].clone(),
+                        ),
                         Entry::Group(schema, indices) => html! {
                             <InstanceGroup
                                 key={format!("g-{}-{}", schema.id, schema.dimension)}
                                 dispatch={props.dispatch.clone()}
                                 signature={props.signature.clone()}
                                 schema={schema}
-                                options={indices.into_iter().map(|index| att[index].clone()).collect::<Vec<_>>()}
+                                searching={searching}
+                                options={indices.into_iter().map(|index| (keys[index].clone(), att[index].clone())).collect::<Vec<_>>()}
                             />
                         },
                     }) }
@@ -101,29 +136,45 @@ fn view_definitions(
                     raw_tex={name}
                 />
             </li>
-            { for defined.iter().map(|option| view_option(
+            { for defined.iter().enumerate().map(|(index, option)| view_option(
                 &props.dispatch,
                 &props.signature,
                 option,
                 "attach__option attach__option--definition",
+                props.searching(),
+                format!("definition-{index}"),
             )) }
             if let Some(gave_up) = gave_up {
                 <li class="attach__note">
                     <TexSpan class="attach__option-name" error_color="#c004" raw_tex={gave_up} />
                 </li>
             }
-            if definitions.more.is_some() {
+            if props.searching() {
+                // (What is found comes below, and the line at the top says it is going on.)
+                if others_follow {
+                    <li class="attach__heading">{"Other options"}</li>
+                }
+            } else if definitions.more.is_some() {
                 <li
                     class="attach__option attach__more"
                     role="button"
                     title="Looks at every generator; this can take a while"
                     onclick={search}
                 >
-                    <span class="attach__option-name">{"Search everything for more options"}</span>
+                    <span class="attach__option-name">
+                        {if others_follow {
+                            "Search everything again"
+                        } else {
+                            "Search everything for more options"
+                        }}
+                    </span>
                 </li>
                 <li class="attach__note">
                     {"Definitions are offered first as a shortcut (a heuristic): other things may attach here."}
                 </li>
+                if others_follow {
+                    <li class="attach__heading">{"Other options (found before the search was stopped)"}</li>
+                }
             } else if others_follow {
                 <li class="attach__heading">{"Other options"}</li>
             } else {
@@ -180,7 +231,10 @@ struct GroupProps {
     dispatch: Callback<Action>,
     signature: Signature,
     schema: Generator,
-    options: Vec<AttachOption>,
+    /// Whether a search is still going on (picking an option ends it).
+    searching: bool,
+    /// The options with their keys, which stay what they are as more arrive.
+    options: Vec<(String, AttachOption)>,
 }
 
 /// The instances of one schema that were inferred, behind a header with the schema's name and how
@@ -231,7 +285,13 @@ fn InstanceGroup(props: &GroupProps) -> Html {
                 </span>
             </li>
             if *open {
-                { for props.options.iter().map(|option| view_group_option(&props.dispatch, &props.signature, option)) }
+                { for props.options.iter().map(|(key, option)| view_group_option(
+                    &props.dispatch,
+                    &props.signature,
+                    option,
+                    props.searching,
+                    key.clone(),
+                )) }
             }
         </>
     }
@@ -242,30 +302,61 @@ fn view_group_option(
     dispatch: &Callback<Action>,
     signature: &Signature,
     option: &AttachOption,
+    searching: bool,
+    key: String,
 ) -> Html {
     view_option(
         dispatch,
         signature,
         option,
         "attach__option attach__option--grouped",
+        searching,
+        key,
     )
 }
 
-fn view_attach_option(props: &Props, option: &AttachOption) -> Html {
-    view_option(&props.dispatch, &props.signature, option, "attach__option")
+/// Keys for the options of a list that stay the same when more options are put into it, so that
+/// those that are there are not made again: what the option is, and which of those like it.
+fn option_keys(options: &[AttachOption]) -> Vec<String> {
+    let mut seen: FastHashMap<String, usize> = FastHashMap::default();
+    options
+        .iter()
+        .map(|option| {
+            let base = format!(
+                "{}-{}-{}-{:?}",
+                option.generator.id,
+                option.generator.dimension,
+                option.label.as_deref().unwrap_or(""),
+                option.embedding,
+            );
+            let count = seen.entry(base.clone()).or_insert(0);
+            *count += 1;
+            format!("{base}#{count}")
+        })
+        .collect()
 }
 
+/// An option of the list. While a search is going on (`searching`) picking one attaches it and
+/// ends the search, which would otherwise refuse the attachment (see [`Action::PickStreamed`]).
 fn view_option(
     dispatch: &Callback<Action>,
     signature: &Signature,
     option: &AttachOption,
     class: &'static str,
+    searching: bool,
+    key: String,
 ) -> Html {
     let info = signature.generator_info(option.generator).unwrap();
 
     let onclick = dispatch.reform({
         let option = option.clone();
-        move |_| Action::Proof(proof::Action::Attach(option.clone()))
+        move |_| {
+            if searching {
+                Action::PickStreamed(option.clone())
+            } else {
+                Action::Proof(proof::Action::Attach(option.clone()))
+            }
+        }
     });
 
     let onmouseenter = dispatch.reform({
@@ -279,6 +370,7 @@ fn view_option(
     // TODO: How should highlights work on touch devices?
     html! {
         <li
+            key={key}
             class={class}
             onclick={onclick}
             onmouseenter={onmouseenter}

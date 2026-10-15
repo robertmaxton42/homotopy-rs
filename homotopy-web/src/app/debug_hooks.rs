@@ -69,6 +69,11 @@ enum Command {
     /// Picks a generator for the next click on the diagram to attach (`null` puts it down).
     Arm(Option<homotopy_core::Generator>),
     Select(usize),
+    /// Picks the option at this place in the list as it is now, while the search is still going
+    /// on (see `Action::PickStreamed`).
+    PickStreamed(usize),
+    /// Stops the search that is going on, keeping what it has found.
+    StopSearch,
     ClearSelections,
     Undo,
     Redo,
@@ -107,6 +112,9 @@ impl From<Command> for model::Action {
             }
             Command::Arm(generator) => Self::Arm(generator),
             Command::Select(index) => Self::Select(index),
+            // (The place in the list is looked up where the state is: see `install`.)
+            Command::PickStreamed(_) => unreachable!("looked up where the state is"),
+            Command::StopSearch => Self::StopSearch,
             Command::ClearSelections => Self::ClearSelections,
             Command::Undo => linear(Backward),
             Command::Redo => linear(Forward),
@@ -138,6 +146,8 @@ struct Summary {
     project_bytes: usize,
     generators: usize,
     options: Option<usize>,
+    /// How the options are listed: `Complete`, `Searching` or `Stopped`.
+    listing: String,
     /// If the first options are definitions: how many, and whether the search for everything
     /// else is still to do.
     definitions: Option<(usize, bool)>,
@@ -181,6 +191,7 @@ fn summary() -> String {
             model::Selectables::Merge(_, tos) => tos.len(),
             model::Selectables::Attach(options) => options.len(),
         }),
+        listing: format!("{:?}", state.listing),
         definitions: state
             .definitions
             .as_ref()
@@ -480,6 +491,15 @@ pub fn install(link: &Scope<App>) {
         Closure::<dyn Fn(String) -> Result<(), JsValue>>::new(move |json: String| {
             let command: Command =
                 serde_json::from_str(&json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            if let Command::PickStreamed(index) = command {
+                let option = STATE.with(|state| match &state.borrow().0.options {
+                    Some(model::Selectables::Attach(options)) => options.get(index).cloned(),
+                    _ => None,
+                });
+                let option = option.ok_or_else(|| JsValue::from_str("no such option"))?;
+                dispatch.send_message(Message::Dispatch(model::Action::PickStreamed(option)));
+                return Ok(());
+            }
             dispatch.send_message(Message::Dispatch(command.into()));
             Ok(())
         })

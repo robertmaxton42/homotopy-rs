@@ -844,3 +844,310 @@ fn a_click_on_a_cell_offers_its_definitions_first_and_everything_else_on_asking(
     assert_eq!(click.heavy_label(), Some("Searching for attachments"));
     assert!(!click.allowed_while_busy());
 }
+
+/// A state and a point where several ways to attach are found (at least `most`, if `exactly` is
+/// not set; exactly that many if it is), and the options the whole search finds there, in order.
+fn where_options_are_found(
+    wanted: impl Fn(usize) -> bool,
+) -> (State, Vec<SliceIndex>, Vec<proof::AttachOption>) {
+    use homotopy_core::DiagramN;
+    for json in [ASSOCIATOR, SYMMETRIC_MONOIDAL, MERGE_CONTRACT] {
+        let actions = recorded_actions(json);
+        let mut state = State::default();
+        for (i, action) in actions.iter().enumerate() {
+            if state.update(Action::Proof(action.clone())).is_err() {
+                continue;
+            }
+            if i % 4 != 0 || state.proof().workspace.is_none() {
+                continue;
+            }
+            let diagram = state.proof().workspace.as_ref().unwrap().diagram.clone();
+            let mut points = vec![
+                vec![],
+                vec![SliceIndex::Boundary(Boundary::Source)],
+                vec![SliceIndex::Boundary(Boundary::Target)],
+            ];
+            if let Ok(d) = DiagramN::try_from(diagram) {
+                for h in 0..=2 * d.size() {
+                    points.push(vec![SliceIndex::Interior(homotopy_core::Height::from(h))]);
+                }
+            }
+            for point in points {
+                let limits = InferenceLimits::UNLIMITED;
+                let Ok(job) =
+                    proof::AttachOptionsJob::new(state.proof(), &point, true, limits, None)
+                else {
+                    continue;
+                };
+                let options = homotopy_model::job::run_to_end(job).options;
+                if wanted(options.len()) {
+                    return (state, point, options);
+                }
+            }
+        }
+    }
+    panic!("an example has a point with the wanted number of options");
+}
+
+/// Starts a click that looks for everything, and steps the search until options have been found
+/// (and put in the list) while it is not over: the task, which has not been finished.
+fn click_until_something_is_listed(
+    state: &mut State,
+    point: &[SliceIndex],
+) -> (Task, Vec<proof::AttachOption>) {
+    let Started::Running(mut task) = state
+        .start(Action::SelectPoint(
+            point.to_vec(),
+            true,
+            InferenceLimits::UNLIMITED,
+        ))
+        .unwrap()
+    else {
+        panic!("finding what to attach is a task");
+    };
+    let mut shown: Vec<proof::AttachOption> = vec![];
+    loop {
+        assert!(
+            task.step().is_none(),
+            "the search was over before it listed anything"
+        );
+        if state.found(task.take_found()) {
+            let Some(Selectables::Attach(now)) = state.options.clone() else {
+                panic!("the options found are listed");
+            };
+            // What is listed is only added to.
+            let mut rest = now.iter();
+            assert!(shown.iter().all(|option| rest.any(|other| other == option)));
+            shown = now;
+            return (task, shown);
+        }
+    }
+}
+
+use homotopy_web::model::{Listing, Selectables};
+
+#[test]
+fn options_are_listed_as_a_search_finds_them_in_the_place_they_will_have() {
+    let (state, point, whole) = where_options_are_found(|n| n >= 3);
+    let mut state = state;
+    let before = summary(&state);
+    assert_eq!(state.listing, Listing::Complete);
+
+    let (mut task, mut shown) = click_until_something_is_listed(&mut state, &point);
+    // Listed, in the list that is going to be, while the search goes on; the project is not touched.
+    assert_eq!(state.listing, Listing::Searching);
+    assert!(state.is_searching());
+    assert!(shown.len() <= whole.len());
+    assert_eq!(summary(&state), before);
+
+    // The rest arrives without moving what is listed, and the list is the search's in the end.
+    let output = loop {
+        if let Some(output) = task.step() {
+            break output;
+        }
+        if state.found(task.take_found()) {
+            let Some(Selectables::Attach(now)) = state.options.clone() else {
+                panic!("listed");
+            };
+            let mut rest = now.iter();
+            assert!(shown.iter().all(|option| rest.any(|other| other == option)));
+            shown = now;
+        }
+        assert_eq!(summary(&state), before);
+    };
+    state.found(task.take_found());
+    assert_eq!(shown, whole);
+    assert_eq!(state.options, Some(Selectables::Attach(whole.clone())));
+    state.finish(output).unwrap();
+    assert_eq!(state.listing, Listing::Complete);
+    assert_eq!(state.options, Some(Selectables::Attach(whole)));
+    assert_eq!(summary(&state), before);
+}
+
+#[test]
+fn picking_an_option_while_the_search_goes_on_ends_it_and_attaches_exactly_that_option() {
+    let (state, point, whole) = where_options_are_found(|n| n >= 3);
+    let mut state = state;
+    let before = summary(&state);
+
+    let (task, shown) = click_until_something_is_listed(&mut state, &point);
+    // It is allowed while the search runs (the app ends the search first).
+    let picked = shown[0].clone();
+    assert!(whole.contains(&picked));
+    let pick = Action::PickStreamed(picked.clone());
+    assert!(pick.allowed_while_busy());
+    assert!(Action::StopSearch.allowed_while_busy());
+    // The numbers are those of the final list, which is not known: the keys are refused.
+    assert!(!Action::Select(0).allowed_while_busy());
+    // Cancelling the search: nothing of it was committed.
+    assert!(task.is_attach_search());
+    drop(task);
+    assert_eq!(summary(&state), before);
+
+    run_in_steps(&mut state, pick);
+
+    // What is attached is that option, as clicking it in a finished list would.
+    let mut straight = state_before_clicking(&point, &before);
+    straight
+        .update(Action::Proof(proof::Action::Attach(picked.clone())))
+        .unwrap();
+    assert_eq!(summary(&state), summary(&straight));
+    assert_eq!(
+        state.history.get_actions().last(),
+        Some(&proof::Action::Attach(picked))
+    );
+    assert_eq!(state.history.get_actions().len(), before.0.len() + 1);
+    // And the list is put away.
+    assert!(state.options.is_none());
+    assert_eq!(state.listing, Listing::Complete);
+    assert!(!state.is_searching());
+}
+
+/// The state with the actions of the summary done again (the project as it was).
+fn state_before_clicking(
+    _point: &[SliceIndex],
+    before: &(Vec<proof::Action>, bool, bool, proof::ProofState),
+) -> State {
+    let mut state = State::default();
+    for action in &before.0 {
+        state.update(Action::Proof(action.clone())).unwrap();
+    }
+    assert_eq!(summary(&state), *before);
+    state
+}
+
+#[test]
+fn stopping_a_search_keeps_the_options_it_found_and_leaves_the_project_alone() {
+    let (state, point, whole) = where_options_are_found(|n| n >= 3);
+    let mut state = state;
+    let before = summary(&state);
+
+    let (task, shown) = click_until_something_is_listed(&mut state, &point);
+    drop(task);
+    assert_eq!(state.stopped(), Some(shown.len()));
+    // They are still listed, marked as what a search that was stopped had found.
+    assert_eq!(state.options, Some(Selectables::Attach(shown.clone())));
+    assert_eq!(state.listing, Listing::Stopped);
+    assert_eq!(summary(&state), before);
+    // Each is among what the whole search finds, in its order.
+    let mut rest = whole.iter();
+    assert!(shown.iter().all(|option| rest.any(|other| other == option)));
+    // They are listed as any list is: picking one attaches it, and the keys index them.
+    assert!(matches!(Action::Select(0).allowed_while_busy(), false));
+    let mut picked = state.clone();
+    picked.update(Action::Select(0)).unwrap();
+    assert_eq!(
+        picked.history.get_actions().last(),
+        Some(&proof::Action::Attach(shown[0].clone()))
+    );
+    // Esc puts them away.
+    state.update(Action::ClearSelections).unwrap();
+    assert!(state.options.is_none());
+    assert_eq!(state.listing, Listing::Complete);
+    assert_eq!(summary(&state), before);
+
+    // A search that had found nothing leaves the list as it was.
+    let mut quiet = State::default();
+    assert_eq!(quiet.stopped(), None);
+}
+
+#[test]
+fn one_option_is_attached_at_once_only_when_the_search_ends_with_it() {
+    let (state, point, whole) = where_options_are_found(|n| n == 1);
+    let mut state = state;
+    let before = summary(&state);
+    let (mut task, shown) = click_until_something_is_listed(&mut state, &point);
+    // It is listed when it is found, and not attached.
+    assert_eq!(shown, whole);
+    assert_eq!(state.listing, Listing::Searching);
+    assert_eq!(summary(&state), before);
+    let output = loop {
+        if let Some(output) = task.step() {
+            break output;
+        }
+    };
+    // At the end of the search it is the only one: attached.
+    let mut started = state.finish(output).unwrap();
+    while let Started::Running(mut task) = started {
+        let output = loop {
+            if let Some(output) = task.step() {
+                break output;
+            }
+        };
+        started = state.finish(output).unwrap();
+    }
+    assert_eq!(state.history.get_actions().len(), before.0.len() + 1);
+    assert!(state.options.is_none());
+    assert_eq!(state.listing, Listing::Complete);
+}
+
+#[test]
+fn the_rest_of_what_attaches_is_listed_below_the_definitions_as_it_is_found() {
+    let (state, point, _cell) = on_a_defined_cell();
+    let limits = InferenceLimits::UNLIMITED;
+    let mut clicked = state.clone();
+    run_in_steps(
+        &mut clicked,
+        Action::SelectCell(point.clone(), true, limits),
+    );
+    let Some(Selectables::Attach(defined)) = clicked.options.clone() else {
+        panic!("the definitions are offered");
+    };
+    let count = defined.len();
+    let before = summary(&clicked);
+
+    let mut more = clicked.clone();
+    let Started::Running(mut task @ Task::AttachRest { .. }) =
+        more.start(Action::SearchEverything).unwrap()
+    else {
+        panic!("the rest of the search is a task");
+    };
+    // The definitions stay as they are while it searches.
+    assert_eq!(more.listing, Listing::Searching);
+    assert_eq!(more.options, Some(Selectables::Attach(defined.clone())));
+    let mut arrivals = 0;
+    let output = loop {
+        let output = task.step();
+        if more.found(task.take_found()) {
+            arrivals += 1;
+            let Some(Selectables::Attach(now)) = more.options.clone() else {
+                panic!("listed");
+            };
+            assert_eq!(&now[..count], &defined[..], "the definitions stay on top");
+            assert!(more.definitions.as_ref().unwrap().more.is_some());
+            // What is below is not a definition again.
+            assert!(now[count..].iter().all(|option| !defined.contains(option)));
+            assert_eq!(summary(&more), before);
+            if arrivals == 1 {
+                // Stopping here keeps both, and the way to search again.
+                let mut stopped = more.clone();
+                assert!(stopped.stopped().unwrap() >= 1);
+                assert_eq!(stopped.listing, Listing::Stopped);
+                assert_eq!(&stopped_options(&stopped)[..count], &defined[..]);
+                assert!(stopped.definitions.as_ref().unwrap().more.is_some());
+            }
+        }
+        if let Some(output) = output {
+            break output;
+        }
+    };
+    assert!(arrivals >= 1);
+    let streamed = stopped_options(&more);
+    more.finish(output).unwrap();
+    // The end of the search gives the same list as the one that was built as it went.
+    assert_eq!(stopped_options(&more), streamed);
+    assert_eq!(more.listing, Listing::Complete);
+    assert_eq!(more.definitions.as_ref().unwrap().more, None);
+
+    // The same as searching without streaming it.
+    let mut plain = clicked.clone();
+    run_in_steps(&mut plain, Action::SearchEverything);
+    assert_eq!(plain.options, more.options);
+}
+
+fn stopped_options(state: &State) -> Vec<proof::AttachOption> {
+    match &state.options {
+        Some(Selectables::Attach(options)) => options.clone(),
+        _ => panic!("options are listed"),
+    }
+}

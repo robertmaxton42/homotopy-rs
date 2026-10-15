@@ -2234,6 +2234,42 @@ body.attach-dragging--refused * {
   border-left: 3px solid #66aeeb;
 }
 
+/* The line at the top of a list that is still being filled in (components/search_status.rs). */
+.attach__searching {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  font-size: 12px;
+  background: var(--drawer-background);
+  border-bottom: 1px solid var(--drawer-selected);
+}
+
+.attach__searching-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.attach__searching-doing {
+  font-variant-numeric: tabular-nums;
+}
+
+.attach__searching-hint {
+  flex: 1 0 100%;
+  color: var(--drawer-foreground-dimmed-text);
+}
+
+.attach__searching-stop {
+  flex: none;
+}
+
 /* The lists in the notice about the search: shut until opened. */
 .inference-notice {
   max-height: 60vh;

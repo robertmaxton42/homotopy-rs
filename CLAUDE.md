@@ -11,7 +11,9 @@ anything that can exceed ~100 ms on a realistic diagram) must:
 2. **Say that it is working, and on what.** Show a visible busy indicator naming the operation
    (e.g. "Inferring instances…"), with progress where progress is knowable.
 3. **Be cancellable.** Clicking the indicator or pressing `Esc` cancels it, leaving the project
-   exactly as it was before the operation started.
+   exactly as it was before the operation started. (A search for attachments lists the options it
+   has found as it goes, and cancelling it keeps them listed: listing options is not changing the
+   project. See "The list fills in as the search goes" under the attach options drawer.)
 
 While such an operation runs, further expensive input is **refused, not queued**: the indicator
 stays up (and should visibly acknowledge the refused input), and cancelling never replays
@@ -81,7 +83,10 @@ indicator: see "Laying out diagrams" below.
   undo of them, no unload warning, and the position (autosave's version) does not change. A job works
   on a copy, so a toggle made while a long `ActionsJob` runs is lost when that commits (the open state
   of that moment is the copy's): a known gap, harmless. Refused input shakes the pill (and shows it
-  at once); allowed input neither shakes it nor cancels the job. Pure view changes that do not go
+  at once); allowed input neither shakes it nor cancels the job. Two actions are allowed that *do* end the
+  running job, both only for a search for attachments whose options are on show (`Listing::Searching`):
+  `PickStreamed(option)` (the app ends the job, then attaches the option as `Attach` does; refused if the
+  running job is not an attach search) and `StopSearch` (what `Esc` does; the drawer's Stop button). Pure view changes that do not go
   through `dispatch` (pan/zoom, opening drawers, settings, opening a group of options or a list in a
   notice: component state) still work. Test: `what_may_be_done_while_busy_does_not_touch_the_project`
   in `homotopy-web/tests/tasks.rs`.
@@ -320,8 +325,11 @@ indicator: see "Laying out diagrams" below.
       with an answer that does for the job if it is ended (`Job::checkpoint`: for `AttachOptionsJob`, the options
       so far, with the generator it is in the middle of in `cut_short` and the ones after it in `not_tried`;
       `Executor::run_with_checkpoints`; the first before anything is done, then as generators are finished but
-      not before ten times the time the last took to make, as packing the options is as costly as packing the
-      answer, 1.5MB for the fixture). The page keeps the latest without decoding it. **When stuck** the page
+      not before ten times the time the last took to make). Since the options are streamed (below) a
+      checkpoint of a streamed search is the report only (`WireOutput::AttachOptions { streamed: Some(n) }`,
+      the options being those sent ahead, which the executor flushes *before* it makes the checkpoint), so it
+      is cheap whatever the size; without a stream it still holds all the options (1.5MB for the fixture). The
+      page keeps the latest without decoding it. **When stuck** the page
       decodes it, ends the worker as Esc would (`stop` + `ensure`) and commits it as the outcome of the job
       (`InferenceReport::forced`; the notice says that a generator took longer than its time and could not be
       stopped, so it was ended: what the search had found before then is offered, the generator it was in the
@@ -518,8 +526,12 @@ indicator: see "Laying out diagrams" below.
     top (in order) and lists the full search's options except those equal to them (`AttachOption` equality); the
     inference notice is the full search's. `count` leading options are the definitions, so the keys 1-9 and
     `Select(i)` index the flat list as before. `ClearSelections`, picking an option, and any other list clear
-    `definitions`; cancelling (Esc) leaves the drawer as it was. The task carries the shown definitions, so a
-    cancelled search leaves nothing stale. Both actions are refused while busy and have the heavy label.
+    `definitions`; cancelling (Esc) with nothing found yet leaves the drawer as it was, and with options found
+    keeps the definitions and what was found (`more` stays, so *Search everything again* is offered). The task
+    carries the shown definitions, so a cancelled search leaves nothing stale. Both actions are refused while
+    busy and have the heavy label. The rest of the search **streams** (below): `State::begin_stream(Some(defs))`
+    keeps the definitions on top and `Listing::Searching` from the start, and the options that arrive are
+    filtered of those equal to a definition as the final one is.
   - **Setting off**: the workspace dispatches `SelectPoint` as before. Armed clicks and drops
     (`AttachGenerator`) never use it.
   - Tests: `homotopy-model/tests/definitions.rs` (every definition offered is among the full search's options,
@@ -713,6 +725,75 @@ indicator: see "Laying out diagrams" below.
 
 New expensive work: write it as a job (or give an existing job another kind of step), label it,
 and check it with the debug hooks below.
+
+- **The list fills in as the search goes** (`AttachOptionsJob::take_found`, `Slot`, `Found`, `Streamed`;
+  `State::found/stopped/restart_stream`, `Listing`; `Action::PickStreamed/StopSearch`; `Remote::options`,
+  `Executor::run_streaming`; `components/search_status.rs`; user-facing text in `doc/attaching.md`). A search can
+  take many seconds and the option wanted is often found early, so the drawer opens at the **first option found**
+  and the rest are put into it as they come, instead of when the whole search is over.
+  - **Deltas.** `take_found` hands out `matches[reported..]` (the job only appends to `matches`; `outcome` and
+    `checkpoint` sort a copy, so taking is valid until the very end). In the page `App::work` takes them after
+    each slice (`Task::take_found`); in the worker `run_checkpointed`'s `on_progress` hook takes them before each
+    step (before the step's delay, so they are not held up by it) and the executor sends **only the new options**
+    as `{kind: "options", job, bytes}` (`Delta { store, found }`: its own store, each option with its `Slot`),
+    which the page decodes as they arrive (`Remote::options`, which also keeps them). The final answer then
+    carries the report and `streamed: Some(n)`, **not the options again**; `Remote::response` puts what it kept
+    in their slots and refuses the answer (`Err`, so the job is done in the page) if it does not have exactly
+    `n`. If the executor did not stream (`run`, `run_with_checkpoints`) or `n` is not all of them, the answer is
+    whole as before (`streamed: None`), so the wire stays readable both ways. A garbled delta is a failure of
+    the worker like a garbled answer: the job is done in the page, and `State::restart_stream` forgets what the
+    worker had sent (the page's job lists them again).
+  - **Order and numbering.** The final list is the options sorted (stably) by `Slot { generator, pass }`: the
+    index of the generator in the signature and the part of the search (`Pass::rank`), i.e. exactly the old
+    `(index, rank)` sort. `Streamed` keeps a `BTreeMap<Slot, Vec<_>>` and lists it flat, so the list shown is
+    *always* in the final order: an option is put in its slot, the list grows in the middle as well as at the
+    end, and what was shown only gets further apart (test: each list is a subsequence of the next). A slot is
+    filled in order by one source, so a search split over several workers (a later change, one per generator
+    group) can send deltas for disjoint generators in any interleaving, and the page's `Streamed` is the same.
+    Chosen: **no numbers while searching**. The drawer shows none anyway, and the keys 1-9 (`Select(i)`, indices
+    of the final flat list) are refused while the job runs (they are not `allowed_while_busy`), so an index never
+    changes meaning under the user's finger; when the search is over (or stopped) they index the list on show as
+    before. Rendering: option rows have keys (`option_keys`: the generator, label, embedding, and a count for
+    duplicates) so that an insertion in the middle does not typeset the shifted rows again; instance groups
+    stay closed and render nothing under the header.
+  - **State.** `State::stream` (private: `above` the definitions of an `AttachRest`, `found: Streamed`, `shown`)
+    is made when the search is started (`begin_stream`) and `State::found` shows it (`options`, `definitions`,
+    `listing = Searching`; the first replaces the list that was there and clears highlights). `Listing` is
+    `Complete | Searching | Stopped`; `finish` sets `Complete` and the final list (so streamed and final are the
+    same), `clear_selections` drops the stream and the listing. The app renders because `found` returns `true`.
+  - **Drawer.** While `Searching`: a sticky line at the top (`SearchStatus`: "Still searching…", the busy job's
+    label and `k of n` as the busy pill has them, from `busy::watch`, a second listener of the pill's events, so
+    progress does not re-render the app) with a **Stop** button; while `Stopped`: a note. Clicking an option
+    dispatches `PickStreamed(option)` while searching and `Proof(Attach(option))` otherwise.
+  - **Picking while searching** (`App::dispatch`): `PickStreamed(option)` ends the job (`end_job`: take it, hide the
+    pill, `stop` + `ensure` the worker, no toast; nothing was committed, so the project is as it was) and goes on
+    to `State::start`, which clears the stream and starts `Proof(Attach(option))`. The option travels by value,
+    not as an index, since the list grows between the render and the click; it is complete (`AttachOption`
+    holds its diagrams), so nothing of the job is needed. Test: `picking_an_option_while_the_search_goes_on_ends_it_and_attaches_exactly_that_option`.
+  - **Esc / pill / Stop keep the options** (`App::cancel` -> `State::stopped`): the job is dropped as ever (the
+    worker ended) and `listing = Stopped`, the options stay, a notice says the search was stopped and the list
+    may be incomplete (there is no report: the worker is gone), a toast says how many. If nothing had been
+    found, the list is as before and the toast says "Cancelled". This is within the policy (the project is
+    exactly as it was: listing options changes nothing). A worker that crashes mid-search keeps them too. The
+    close button of the drawer (`ClearSelections`) while searching ends the job and puts the list away.
+  - **One option.** `finish` attaches a lone option only when the search *ends* with it (`outcome.options.len()
+    == 1`), never on the first arrival; and not when the outcome is `forced` (the stuck-worker path: it may have
+    missed others), where the list is shown. Test: `one_option_is_attached_at_once_only_when_the_search_ends_with_it`.
+  - **The stuck-worker path** is unchanged in kind: `end_stuck_worker` decodes the latest partial (now the report plus
+    `streamed: n`, merged with the options the page has received; a mismatch falls back to doing the job in the
+    page and `restart_stream`). Test: `options_sent_ahead_by_a_worker_are_the_options_of_the_answer` decodes
+    every checkpoint against the deltas before it.
+  - **Tests.** `homotopy-model/tests/streaming.rs` (job-level deltas equal the outcome, same order, on the example
+    corpus at points with and without weak units, taking every step and every third; late-found before early;
+    cut-short search; worker deltas, checkpoints and answer on a thread of its own; a missing delta refuses the
+    answer; no stream = whole answer; the tangent categories fixture with `HOMOTOPY_TANGENT_FIXTURE`, at `[]`
+    with 150 ms for a generator: 131 options in 9 arrivals, debug build 7 s), and in `homotopy-web/tests/tasks.rs`
+    the listing, picking, stopping, one-option and definitions-plus-rest tests. Debug hooks: `{"PickStreamed":
+    i}` (the i-th of the list on show) and `"StopSearch"` in `__homotopy.dispatch`, `state().listing`.
+  - Gaps: the progress is the count of steps (generators, reflections, schemas), not "generator k of n"
+    exactly; options of a stopped worker search that were found but not yet sent are lost (they are sent before
+    each step, so only the step that was running); the page renders the whole drawer list on each arrival (rows
+    are keyed, groups closed); several sources are supported by `Streamed` but there is one worker.
 
 - **Attach options drawer: instances in groups** (`app/attach.rs`). The inferred instances of schemas
   (`AttachOption::substitution` is `Some`) are not listed one by one: plain options stay ungrouped at the

@@ -14,6 +14,7 @@ pub mod layout_note;
 pub mod modal;
 pub mod panzoom;
 pub mod restore_notice;
+pub mod search_status;
 pub mod settings;
 pub mod toast;
 pub mod touch_interface;

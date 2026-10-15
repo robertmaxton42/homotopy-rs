@@ -833,7 +833,9 @@ impl Autosave {
         }
         match event {
             worker::Event::Ready => tracing::info!("The autosave worker is ready"),
-            worker::Event::Progress { .. } | worker::Event::Partial { .. } => {}
+            worker::Event::Progress { .. }
+            | worker::Event::Partial { .. }
+            | worker::Event::Options { .. } => {}
             worker::Event::Done { job, bytes } => self.worker_done(job, &bytes),
             worker::Event::Crashed { job, message } => {
                 tracing::error!("The autosave worker crashed: {message}");

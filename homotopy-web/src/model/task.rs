@@ -16,7 +16,7 @@ use homotopy_model::{
     job::{Job, Progress},
     proof::{
         ActionsJob, ActionsOutcome, AttachOptionsJob, AttachOutcome, DefinitionsJob,
-        DefinitionsOutcome, InferJob, Inference, ProofState, Signature,
+        DefinitionsOutcome, Found, InferJob, Inference, ProofState, Signature,
     },
     remote::{Output, Work},
 };
@@ -97,6 +97,24 @@ impl Task {
             | Self::Infer(_) => false,
             Self::Export(job) => job.next_step_is_heavy(),
         }
+    }
+}
+
+impl Task {
+    /// The options that a search for attachments has found since this was last asked (for the
+    /// other tasks, none), to show as the search goes on (see
+    /// [`State::found`](super::State::found)).
+    pub fn take_found(&mut self) -> Vec<Found> {
+        match self {
+            Self::AttachOptions(job) | Self::AttachRest { job, .. } => job.take_found(),
+            _ => vec![],
+        }
+    }
+
+    /// Whether the task is a search for attachments, which lists what it finds as it goes.
+    #[must_use]
+    pub const fn is_attach_search(&self) -> bool {
+        matches!(self, Self::AttachOptions(_) | Self::AttachRest { .. })
     }
 }
 

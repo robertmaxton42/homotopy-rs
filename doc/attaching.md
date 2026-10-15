@@ -27,8 +27,8 @@ inverse, the cells raised from it, its reflections, and, if it is a schema, its 
 at all of them, and a schema gets all of the time that inferring instances is allowed rather
 than a share of it.) What happens next is as for a click: if there is nothing to attach you are
 told so, if there is one way to do it it is done, and if there are several you choose from a
-list. While the search runs the busy pill is up, as for a click, and `Esc` cancels it. The
-project is unchanged if you cancel.
+list. While the search runs the busy pill is up, as for a click (see *The list fills in as the
+search goes* below for what `Esc` does).
 
 A generator that cannot be attached anywhere in the diagram at all (it has more than one
 dimension more than the diagram has, the cells that it starts and ends at are not in the
@@ -36,6 +36,32 @@ diagram, or it is a 0-cell and weak units are off) is not accepted by the diagra
 it there, and the button tells you why. This is worked out when you pick the generator, from
 dimensions and which cells there are; it never searches, so it cannot say that there is a way
 to attach it at a particular point, only that there is no way at all.
+
+## The list fills in as the search goes
+
+A search can take many seconds, and what you want is often found early. So the list of options
+does not wait for the end: it opens when the **first option is found** and the rest are put into
+it as the search finds them. A line at the top says **Still searching…** (what it is doing, and
+how far along it is) with a **Stop** button.
+
+- **The order is the final order.** The generators are searched cheapest first, but the options are
+  listed in the order of the generators, as they always were in a finished list. A new option is
+  put into its place, so the list grows in the middle as well as at the end, and an option that is
+  there never moves. The keys `1` to `9` stand for places in the finished list, which is not known
+  yet, so they do nothing while the search runs (the busy pill shakes); they work on the list
+  once the search is over. (Nothing in the list is numbered on screen.)
+- **Clicking an option while the search runs** means "this is the one": the search is stopped and
+  that option is attached, as it would have been had the search finished. The search had not
+  changed the project, so nothing else is affected.
+- **`Esc`, the **Stop** button, or clicking the busy pill** stops the search and **keeps the
+  options found so far**. The list says it was stopped and the notice says that there may be
+  others; the project is unchanged (listing options does not change it). `Esc` again, or the
+  close button, puts the list away. If nothing had been found, the list is as it was before.
+  Closing the list while it is filling in stops the search and puts the list away.
+- **One option is attached at once only if the search ends with exactly one.** The first option
+  found is listed, not attached, since more may follow.
+- With **definitions first**, *Search everything* fills in the list below the definitions in the
+  same way, and a stopped search keeps both, with *Search everything again* to start over.
 
 ## Definitions first
 
@@ -144,7 +170,7 @@ on a generator after N s*, 5 s unless you change it, 0 for no limit) for all of 
 the search gives up on that generator, keeps what it had found for it, and goes on to the next.
 There is no limit on the search as a whole, only on each generator: a diagram where more generators
 could attach takes longer, but a generator that takes long does not make the others wait. (`Esc`
-ends the search, and the project is as it was.)
+ends the search and the project is as it was; the options found so far stay listed.)
 
 What is offered is always valid, but may be missing some of what a generator would have had, and
 a notice says which generators were given up on ("Gave up on 2 generators after 5 s each: ...";
