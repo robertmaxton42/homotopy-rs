@@ -153,10 +153,7 @@ impl<const N: usize> DiagramSvg<N> {
                 return html! {};
             }
             html! {
-                <>
-                    <path d={d.clone()} class="sheet-mark__halo" />
-                    <path d={d.clone()} class={classes!("sheet-mark", class)} />
-                </>
+                <path d={d.clone()} class={classes!("sheet-mark", class)} />
             }
         };
         let echoes = marks

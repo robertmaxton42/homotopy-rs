@@ -453,21 +453,16 @@ button, .button {
 }
 
 /* Where sheets meet, over the diagram: a fan of pages at the point (a page for each sheet, a
-   single one where a sheet begins or ends) and echoes alongside the wires of the layers behind
-   (a pale halo under the pages so that they show on any colour). */
-
-.sheet-mark__halo {
-  fill: none;
-  stroke: rgba(255, 255, 255, 0.85);
-  stroke-width: 3px;
-  stroke-linecap: round;
-}
+   single one where a sheet begins or ends) and echoes alongside the wires of the layers behind.
+   The pages have no backing: they are creases in the layer, a darker shade of whatever colour is
+   under them (multiplied), so that they read as part of the surface and not as a sticker on it. */
 
 .sheet-mark {
   fill: none;
-  stroke: #1d1d1f;
-  stroke-width: 1.2px;
+  stroke: rgba(0, 0, 0, 0.42);
+  stroke-width: 1.4px;
   stroke-linecap: round;
+  mix-blend-mode: multiply;
 }
 
 .sheet-mark--end {

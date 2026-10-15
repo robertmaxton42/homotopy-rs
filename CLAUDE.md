@@ -643,7 +643,9 @@ indicator: see "Laying out diagrams" below.
       there (`sheets_meeting_at`, at most `MAX_PAGES` = 4), like the edge of a stack of pages; where a sheet
       only begins or ends, a single arc. A still picture (no curl, no arrow). Tried first: pages radiating from
       the vertex (looked like a claw) and arcs shifted like a stack (heavy); nested arcs about the vertex read best.
-      Dark with a pale halo so it shows on any colour, `pointer-events: none`, in a `g.sheet-marks`
+      No backing (user: it should read as part of the layer's material, not a stick pasted on top): the arcs
+      are a translucent dark stroke with `mix-blend-mode: multiply`, a darker shade of the colour under them,
+      like creases in the surface; `pointer-events: none`, in a `g.sheet-marks`
       (`data-fans`/`data-ends`/`data-echoes`), over everything, made once for the prepared diagram (`OnceCell`).
     - **Echoes** (`Depths::echoes(wire)`, at most `MAX_ECHOES` = 3): a wire (a segment between a meeting and the
       position beside it) gets one echo for each *step* it is behind the front-most of the wires at that point.
