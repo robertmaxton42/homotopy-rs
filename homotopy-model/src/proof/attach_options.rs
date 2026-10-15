@@ -831,6 +831,7 @@ impl AttachOptionsJob {
                 boundary_path: self.boundary_path,
                 embedding: embedding.into_iter().collect(),
                 substitution: None,
+                reflection: false,
             })
             .collect()
     }
@@ -1124,6 +1125,7 @@ impl AttachOptionsJob {
                     boundary_path: self.boundary_path,
                     embedding: inferred.embedding.into_iter().collect(),
                     substitution: Some(inferred.substitution),
+                    reflection: false,
                 },
             });
         }
@@ -1449,6 +1451,7 @@ fn reflection_options(
             boundary_path,
             embedding: embedding.into_iter().collect(),
             substitution: None,
+            reflection: true,
         })
         .collect()
 }

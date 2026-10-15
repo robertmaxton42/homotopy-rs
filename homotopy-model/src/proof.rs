@@ -1291,6 +1291,12 @@ pub struct AttachOption {
     /// instance attached in place of `diagram` (which has the same shape).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub substitution: Option<Vec<(Generator, Diagram)>>,
+    /// Whether the cell is a reflection of `generator` (a dual, a mate, a rotation, its image by
+    /// a symmetry: see [`Structure::Reflection`] and [`Structure::Symmetry`]) and not the
+    /// generator itself, its inverse or a cell raised from it. Only for showing: the list of
+    /// options puts those of one generator in a group of their own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reflection: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]

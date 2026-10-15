@@ -2220,9 +2220,20 @@ body.attach-dragging--refused * {
   opacity: 0.5;
 }
 
-/* The instances of a schema in the list of attachments: a group that is closed until opened. */
+/* The instances of a schema, or the reflections of a generator, in the list of attachments: a
+   group that is closed until opened. */
 .attach__group {
   align-items: center;
+}
+
+/* The generator's colour at the edge of the group's header, as at the edge of its row in the
+   signature (the header centres its contents, which would leave the swatch no height). */
+.attach__group .attach__swatch {
+  align-self: stretch;
+  padding-left: 0;
+  width: var(--space-1);
+  flex: 0 0 auto;
+  box-sizing: border-box;
 }
 
 .attach__group-toggle {

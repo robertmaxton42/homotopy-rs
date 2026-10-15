@@ -518,6 +518,54 @@ fn instances_are_streamed_as_they_are_found_for_a_click_and_for_one_generator() 
     }
 }
 
+/// Only the options of the pass for reflections are marked as reflections, and the mark is not
+/// lost in a worker.
+#[test]
+fn reflections_are_marked_and_the_mark_goes_through_a_worker() {
+    let (mut marked, mut elsewhere_marked) = (0, 0);
+    for json in &EXAMPLES {
+        for state in states_of(json, 3) {
+            let diagram = state.workspace.as_ref().unwrap().diagram.clone();
+            for point in points(&diagram).into_iter().step_by(2) {
+                let Ok(job) = AttachOptionsJob::new(&state, &point, true, NO_LIMIT, None) else {
+                    continue;
+                };
+                let (outcome, streamed, _) = streamed(job, 1);
+                assert_eq!(streamed.options(), outcome.options);
+                for option in &outcome.options {
+                    marked += usize::from(option.reflection);
+                    // (Instances and plain cells are not.)
+                    assert!(!option.reflection || option.substitution.is_none());
+                }
+                let work = Work::AttachOptions {
+                    point: point.clone(),
+                    weak_units: true,
+                    limits: NO_LIMIT,
+                    only: None,
+                };
+                let mut remote = Remote::default();
+                let (answer, said) = elsewhere(remote.request(&state, work, 0, false));
+                for event in &said {
+                    if let Said::Options(bytes) = event {
+                        remote.options(bytes).unwrap();
+                    }
+                }
+                let Answer::Done {
+                    output: Output::AttachOptions(there),
+                    ..
+                } = remote.response(&answer).unwrap()
+                else {
+                    panic!("expected options");
+                };
+                assert_eq!(outcome.options, there.options);
+                elsewhere_marked += there.options.iter().filter(|o| o.reflection).count();
+            }
+        }
+    }
+    assert!(marked > 0, "an example has reflections to attach");
+    assert_eq!(marked, elsewhere_marked);
+}
+
 /// The same through a worker: the instances are sent ahead as they are found, in more than one
 /// message, and put together in their places they are the answer, for a click and for one
 /// generator.
@@ -564,5 +612,48 @@ fn instances_sent_ahead_by_a_worker_are_the_instances_of_the_answer() {
             assert_eq!(here.options, there.options);
             assert_eq!(shown, there.options);
         }
+    }
+}
+
+/// A search for one generator with no time limit (what a drop does) tells whoever watches the
+/// worker that no step has a limit, so that nothing ends it for being slow; one with a limit
+/// says what it is. The instances are streamed either way.
+#[test]
+fn a_search_without_a_time_limit_says_that_no_step_has_one() {
+    let (state, schema) = schema_state(true);
+    for (generator_ms, limited) in [(0, false), (600_000, true)] {
+        let limits = InferenceLimits {
+            generator_ms,
+            ..InferenceLimits::DEFAULT
+        };
+        let work = Work::AttachOptions {
+            point: vec![],
+            weak_units: false,
+            limits,
+            only: Some(schema),
+        };
+        let mut remote = Remote::default();
+        let request = remote.request(&state, work, 0, false);
+        let mut seen = vec![];
+        let mut deltas = vec![];
+        let answer = Executor::default().run_streaming(
+            &request,
+            &mut |step| seen.push(step.limit_ms),
+            &mut |_| {},
+            Some(&mut |bytes| deltas.push(bytes)),
+        );
+        assert!(!seen.is_empty());
+        assert!(
+            seen.iter().all(|&ms| (ms > 0) == limited),
+            "{generator_ms}: {seen:?}"
+        );
+        assert!(deltas.len() > 1, "instances come as they are found");
+        for bytes in &deltas {
+            remote.options(bytes).unwrap();
+        }
+        assert!(matches!(
+            remote.response(&answer).unwrap(),
+            Answer::Done { .. }
+        ));
     }
 }

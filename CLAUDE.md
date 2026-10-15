@@ -258,8 +258,15 @@ indicator: see "Laying out diagrams" below.
     total to run out of and no generator is "not tried" for lack of time (`not_tried` only comes from a search
     that was ended from outside, below). There is no total limit by design (Esc ends the search and the project
     is as it was); an optional total was considered and dropped as one more setting that would bring back the
-    skipping the user does not want. A search for one generator (`only`) has the same time, not more: raise the
-    setting to wait longer for it. One setting, not two (cells and schemas), because the user thinks of "a
+    skipping the user does not want. A search for one generator (`only`) *dropped on the diagram or picked*
+    has **no limit at all** (`attach_inference::limits_for_generator`: the settings but `generator_ms = 0`; user
+    decision: "now that I can just cancel it if I didn't mean it or change my mind, it's better to default to
+    letting it search"); a search for one generator that is made some other way (`AttachGeneratorWith` in the
+    debug hooks, tests) has the time it is given. No limit means `Job::step_limit` is `None`, so the worker's
+    progress reports say `limit_ms: 0` and the page's watchdog is never started (`remote.limit_ms == 0`: tested by
+    `a_search_without_a_time_limit_says_that_no_step_has_one`), and there are no checkpoints. Gap: a search on the page
+    (no ready worker) for one generator has no limit either, and a step of it (one cell made from the generator, one
+    reflection) is as long as it is. The settings note and `doc/attaching.md` say so. One setting, not two (cells and schemas), because the user thinks of "a
     generator" and a schema's plain matching is cheap: it is the inference that uses the time, and that gets what
     matching left.
     - **Why 5 s.** The costliest single generator's plain matching natively is 2.5 s (the reflections of `lc=l`,
@@ -884,18 +891,28 @@ and check it with the debug hooks below.
     project whatever is new in it (the formulas of the rows: the first drawing of the list 1.2 to 1.7s, one
     with several new schema folders 1 to 4s), which is the floor for a click's latency during a search.
 
-- **Attach options drawer: instances in groups** (`app/attach.rs`). The inferred instances of schemas
-  (`AttachOption::substitution` is `Some`) are not listed one by one: plain options stay ungrouped at the
-  top in their order, then one collapsible group per schema (in the order of its first instance), labelled
-  with the schema's name (KaTeX, one formula) and "N instances". Typesetting the formulas of a screenful of
-  instances was a couple of seconds of lag (user report), so **a closed group renders nothing under its
-  header** (`InstanceGroup` renders its options only when open: no KaTeX for hidden ones). Closed by
-  default; a group that was opened stays open for the rest of the session (`OPENED`, a thread-local set of
-  schemas, so that the next click that has instances of the same schema does not shut it). Hover
-  highlighting and clicking work as for any option (`view_option`). The keys 1 to 9 still index the flat
+- **Attach options drawer: instances and reflections in groups** (`app/attach.rs`). The inferred instances of schemas
+  (`AttachOption::substitution` is `Some`) and the **reflections** of generators (`AttachOption::reflection`, set
+  by `reflection_options`: the options of `Pass::Reflections`, which are the duals, mates, rotations and symmetry
+  images, not the inverse, which is a plain variant; it is on the wire and `serde(default)`, so recorded actions
+  read as before) are not listed one by one: plain options stay ungrouped at the top in their order, then one
+  collapsible group per (kind, generator) (`Kind::{Instances, Reflections}`, `group_options`, in the order of its
+  first option), labelled with the generator's name (KaTeX, one formula) and "N instances" / "N reflections".
+  Typesetting the formulas of a screenful of instances was a couple of seconds of lag (user report), so **a
+  closed group renders nothing under its header** (`OptionGroup` renders its options only when open: no KaTeX
+  for hidden ones). Closed by default; a group that was opened stays open for the rest of the session (`OPENED`,
+  a thread-local set of `(Kind, Generator)`, so that the next click that has options of the same group does not
+  shut it). **The folder shows the generator's colour** (`swatch`, user: "to aid in navigation"): the same
+  sliver as the signature row (`info.color`, `signature__generator-color-sliver-light` for a light colour, the
+  hatching of `signature__generator-placeholder[-light]` for a placeholder by `Color::stripes`); it had been in
+  the group header since the instances were grouped but invisible: `.attach__group { align-items: center }`
+  gave the empty swatch span no height, and `.attach__group .attach__swatch { align-self: stretch }` fixes it.
+  Hover highlighting and clicking work as for any option (`view_option`). The keys 1 to 9 still index the flat
   list in the order the search made it (`Action::Select(i)`), which is not the order shown. The signature
   sidebar already keeps the instances of a schema as its children, closed by default and rendered only when
-  open (`GeneratorInfo::instances_open`, the "▸ N" toggle). `group_instances` is pure and tested.
+  open (`GeneratorInfo::instances_open`, the "▸ N" toggle). `group_options` is pure and tested; the
+  reflection marker through the worker in `tests/streaming.rs`
+  (`reflections_are_marked_and_the_mark_goes_through_a_worker`).
 - **The notice about the search** (`components/inference_notice.rs`, lines are `NoticeLine::Text` or
   `NoticeLine::Names { text, names }`): the lists of generators ("Gave up on 19 schemas after 5 s each ▸",
   "Not tried: 14 generators ▸") show only a header with the count; opened, the names are rendered with

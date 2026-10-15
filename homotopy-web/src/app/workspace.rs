@@ -142,8 +142,15 @@ fn view_diagram_svg<const N: usize>(
     let on_select = props.dispatch.reform(move |p| {
         let (weak_units, limits) = (AppSettings::get_weak_units(), attach_inference::limits());
         match armed {
-            // A click attaches the generator that was picked, if it can be.
-            Some(generator) => Action::AttachGenerator(generator, p, weak_units, limits),
+            // A click attaches the generator that was picked, if it can be: for as long as it
+            // takes (`Esc` ends it), whatever the time that a generator is given in a search
+            // of everything.
+            Some(generator) => Action::AttachGenerator(
+                generator,
+                p,
+                weak_units,
+                attach_inference::limits_for_generator(),
+            ),
             None if AppSettings::get_offer_definitions() => {
                 Action::SelectCell(p, weak_units, limits)
             }
@@ -155,7 +162,7 @@ fn view_diagram_svg<const N: usize>(
             generator,
             point,
             AppSettings::get_weak_units(),
-            attach_inference::limits(),
+            attach_inference::limits_for_generator(),
         )
     });
     let on_homotopy = props
