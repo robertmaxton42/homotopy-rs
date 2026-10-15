@@ -484,6 +484,43 @@ button, .button {
   stroke-width: 4px;
 }
 
+/* The sheet that is current in the stack under the pointer, over the whole diagram: its regions
+   tinted, a halo round its wires (under the wires, so it shows as an outline), a disc under its
+   vertices, and a dashed line where it is behind another along a wire. */
+
+.sheet-highlight__regions {
+  fill: #22d3ee;
+  fill-opacity: 0.32;
+  stroke: none;
+}
+
+.sheet-highlight__halo {
+  fill: none;
+  stroke: #22d3ee;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sheet-highlight__discs {
+  fill: #22d3ee;
+  stroke: none;
+}
+
+.sheet-highlight__behind-halo {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.8);
+  stroke-width: 4.5px;
+  stroke-linecap: round;
+}
+
+.sheet-highlight__behind {
+  fill: none;
+  stroke: #0e7490;
+  stroke-width: 2.2px;
+  stroke-dasharray: 5 4;
+  stroke-linecap: round;
+}
+
 /* Surfaces with more sheets behind them (in steps from the thinnest, which is not shaded). The
    hatching of a placeholder is a path of its own over the surface, so it is not shaded. */
 

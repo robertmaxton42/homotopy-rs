@@ -661,6 +661,24 @@ indicator: see "Laying out diagrams" below.
     the wires of the diagram's own layout and so need no new geometry, but are not interrupted by wires in front;
     the 3D view has none; the fan for a sheet that ends was checked in a mock, not on an example (none of the
     five example projects or `start` has one in the 2D view).
+  - **Highlighting a sheet** (`diagram_svg/sheet_highlight.rs`; `Depths::sheet_places`, `sheet_ids_at`). The
+    current sheet of the stack under the pointer (the one chosen with Shift+wheel, `[`/`]`, Tab, or the
+    default; the outer sheet when one is fixed) is highlighted over the whole diagram, wherever it is: the
+    regions it is at are tinted (cyan), the wires drawn for it get a halo under the wires (so it shows as an
+    outline), the drawn vertices it passes through a disc, and where it is behind another at a wire a dashed
+    line runs along the wire. Always on (it follows the hover; no setting) and only where the tooltip lists a
+    stack (several sheets, or one chosen). The tooltip is not interactive, so the "hover a row" behaviour is
+    that the highlight follows the current entry. Done like `apply_dimming`: four paths in two groups
+    (`g.sheet-highlight`, under the wires and over everything) are rendered empty and their `d` is set by
+    `apply_highlight` (in `refresh`, `leave` and `rendered`); the diagram is not rendered again. The shapes of a
+    sheet (`Extent`) are made from `PreparedDiagram::sheet_index` (which action shapes are at which sheet and
+    height, built once from `Depths::sheet_ids_at` at the first hover) and kept per sheet. Shapes belong to the
+    sheet by the position `simplex[0]`, as the hover does. Cost: one pass over the diagram's shapes at the first
+    hover, then a few attribute writes. Gaps: wires are matched by their first position only; the colour is one
+    cyan (it can be close to a generator's); the 3D view has none.
+  - **Cost of the sheet marks on `start`** (release, native): `Depths::new` 60µs, the sheet data 70µs, the echoes
+    of all 96 wires 120µs, listing the wires 190µs; shading reads one fibre size per triangle. Highlighting is
+    attribute writes after the first hover of a sheet (one pass over the shapes).
   - **Thickness shading** (`thickness_step(s)` in `projection/sheets.rs`, `GraphicElement::build_shaded`,
     `DiagramSvg`, setting *Shade surfaces by the sheets behind them*, `sheet_shading`, on by default; workspace
     diagram only). A surface's thickness is the number of sheets through it: `Depths::thickness`, the number

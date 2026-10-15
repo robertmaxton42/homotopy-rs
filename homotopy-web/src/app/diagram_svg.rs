@@ -1,5 +1,5 @@
 use std::{
-    cell::OnceCell,
+    cell::{OnceCell, RefCell},
     convert::{From, Into, TryInto},
     f32::consts::PI,
     rc::Rc,
@@ -53,6 +53,7 @@ use crate::{
 
 pub mod highlight;
 mod marks;
+mod sheet_highlight;
 mod sheets;
 
 pub use self::sheets::{debug_command, debug_summary};
@@ -176,6 +177,10 @@ struct PreparedDiagram<const N: usize> {
     layout: Rc<Layout<N>>,
     /// The fans and echoes where sheets meet, made when first drawn (see `marks`).
     marks: OnceCell<marks::SheetMarks>,
+    /// Which shapes are of which sheet, and the shapes made for the sheets that were highlighted
+    /// (see `sheet_highlight`).
+    sheet_index: OnceCell<sheet_highlight::SheetIndex>,
+    extents: RefCell<sheet_highlight::Extents>,
 
     /// The width and height of the diagram image in pixels.
     ///
@@ -278,6 +283,8 @@ impl<const N: usize> PreparedDiagram<N> {
             projection,
             layout,
             marks: OnceCell::new(),
+            sheet_index: OnceCell::new(),
+            extents: RefCell::default(),
             dimensions,
             transform,
         }
@@ -450,6 +457,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
     fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
         // (What the view drew again is not dimmed, whatever is chosen.)
         self.apply_dimming(ctx);
+        self.apply_highlight(ctx);
         if let Some(sink) = self.drag_sink {
             attach_drag::set_element(sink, &ctx.props().diagram_ref);
         }
@@ -674,7 +682,9 @@ impl<const N: usize> Component for DiagramSvg<N> {
             >
                 {Self::view_placeholder_hatch(ctx, prepared)}
                 {prepared.graphic.iter().enumerate().take(surfaces).map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
+                {Self::view_sheet_highlight_under(ctx)}
                 {prepared.graphic.iter().enumerate().skip(surfaces).map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
+                {Self::view_sheet_highlight_over(ctx)}
                 {Self::view_sheet_marks(ctx, prepared)}
                 {self.view_highlight(ctx)}
                 {self.view_drop_target(prepared)}
@@ -1162,6 +1172,7 @@ impl<const N: usize> DiagramSvg<N> {
             None => tooltip::hide(),
         }
         self.apply_dimming(ctx);
+        self.apply_highlight(ctx);
         self.publish_summary(ctx);
     }
 
