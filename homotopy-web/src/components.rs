@@ -8,6 +8,7 @@ mod common;
 pub mod autosave_note;
 pub mod busy;
 pub mod delta;
+pub mod help_tip;
 pub mod icon;
 pub mod inference_notice;
 pub mod layout_note;

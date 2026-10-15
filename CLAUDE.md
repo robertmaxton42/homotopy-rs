@@ -889,6 +889,23 @@ and check it with the debug hooks below.
   row's `destroy`: a row that goes never sees the pointer leave). `plan` is the pure part (tested natively).
   There is no confirm step, so nothing else lists the names. Nothing re-renders the signature.
 
+- **Settings drawer** (`app/settings.rs`, `components/help_tip.rs`). The drawer shows titles, controls and a
+  line of *status* only (`settings__note`: when the last backup was, why backups do not work, inference
+  turned off for the session); every explanation is in a `HelpTip` after the title: a "?" button (Tab
+  reaches it, `aria-describedby` the popover, `role="tooltip"`) whose popover over the row shows on hover,
+  focus and tap and is closed by Esc (`data-open`/`data-dismissed` on the wrapper, written directly). The
+  texts are constants (`*_HELP`) of one or two short sentences; **new settings with an explanation add one
+  there and keep it short**; keep the facts that matter (Esc ends a search; the limit is per generator and
+  covers matching, reflections and inference; a search for one dragged generator has no limit; the
+  browser's back button also undoes while *Mouse back and forward buttons undo and redo* is on).
+  *Give up on a generator after* is a number box in seconds (`view_number`, `parse_count`: 0 = no limit, negative
+  is 0, fractions round down, at most `MAX_GENERATOR_SECONDS` = 3600, not a number goes back to the setting;
+  committed on input and put right on change; kept as `generator_seconds` as before). Every slider shows its
+  number and updates it on `input`, by writing into its text node (`show_value`; never `set_text_content` on
+  the `output`, which would replace the node Yew updates); settings that cost nothing to change (`live`:
+  the inference dimension, the contraction step) also take effect on `input`, the 3D ones on `change` only
+  (each change rebuilds geometry or the renderer). Ids are `help-<slug>` and `setting-<slug>`.
+
 ## Policy: heuristics
 
 False negatives are acceptable: a useful heuristic may miss solutions. But a heuristic must never

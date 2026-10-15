@@ -2,7 +2,13 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use super::attach_inference;
-use crate::{components::delta::CallbackIdx, declare_settings};
+use crate::{
+    components::{
+        delta::CallbackIdx,
+        help_tip::{slug, HelpTip},
+    },
+    declare_settings,
+};
 
 declare_settings! {
     pub struct AppSettings {
@@ -95,13 +101,13 @@ impl Component for SettingsView {
                         )
                     }
                     {
-                        Self::view_checkbox(
+                        Self::view_checkbox_with_help(
                             "Mouse back and forward buttons undo and redo",
+                            MOUSE_UNDO_HELP,
                             AppSettings::get_mouse_undo(),
                             AppSettings::set_mouse_undo,
                         )
                     }
-                    <div class="settings__note">{"Browsers send the back and forward buttons of some mice (and Alt+Left and Alt+Right) as navigation, not as clicks, so while this is on the page keeps an entry on each side of the current one in the browser's history and turns going back or forward into undo and redo. That includes the browser's own back and forward buttons: to leave the page with them, turn this off (one more back then leaves). Closing the tab or typing an address still asks before losing unsaved work."}</div>
                     {
                         Self::view_checkbox(
                             "Render 3D diagrams as movies",
@@ -117,79 +123,87 @@ impl Component for SettingsView {
                         )
                     }
                     {
-                        Self::view_checkbox(
+                        Self::view_checkbox_with_help(
                             "Show where sheets meet (fans and echoes)",
+                            SHEET_OUTLINES_HELP,
                             AppSettings::get_sheet_outlines(),
                             AppSettings::set_sheet_outlines,
                         )
                     }
-                    <div class="settings__note">{"In the 2D view of a diagram of more than two dimensions, draws a small fan of pages where sheets (what is hidden behind the cell the view shows) meet, a page for each sheet, and a single page where a sheet begins or ends. Wires that go into a layer behind the front one at such a point get faint echoes alongside them, one for each layer back, fading out from the point. Hovering over such a place says so. Sheets are found from the cells' rewrites, so this is what the diagram has and not a guess."}</div>
                     {
-                        Self::view_checkbox(
+                        Self::view_checkbox_with_help(
                             "Shade surfaces by the sheets behind them",
+                            SHEET_SHADING_HELP,
                             AppSettings::get_sheet_shading(),
                             AppSettings::set_sheet_shading,
                         )
                     }
-                    <div class="settings__note">{"In the same view, a surface is drawn a little darker (in up to three steps) the more sheets pass through it, compared with the surface that has the fewest in the diagram, which is as it was. It shows where the diagram is thick behind what the view shows. Turning it on or off draws the diagram again."}</div>
                     {
-                        Self::view_checkbox(
+                        Self::view_checkbox_with_help(
                             "Back up my work in this browser",
+                            AUTOSAVE_HELP,
                             AppSettings::get_autosave(),
                             AppSettings::set_autosave,
                         )
                     }
-                    <div class="settings__note">{Self::autosave_status()}</div>
+                    {Self::view_note(Self::autosave_status())}
                     {
-                        Self::view_checkbox(
+                        Self::view_checkbox_with_help(
                             "Offer definitions first when clicking a cell",
+                            DEFINITIONS_HELP,
                             AppSettings::get_offer_definitions(),
                             AppSettings::set_offer_definitions,
                         )
                     }
-                    <div class="settings__note">{"A heuristic. When a click lands on one cell (a vertex of the picture where all the cells of the highest dimension are one generator), the list first offers its definitions: the generators one dimension up that have that cell as their source or target, such as the unfolding made right after it, found by comparing boundaries and checked by matching. They come with a button to search for everything else. It can miss, for instance instances of schemas that were not made yet, but it never offers what does not attach. Turn it off to always search everything."}</div>
                     {
-                        Self::view_checkbox(
+                        Self::view_checkbox_with_help(
                             "Infer instances of schemas when attaching",
+                            INFER_HELP,
                             AppSettings::get_infer_instances(),
                             attach_inference::set_enabled,
                         )
                     }
-                    <div class="settings__note">{Self::inference_status()}</div>
+                    {Self::view_note(Self::inference_status())}
                     {
-                        Self::view_slider(
-                            &format!("Give up on a generator after {}", Self::seconds(AppSettings::get_generator_budget())),
+                        Self::view_number(
+                            "Give up on a generator after",
+                            GENERATOR_BUDGET_HELP,
                             AppSettings::get_generator_budget(),
+                            attach_inference::MAX_GENERATOR_SECONDS,
+                            "seconds (0 = no limit)",
                             AppSettings::set_generator_budget,
-                            0,
-                            120,
                         )
                     }
-                    <div class="settings__note">{"This is the time any one generator may take when looking for what to attach: matching it and its inverse, the cells raised from it and its reflections (which takes long in high dimensions) and, for a schema, inferring its instances. After that the search gives up on it, keeps what it had found, and goes on to the next, so that one generator that takes long does not make the rest wait. There is no limit on the search as a whole, only on each generator (Esc ends the search); a search with more generators to look at takes longer. A notice says which generators were given up on; drag one onto the diagram, or pick it with the pointing hand, to search for just that."}</div>
                     {
-                        Self::view_slider(
-                            &format!("Infer instances up to dimension {}", Self::dimension_limit(AppSettings::get_infer_max_dimension())),
+                        Self::view_slider_with(
+                            "Infer instances up to dimension",
+                            Some(INFER_DIMENSION_HELP),
                             AppSettings::get_infer_max_dimension(),
-                            AppSettings::set_infer_max_dimension,
                             2,
                             attach_inference::NO_DIMENSION_LIMIT,
+                            Self::dimension_limit,
+                            true,
+                            AppSettings::set_infer_max_dimension,
                         )
                     }
                     {
-                        Self::view_checkbox(
+                        Self::view_checkbox_with_help(
                             "Heuristic: infer instances only from cells near the chosen sheet",
+                            NARROW_HELP,
                             AppSettings::get_infer_narrow_to_sheet(),
                             AppSettings::set_infer_narrow_to_sheet,
                         )
                     }
-                    <div class="settings__note">{"When a sheet is chosen on the diagram (Shift+wheel or [ ] over it), the replacements of placeholders are only made of cells that occur near that sheet. This is quicker but can miss instances that use cells from elsewhere; it never offers one that is not valid, and a notice says when it was used."}</div>
                     {
-                        Self::view_slider(
+                        Self::view_slider_with(
                             "Contraction step",
+                            None,
                             AppSettings::get_contraction_step(),
-                            AppSettings::set_contraction_step,
                             1,
                             7,
+                            |n| n.to_string(),
+                            true,
+                            AppSettings::set_contraction_step,
                         )
                     }
                 </div>
@@ -332,15 +346,19 @@ impl Component for SettingsView {
     }
 }
 
-impl SettingsView {
-    fn seconds(seconds: u32) -> String {
-        if seconds == 0 {
-            "never (no limit)".to_owned()
-        } else {
-            format!("{seconds} s")
-        }
-    }
+/// The explanations of the settings, which are shown in a popover after the title (see
+/// [`HelpTip`]): one or two short sentences each.
+const MOUSE_UNDO_HELP: &str = "Mouse back and forward buttons, and Alt+Left and Alt+Right, undo and redo instead of leaving the page. The browser's own back button undoes too while this is on; turn it off to leave with it.";
+const SHEET_OUTLINES_HELP: &str = "In 2D views of higher-dimensional diagrams, draws a fan where sheets meet (a page for each) and an arc where one ends, with faint echoes of wires on layers behind. Computed from the diagram, not guessed.";
+const SHEET_SHADING_HELP: &str = "A surface is drawn darker (up to three steps) the more sheets pass through it, compared with the thinnest surface in view. Changing it redraws the diagram.";
+const AUTOSAVE_HELP: &str = "A backup is made a few seconds after you stop changing the project, and offered back after a crash or a closed tab. Turning it off deletes the backups.";
+const DEFINITIONS_HELP: &str = "A heuristic. Clicking a cell first offers its definitions (generators one dimension up with that cell as source or target), with a button to search for everything else. It can miss, but never offers what does not attach.";
+const INFER_HELP: &str = "Searching for attachments also looks for replacements of placeholders that make a schema attach, which can take long in high dimensions. Off: only cells that need no replacements are offered.";
+const GENERATOR_BUDGET_HELP: &str = "The time one generator may take in a search for attachments: matching it, its inverse and reflections and, for a schema, inferring instances. Then the search keeps what it found and moves on (Esc ends the whole search). A search for one generator dragged onto the diagram has no limit.";
+const INFER_DIMENSION_HELP: &str = "Diagrams of a higher dimension than this are not searched for instances. The right end of the slider means no limit.";
+const NARROW_HELP: &str = "A heuristic. With a sheet chosen on the diagram (Shift+wheel, [ or ]), placeholders are replaced only by cells near that sheet. Faster, but can miss instances; it never offers an invalid one.";
 
+impl SettingsView {
     fn dimension_limit(dimension: u32) -> String {
         if dimension >= attach_inference::NO_DIMENSION_LIMIT {
             "any".to_owned()
@@ -349,78 +367,263 @@ impl SettingsView {
         }
     }
 
-    /// What there is to say about inferring instances.
-    fn inference_status() -> &'static str {
-        if AppSettings::get_infer_suspended() {
-            "Turned off for this session because searches ran out of time: turn it off and on again to start again."
-        } else if AppSettings::get_infer_instances() {
-            "Looking for what to attach also looks for the replacements of placeholders that make a schema attach, which can take long in high dimensions and for many placeholders: each schema is given up on after the time below, and the inference is skipped for diagrams above the dimension below."
-        } else {
-            "Schemas are not offered when attaching, only the cells that do not need their placeholders replaced."
-        }
+    /// What there is to say about inferring instances, if it is not on as usual.
+    fn inference_status() -> Option<&'static str> {
+        AppSettings::get_infer_suspended().then_some("Turned off for this session because searches ran out of time: turn it off and on again to start again.")
     }
 
-    /// What there is to say about the backups.
-    fn autosave_status() -> String {
+    /// What there is to say about the backups, if anything: when the last was made, or what is
+    /// wrong with them.
+    fn autosave_status() -> Option<String> {
         let status = crate::autosave::status();
         if !status.enabled {
-            return "No backups are made (turning this off deleted them).".to_owned();
+            return None;
         }
         if let Some(error) = status.error {
-            return format!("Backups are not working: {error}");
+            return Some(format!("Backups are not working: {error}"));
         }
-        match status.saved {
-            Some((time, bytes)) => {
-                let when = crate::autosave::Snapshot {
-                    session: String::new(),
-                    time,
-                    title: None,
-                    size: bytes,
+        let (time, bytes) = status.saved?;
+        let when = crate::autosave::Snapshot {
+            session: String::new(),
+            time,
+            title: None,
+            size: bytes,
+        }
+        .when();
+        Some(format!(
+            "Last backup at {when} ({} KB).",
+            bytes.div_ceil(1024)
+        ))
+    }
+
+    /// A line of what is the case at the moment, under a setting. (Explanations are in popovers.)
+    fn view_note<S: AsRef<str>>(note: Option<S>) -> Html {
+        note.map_or_else(
+            || html! {},
+            |note| html! { <div class="settings__note">{note.as_ref().to_owned()}</div> },
+        )
+    }
+
+    fn view_help(name: &str, help: Option<&'static str>) -> Html {
+        help.map_or_else(
+            || html! {},
+            |text| {
+                html! {
+                    <HelpTip id={format!("help-{}", slug(name))} label={name.to_owned()} {text} />
                 }
-                .when();
-                format!("Last backup at {when} ({} KB).", bytes.div_ceil(1024))
-            }
-            None => {
-                "A backup is made a few seconds after you stop changing the project.".to_owned()
-            }
-        }
+            },
+        )
     }
 
     fn view_checkbox<S>(name: &str, current: bool, setter: S) -> Html
     where
         S: Fn(bool) + 'static,
     {
+        Self::view_checkbox_help(name, None, current, setter)
+    }
+
+    fn view_checkbox_with_help<S>(name: &str, help: &'static str, current: bool, setter: S) -> Html
+    where
+        S: Fn(bool) + 'static,
+    {
+        Self::view_checkbox_help(name, Some(help), current, setter)
+    }
+
+    fn view_checkbox_help<S>(
+        name: &str,
+        help: Option<&'static str>,
+        current: bool,
+        setter: S,
+    ) -> Html
+    where
+        S: Fn(bool) + 'static,
+    {
         html! {
             <div class="settings__toggle-setting">
-                <input
-                    type="checkbox"
-                    checked={current}
-                    onclick={Callback::from(move |_| setter(!current))}
-                />
-                {name}
+                <label class="settings__label">
+                    <input
+                        type="checkbox"
+                        checked={current}
+                        onclick={Callback::from(move |_| setter(!current))}
+                    />
+                    {name}
+                </label>
+                {Self::view_help(name, help)}
             </div>
         }
     }
 
+    /// A slider with no explanation, whose number is shown while it is dragged and which takes
+    /// effect when it is let go (for settings that make something expensive happen).
     fn view_slider<S>(name: &str, current: u32, setter: S, min: u32, max: u32) -> Html
     where
         S: Fn(u32) + 'static,
     {
+        Self::view_slider_with(
+            name,
+            None,
+            current,
+            min,
+            max,
+            |n| n.to_string(),
+            false,
+            setter,
+        )
+    }
+
+    /// A slider that shows its number as it is dragged (`oninput`). With `live` the setting also
+    /// takes effect as it is dragged, which is for settings that cost nothing to change; without,
+    /// it takes effect when the slider is let go (`onchange`).
+    #[allow(clippy::too_many_arguments)]
+    fn view_slider_with<S>(
+        name: &str,
+        help: Option<&'static str>,
+        current: u32,
+        min: u32,
+        max: u32,
+        format: fn(u32) -> String,
+        live: bool,
+        setter: S,
+    ) -> Html
+    where
+        S: Fn(u32) + 'static,
+    {
+        let value = NodeRef::default();
+        let setter = std::rc::Rc::new(setter);
+        let read = move |input: HtmlInputElement| {
+            input.value().parse::<u32>().unwrap_or(min).clamp(min, max)
+        };
+        let oninput = {
+            let (value, setter) = (value.clone(), setter.clone());
+            Callback::from(move |e: InputEvent| {
+                let updated = read(e.target_unchecked_into());
+                show_value(&value, &format(updated));
+                if live {
+                    setter(updated);
+                }
+            })
+        };
+        let onchange = Callback::from(move |e: Event| setter(read(e.target_unchecked_into())));
+
         html! {
             <div class="settings__slider-setting">
-                {name}
+                <div class="settings__setting-title">
+                    <label class="settings__label" for={format!("setting-{}", slug(name))}>{name}</label>
+                    {Self::view_help(name, help)}
+                    <output class="settings__value" for={format!("setting-{}", slug(name))} ref={value}>
+                        {format(current)}
+                    </output>
+                </div>
                 <input
+                    id={format!("setting-{}", slug(name))}
                     type="range"
                     min={min.to_string()}
                     max={max.to_string()}
                     value={current.to_string()}
-                    onchange={Callback::from(move |e: Event| {
-                        let input: HtmlInputElement = e.target_unchecked_into();
-                        let updated = input.value().parse::<u32>().unwrap_or(min);
-                        setter(updated);
-                    })}
+                    {oninput}
+                    {onchange}
                 />
             </div>
         }
+    }
+
+    /// A number in a box, in `0..=max`, for a setting that needs more than a slider can give.
+    /// What is typed takes effect as soon as it is a number (clamped to the range, negative
+    /// numbers being 0 and fractions rounded down), and the box is put right when it is left.
+    fn view_number<S>(
+        name: &str,
+        help: &'static str,
+        current: u32,
+        max: u32,
+        unit: &'static str,
+        setter: S,
+    ) -> Html
+    where
+        S: Fn(u32) + 'static,
+    {
+        let setter = std::rc::Rc::new(setter);
+        let oninput = {
+            let setter = setter.clone();
+            Callback::from(move |e: InputEvent| {
+                let input: HtmlInputElement = e.target_unchecked_into();
+                if let Some(seconds) = parse_count(&input.value(), max) {
+                    setter(seconds);
+                }
+            })
+        };
+        let onchange = Callback::from(move |e: Event| {
+            let input: HtmlInputElement = e.target_unchecked_into();
+            // What is not a number goes back to what the setting is.
+            let seconds = parse_count(&input.value(), max).unwrap_or(current);
+            setter(seconds);
+            input.set_value(&seconds.to_string());
+        });
+
+        html! {
+            <div class="settings__number-setting">
+                <div class="settings__setting-title">
+                    <label class="settings__label" for={format!("setting-{}", slug(name))}>{name}</label>
+                    {Self::view_help(name, Some(help))}
+                </div>
+                <div class="settings__number-box">
+                    <input
+                        id={format!("setting-{}", slug(name))}
+                        type="number"
+                        inputmode="numeric"
+                        min="0"
+                        max={max.to_string()}
+                        step="1"
+                        value={current.to_string()}
+                        {oninput}
+                        {onchange}
+                    />
+                    <span class="settings__unit">{unit}</span>
+                </div>
+            </div>
+        }
+    }
+}
+
+/// Writes the number next to a slider while it is dragged, into the text that is already there
+/// (the page's own text node, which it goes on updating).
+fn show_value(output: &NodeRef, text: &str) {
+    if let Some(node) = output.get().and_then(|output| output.first_child()) {
+        node.set_text_content(Some(text));
+    }
+}
+
+/// A whole number in `0..=max` from what was typed: negative numbers are 0, fractions are rounded
+/// down and larger numbers are `max`. `None` if it is not a number (or is empty).
+fn parse_count(text: &str, max: u32) -> Option<u32> {
+    let number: f64 = text.trim().parse().ok()?;
+    if !number.is_finite() {
+        return None;
+    }
+    // (Clamped, so the conversion cannot overflow; `as` rounds towards zero.)
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Some(number.clamp(0.0, f64::from(max)) as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_count;
+
+    #[test]
+    fn numbers_typed_into_a_box_are_made_valid() {
+        assert_eq!(parse_count("5", 3600), Some(5));
+        assert_eq!(parse_count(" 12 ", 3600), Some(12));
+        assert_eq!(parse_count("0", 3600), Some(0));
+        assert_eq!(parse_count("007", 3600), Some(7));
+        // Negative: none. Fractions: rounded down. Large: the most.
+        assert_eq!(parse_count("-4", 3600), Some(0));
+        assert_eq!(parse_count("2.9", 3600), Some(2));
+        assert_eq!(parse_count("99999", 3600), Some(3600));
+        assert_eq!(parse_count("1e9", 3600), Some(3600));
+        // Not numbers.
+        assert_eq!(parse_count("", 3600), None);
+        assert_eq!(parse_count("-", 3600), None);
+        assert_eq!(parse_count("abc", 3600), None);
+        assert_eq!(parse_count("inf", 3600), None);
+        assert_eq!(parse_count("NaN", 3600), None);
     }
 }
