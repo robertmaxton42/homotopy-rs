@@ -865,19 +865,24 @@ fn run_checkpointed<J: Job>(
     // a job that is ended loses what it found since the last one, and what it says it had not
     // finished is cut short or not tried, to be honest about that.
     let mut not_before: Option<Instant> = None;
-    // The longest a checkpoint took: the silence after a report is a step and perhaps one of
-    // those, which the limit that is reported allows for.
+    // The longest a checkpoint took, and the longest it took to take what the job found: the
+    // silence after a report is a step and perhaps one of each, which the limit that is reported
+    // allows for.
     let mut slowest = Duration::ZERO;
+    let mut slowest_found = Duration::ZERO;
     loop {
+        // (First: what the last step found is not made to wait for the next.)
+        let taking = Instant::now();
+        on_progress(&mut job);
+        slowest_found = slowest_found.max(taking.elapsed());
         before_step(Step {
             label: job.label(),
             progress: job.progress(),
             limit_ms: job.step_limit().map_or(0, |limit| {
-                u32::try_from((limit + slowest).as_millis()).unwrap_or(u32::MAX)
+                u32::try_from((limit + slowest + slowest_found).as_millis()).unwrap_or(u32::MAX)
             }),
             delay_ms,
         });
-        on_progress(&mut job);
         if not_before.is_none_or(|time| Instant::now() >= time) {
             if let Some(checkpoint) = job.checkpoint() {
                 let started = Instant::now();

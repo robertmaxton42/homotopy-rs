@@ -549,3 +549,163 @@ fn a_surface_is_shaded_for_the_sheets_that_the_hover_lists_at_its_region() {
         "some surface has a corner with fewer sheets than its region"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Where sheets are, where they meet, and the echoes of the wires behind.
+
+use homotopy_core::projection::{SheetId, MAX_ECHOES};
+
+#[test]
+fn the_places_of_a_sheet_are_the_positions_that_have_it() {
+    fn check<const N: usize>(name: &str, diagram: &DiagramN) -> usize {
+        let diagram: Diagram = diagram.clone().into();
+        let depths = Depths::<N>::new(&diagram).unwrap();
+        let mut heights = 0;
+        let mut by_listing = vec![vec![]; depths.sheet_count()];
+        for (coord, _) in positions(&diagram, N) {
+            let coord: [SliceIndex; N] = coord.try_into().unwrap();
+            let ids = depths.sheet_ids_at(coord);
+            // The same sheets as `sheets` lists, in the same order.
+            assert_eq!(ids, sheet_ids_as_ids(&depths, coord).as_slice(), "{name}");
+            for (z, id) in ids.iter().enumerate() {
+                by_listing[id.0 as usize].push((coord, z));
+                heights += 1;
+            }
+        }
+        let mut listed = 0;
+        for (i, expected) in by_listing.iter().enumerate() {
+            let mut places = depths.sheet_places(SheetId(i as u32));
+            let mut expected = expected.clone();
+            places.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(places, expected, "{name}: sheet {i}");
+            listed += places.len();
+        }
+        assert_eq!(listed, heights, "{name}");
+        // No such sheet.
+        assert!(depths.sheet_places(SheetId(u32::MAX)).is_empty());
+        heights
+    }
+    fn sheet_ids_as_ids<const N: usize>(
+        depths: &Depths<N>,
+        coord: [SliceIndex; N],
+    ) -> Vec<SheetId> {
+        depths
+            .sheets(coord, &[])
+            .iter()
+            .map(|s| s.id.unwrap())
+            .collect()
+    }
+    let mut checked = 0;
+    for (name, diagram) in examples_in_2d() {
+        checked += check::<2>(name, &diagram);
+        checked += check::<1>(name, &diagram);
+    }
+    assert!(checked > 100, "{checked} heights");
+}
+
+/// The layer of a wire, worked out from `sheets`, the way a person hovering over it sees it: the
+/// height that is marked as drawn at the position beside the point.
+fn drawn_height<const N: usize>(depths: &Depths<N>, position: [SliceIndex; N]) -> Option<usize> {
+    depths
+        .sheets(position, &[])
+        .iter()
+        .find(|s| s.front)
+        .map(|s| s.z)
+}
+
+/// Echoes are only on the wires at a point where sheets meet, and by how many layers behind the
+/// front-most of the wires there they are; the wires of the front layer have none.
+fn check_echoes(name: &str, diagram: &DiagramN) -> (usize, usize) {
+    let diagram: Diagram = diagram.clone().into();
+    let depths = Depths::<2>::new(&diagram).unwrap();
+    let wires: Vec<_> = make_complex::<2>(&diagram)
+        .into_iter()
+        .filter_map(|(simplex, _)| match simplex {
+            Simplex::Wire(wire) => Some(wire),
+            _ => None,
+        })
+        .collect();
+    let (mut with_echoes, mut meeting_points) = (0, 0);
+    for wire in &wires {
+        let echoes = depths.echoes(*wire);
+        assert!(echoes <= MAX_ECHOES, "{name}");
+        let (vertex, beside) = if depths.sheets_meeting_at(wire[1]) > 0 {
+            (wire[1], wire[0])
+        } else {
+            (wire[0], wire[1])
+        };
+        if depths.sheets_meeting_at(vertex) == 0 {
+            assert_eq!(echoes, 0, "{name}: {wire:?} is not at a meeting");
+            continue;
+        }
+        // The layers that the wires at the point are drawn at, as the hover marks them.
+        let mut layers: Vec<usize> = wires
+            .iter()
+            .filter(|other| other.contains(&vertex))
+            .filter_map(|other| {
+                let beside = if other[0] == vertex {
+                    other[1]
+                } else {
+                    other[0]
+                };
+                drawn_height(&depths, beside)
+            })
+            .collect();
+        layers.sort_unstable();
+        layers.dedup();
+        let expected = drawn_height(&depths, beside).map_or(0, |layer| {
+            layers
+                .iter()
+                .filter(|&&other| other < layer)
+                .count()
+                .min(MAX_ECHOES)
+        });
+        assert_eq!(echoes, expected, "{name}: {wire:?}");
+        if layers
+            .first()
+            .is_some_and(|&front| drawn_height(&depths, beside) == Some(front))
+        {
+            assert_eq!(echoes, 0, "{name}: a wire of the front layer has none");
+        }
+        with_echoes += usize::from(echoes > 0);
+        meeting_points += 1;
+    }
+    (with_echoes, meeting_points)
+}
+
+#[test]
+fn only_wires_behind_the_front_wires_at_a_meeting_have_echoes() {
+    let (mut with_echoes, mut at_meetings) = (0, 0);
+    for (name, diagram) in examples_in_2d() {
+        let (echoes, wires) = check_echoes(name, &diagram);
+        with_echoes += echoes;
+        at_meetings += wires;
+    }
+    assert!(at_meetings > 10, "{at_meetings} wires at meetings");
+    assert!(with_echoes > 0, "some wire is behind");
+    assert!(with_echoes < at_meetings, "and some are not");
+}
+
+#[test]
+fn the_associator_has_one_vertex_where_ten_sheets_meet_and_one_wire_behind() {
+    let diagram: Diagram = examples::associator().1.into();
+    let depths = Depths::<2>::new(&diagram).unwrap();
+    let vertex = [
+        SliceIndex::Interior(Height::Singular(0)),
+        SliceIndex::Interior(Height::Singular(0)),
+    ];
+    assert_eq!(depths.sheets_meeting_at(vertex), 10);
+    let behind: Vec<_> = make_complex::<2>(&diagram)
+        .into_iter()
+        .filter_map(|(simplex, _)| match simplex {
+            Simplex::Wire(wire) if depths.echoes(wire) > 0 => Some((wire, depths.echoes(wire))),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(behind.len(), 1, "{behind:?}");
+    assert_eq!(behind[0].1, 1);
+    assert_eq!(behind[0].0[1], vertex);
+    // Nowhere else do sheets meet.
+    assert_eq!(depths.sheets_meeting_at([Boundary::Source.into(); 2]), 0);
+}

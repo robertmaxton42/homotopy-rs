@@ -7,8 +7,8 @@ use std::collections::{BTreeSet, HashSet};
 use homotopy_core::{
     complex::{make_complex, Simplex},
     layout::Layout,
-    projection::{thickness_step, Depths, Projection, Shading},
-    Diagram,
+    projection::{thickness_step, Depths, Projection, Shading, SheetBoundaryKind},
+    Diagram, Height, SliceIndex,
 };
 use homotopy_graphics::svg::render::GraphicElement;
 use homotopy_model::{history::Proof, proof::Action, sheets::Stack};
@@ -132,4 +132,61 @@ fn start_of_the_tangent_categories_project_is_shaded_for_the_sheets_the_hover_li
     let surfaces = check("start", &diagram, &layout);
     eprintln!("start checked in {:?}", t.elapsed());
     assert!(surfaces > 20);
+}
+
+/// The same project: sheets meet at one vertex of `start`, with eighteen wires leaving it, and the
+/// three that come from the top are on the second layer where the others are on the first.
+#[test]
+fn start_has_echoes_on_the_wires_of_the_second_layer_at_its_one_meeting() {
+    let Ok(path) = std::env::var("HOMOTOPY_TANGENT_FIXTURE") else {
+        return;
+    };
+    let bytes = std::fs::read(path).unwrap();
+    let mut state = Proof::default();
+    state.update(&Action::ImportProof(bytes.into())).unwrap();
+    let start = state
+        .signature
+        .iter()
+        .find(|info| info.name == "start")
+        .map(|info| info.generator)
+        .unwrap();
+    state.update(&Action::SelectGenerator(start)).unwrap();
+    let diagram = state.workspace.as_ref().unwrap().diagram.clone();
+    let depths = Depths::<2>::new(&diagram).unwrap();
+    let vertex = [
+        SliceIndex::Interior(Height::Singular(0)),
+        SliceIndex::Interior(Height::Singular(0)),
+    ];
+    let meetings: Vec<_> = depths
+        .sheet_boundaries()
+        .iter()
+        .filter(|b| b.kind == SheetBoundaryKind::MergesOrSplits)
+        .map(|b| (b.to, b.branches))
+        .collect();
+    assert_eq!(meetings, vec![(vertex, 18)]);
+    assert_eq!(depths.sheets_meeting_at(vertex), 18);
+
+    let mut behind = vec![];
+    let mut at_the_vertex = 0;
+    for (simplex, _) in make_complex::<2>(&diagram) {
+        let Simplex::Wire(wire) = simplex else {
+            continue;
+        };
+        at_the_vertex += usize::from(wire.contains(&vertex));
+        match depths.echoes(wire) {
+            0 => {}
+            echoes => behind.push((wire[0], echoes)),
+        }
+    }
+    assert_eq!(at_the_vertex, 18);
+    let wire = |i, j| {
+        [
+            SliceIndex::Interior(Height::Regular(i)),
+            SliceIndex::Interior(Height::Singular(j)),
+        ]
+    };
+    assert_eq!(
+        behind,
+        vec![(wire(1, 4), 1), (wire(1, 5), 1), (wire(1, 6), 1)]
+    );
 }

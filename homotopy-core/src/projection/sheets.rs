@@ -107,6 +107,8 @@ pub(super) struct SheetData<const N: usize> {
     boundaries: Vec<SheetBoundary<N>>,
     /// For each node, the boundaries that are at it.
     boundaries_to: Vec<Vec<u32>>,
+    /// For each sheet, the (node, height) pairs it is at, in the order of the nodes.
+    places: Vec<Vec<(NodeIndex, usize)>>,
 }
 
 /// The dimension of the part of the picture that a position is of: the number of its coordinates
@@ -244,6 +246,13 @@ impl<const N: usize> SheetData<N> {
             .map(|(&v, &h)| h == 0 || v > h)
             .collect();
 
+        let mut places = vec![vec![]; count as usize];
+        for n in graph.node_indices() {
+            for z in 0..sizes[n.index()] {
+                places[ids[offsets[n.index()] + z].0 as usize].push((n, z));
+            }
+        }
+
         let mut boundaries = vec![];
         let mut boundaries_to = vec![vec![]; graph.node_count()];
         for n in graph.node_indices() {
@@ -278,7 +287,18 @@ impl<const N: usize> SheetData<N> {
             foremost,
             boundaries,
             boundaries_to,
+            places,
         }
+    }
+
+    pub(super) fn places(&self, id: SheetId) -> &[(NodeIndex, usize)] {
+        self.places.get(id.0 as usize).map_or(&[], Vec::as_slice)
+    }
+
+    /// The sheets at a node, by height.
+    pub(super) fn ids_at(&self, node: NodeIndex) -> &[SheetId] {
+        let start = self.offsets[node.index()];
+        &self.ids[start..start + self.sizes[node.index()]]
     }
 
     pub(super) fn id(&self, node: NodeIndex, z: usize) -> Option<SheetId> {

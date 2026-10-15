@@ -36,6 +36,9 @@ pub use self::sheets::{
 
 type Coordinate<const N: usize> = [SliceIndex; N];
 
+/// The most echoes that a wire has (see [`Depths::echoes`]).
+pub const MAX_ECHOES: usize = 3;
+
 #[derive(Copy, Clone, Debug)]
 pub enum Homotopy {
     Complex,
@@ -423,6 +426,81 @@ impl<const N: usize> Depths<N> {
             Some(&n) => self.sheet_data().boundaries_to(n).collect(),
             None => vec![],
         }
+    }
+
+    /// The sheets at the position `coord` by their [`SheetId`], in the order of their heights
+    /// (the same as the first coordinate after the position's in [`sheets`](Self::sheets), but
+    /// without making a [`Sheet`] of each).
+    #[must_use]
+    pub fn sheet_ids_at(&self, coord: Coordinate<N>) -> &[SheetId] {
+        self.coord_to_node
+            .get(&coord)
+            .map_or(&[], |&n| self.sheet_data().ids_at(n))
+    }
+
+    /// Everywhere the sheet `id` is: each position that it passes through, with its height there
+    /// (twice, if it comes back to a position). Made from the lists that are kept for the
+    /// sheets, so it costs what it returns.
+    #[must_use]
+    pub fn sheet_places(&self, id: SheetId) -> Vec<(Coordinate<N>, usize)> {
+        self.sheet_data()
+            .places(id)
+            .iter()
+            .map(|&(n, z)| (self.graph[n].key, z))
+            .collect()
+    }
+
+    /// How many sheets meet at the position `coord`, if some do: the most heights of the
+    /// neighbouring positions that the edges carry into one of its heights, three or more (see
+    /// [`SheetBoundaryKind::MergesOrSplits`]). 0 if no sheets meet there.
+    #[must_use]
+    pub fn sheets_meeting_at(&self, coord: Coordinate<N>) -> usize {
+        self.sheet_boundaries_at(coord)
+            .iter()
+            .filter(|b| b.kind == SheetBoundaryKind::MergesOrSplits)
+            .map(|b| b.branches)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// How many echoes to draw along a wire, which is a segment of the picture between a point
+    /// where sheets meet (see [`sheets_meeting_at`](Self::sheets_meeting_at)) and the position
+    /// beside it: 0 for a wire that is not at such a point, or that is on no sheet, or on the
+    /// front-most of the sheets that the wires at the point are on, and else one for each step
+    /// that it is behind, at most [`MAX_ECHOES`].
+    ///
+    /// The sheet that a wire is on is the one that is drawn at the position beside the point
+    /// ([`node_depth`](Self::node_depth): the height `z` that hovering over the wire marks as
+    /// drawn). A step is a different `z` among the wires at the point: the wires of the first
+    /// have none, those of the next have one, and so on, so that the echoes say which wires go
+    /// into which layer.
+    #[must_use]
+    pub fn echoes(&self, wire: [Coordinate<N>; 2]) -> usize {
+        let (vertex, beside) = if self.sheets_meeting_at(wire[1]) > 0 {
+            (wire[1], wire[0])
+        } else if self.sheets_meeting_at(wire[0]) > 0 {
+            (wire[0], wire[1])
+        } else {
+            return 0;
+        };
+        let (Some(&vertex), Some(&beside)) = (
+            self.coord_to_node.get(&vertex),
+            self.coord_to_node.get(&beside),
+        ) else {
+            return 0;
+        };
+        let Some(layer) = self.node_depths[beside] else {
+            return 0;
+        };
+        let mut layers: Vec<usize> = self
+            .graph
+            .edges_directed(vertex, EdgeDirection::Incoming)
+            .filter_map(|e| self.node_depths[e.source()])
+            .collect();
+        layers.sort_unstable();
+        layers.dedup();
+        let behind = layers.iter().take_while(|&&other| other < layer).count();
+        behind.min(MAX_ECHOES)
     }
 
     /// How many sheets pass through the position `coord`, counted by their heights (a sheet
