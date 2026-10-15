@@ -211,6 +211,8 @@ struct WireAttachOption {
     label: Option<String>,
     diagram: Key<Diagram>,
     substitution: Option<Vec<(Generator, Key<Diagram>)>>,
+    #[serde(default)]
+    reflection: bool,
 }
 
 /// An option with its place in the final list.
@@ -377,6 +379,7 @@ fn pack_option(store: &mut Store, option: AttachOption) -> WireAttachOption {
         boundary_path: option.boundary_path,
         embedding: option.embedding,
         label: option.label,
+        reflection: option.reflection,
     }
 }
 
@@ -396,6 +399,7 @@ fn unpack_option(store: &mut Store, wire: WireAttachOption) -> Option<AttachOpti
         boundary_path: wire.boundary_path,
         embedding: wire.embedding,
         label: wire.label,
+        reflection: wire.reflection,
     })
 }
 

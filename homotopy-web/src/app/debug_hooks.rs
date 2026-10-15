@@ -57,7 +57,7 @@ enum Command {
     /// With these limits on inferring instances.
     SelectPointWith(Vec<SliceIndex>, bool, proof::InferenceLimits),
     /// Attaches one generator (`{"id": .., "dimension": ..}`) at a point, as dropping it there does,
-    /// with the limits from the settings.
+    /// with the limits from the settings except that a generator has no time limit.
     AttachGenerator(homotopy_core::Generator, Vec<SliceIndex>, bool),
     /// The same with these limits on inferring instances.
     AttachGeneratorWith(
@@ -105,7 +105,7 @@ impl From<Command> for model::Action {
                 generator,
                 point,
                 weak_units,
-                super::attach_inference::limits(),
+                super::attach_inference::limits_for_generator(),
             ),
             Command::AttachGeneratorWith(generator, point, weak_units, limits) => {
                 Self::AttachGenerator(generator, point, weak_units, limits)

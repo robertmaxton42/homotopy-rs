@@ -309,12 +309,22 @@ impl InferenceReport {
 /// reordering what is shown: an option goes to its slot, and the slots are in their order whatever
 /// the order that the generators are searched in.
 ///
+/// The instances of a schema are inferred in the order that the candidates for its placeholders
+/// are tried in, and not in the order that they come out in the final list (the instances are
+/// sorted by the numbers of the candidates chosen, placeholder by placeholder), so those carry
+/// that sort key as well: an instance goes to its place among the instances found before it, in
+/// the middle of the list if need be, and the options of any one slot are in the order found.
+/// For every other option the key is empty.
+///
 /// A slot is only ever filled by one source, in order (the generators are searched one after the
 /// other, and a search split over several workers would give each its own generators).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Slot {
     pub generator: u32,
     pub pass: u8,
+    /// The candidates chosen for the placeholders of the schema, for an inferred instance.
+    #[serde(default)]
+    pub key: Vec<u32>,
 }
 
 /// An option as the search finds it, with its place in the final list.
@@ -413,9 +423,9 @@ pub struct AttachOptionsJob {
     point: Vec<Height>,
     weak_units: bool,
     limits: InferenceLimits,
-    /// The options with the generator they are for and their part of the search, in the order
-    /// that they were found (they are only added to).
-    matches: Vec<(usize, u8, AttachOption)>,
+    /// The options with their places in the final list (see [`Slot`]), in the order that they
+    /// were found (they are only added to).
+    matches: Vec<Found>,
     /// How many of `matches` have been handed out by [`take_found`](Self::take_found).
     reported: usize,
     /// The point as it was asked for, relative to what the workspace shows.
@@ -821,6 +831,7 @@ impl AttachOptionsJob {
                 boundary_path: self.boundary_path,
                 embedding: embedding.into_iter().collect(),
                 substitution: None,
+                reflection: false,
             })
             .collect()
     }
@@ -906,11 +917,19 @@ impl AttachOptionsJob {
             }
             found.extend(self.variant_options(index, &variant));
         }
-        self.matches.extend(
-            found
-                .into_iter()
-                .map(|option| (index, Pass::Plain.rank(), option)),
-        );
+        self.found(index, Pass::Plain, found);
+    }
+
+    /// Adds options found for a generator in a pass.
+    fn found(&mut self, index: usize, pass: Pass, options: Vec<AttachOption>) {
+        self.matches.extend(options.into_iter().map(|option| Found {
+            slot: Slot {
+                generator: index as u32,
+                pass: pass.rank(),
+                key: vec![],
+            },
+            option,
+        }));
     }
 
     /// The reflections of the generator that could match, to typecheck and look for.
@@ -960,11 +979,7 @@ impl AttachOptionsJob {
             }
             found.extend(self.reflection_options(index, &candidate));
         }
-        self.matches.extend(
-            found
-                .into_iter()
-                .map(|option| (index, Pass::Reflections.rank(), option)),
-        );
+        self.found(index, Pass::Reflections, found);
     }
 
     /// Does a piece of the search for the one generator that is searched for: makes the pieces of
@@ -996,8 +1011,7 @@ impl AttachOptionsJob {
             Piece::Variant(variant) => self.variant_options(index, variant),
             Piece::Reflection(candidate) => self.reflection_options(index, candidate),
         };
-        self.matches
-            .extend(found.into_iter().map(|option| (index, pass.rank(), option)));
+        self.found(index, pass, found);
         self.done += 1;
         false
     }
@@ -1058,6 +1072,10 @@ impl AttachOptionsJob {
         let over = self.inferring.as_mut().unwrap().search.step();
         let out_of_time = limit_now.as_ref().is_some_and(deadline::Limit::expired);
         drop(limit_now);
+        // The instances this step found are options at once, each in its place among those
+        // found before (see [`Slot`]), and not when the schema is done with: a schema that does
+        // not finish in a reasonable time has listed what it found all the same.
+        self.collect_instances(index);
         let took = started.elapsed();
         self.spent += took;
         self.by_generator[index] += took;
@@ -1067,36 +1085,50 @@ impl AttachOptionsJob {
         let cut =
             out_of_time || (!over && each.is_some_and(|each| self.by_generator[index] >= each));
         if over || cut {
-            let Inferring { generator, search } = self.inferring.take().unwrap();
-            let info = self.generators[generator].clone();
+            let Inferring { generator, .. } = self.inferring.take().unwrap();
             if cut {
-                self.report.cut_short.push(info.name.clone());
+                self.report
+                    .cut_short
+                    .push(self.generators[generator].name.clone());
             } else {
                 self.report.inferred += 1;
-            }
-            for inferred in search.finish() {
-                self.matches.push((
-                    generator,
-                    Pass::Instances.rank(),
-                    AttachOption {
-                        generator: info.generator,
-                        label: Some(
-                            Structure::Instance(
-                                self.signature.describe_substitution(&inferred.substitution),
-                            )
-                            .label(&info.name),
-                        ),
-                        diagram: inferred.diagram,
-                        boundary_path: self.boundary_path,
-                        embedding: inferred.embedding.into_iter().collect(),
-                        substitution: Some(inferred.substitution),
-                    },
-                ));
             }
             self.done += 1;
             self.checkpoint_due = true;
         }
         false
+    }
+
+    /// Makes options of the instances that the inference of the schema `index` has found since
+    /// the last time, and adds them to the options found.
+    fn collect_instances(&mut self, index: usize) {
+        let Some(inferring) = &mut self.inferring else {
+            return;
+        };
+        let info = &self.generators[index];
+        for (key, inferred) in inferring.search.take_results() {
+            self.matches.push(Found {
+                slot: Slot {
+                    generator: index as u32,
+                    pass: Pass::Instances.rank(),
+                    key: key.into_iter().map(|candidate| candidate as u32).collect(),
+                },
+                option: AttachOption {
+                    generator: info.generator,
+                    label: Some(
+                        Structure::Instance(
+                            self.signature.describe_substitution(&inferred.substitution),
+                        )
+                        .label(&info.name),
+                    ),
+                    diagram: inferred.diagram,
+                    boundary_path: self.boundary_path,
+                    embedding: inferred.embedding.into_iter().collect(),
+                    substitution: Some(inferred.substitution),
+                    reflection: false,
+                },
+            });
+        }
     }
 
     /// Goes on to the inference of instances.
@@ -1113,28 +1145,21 @@ impl AttachOptionsJob {
     /// This is for showing the options while the search goes on; the search itself does not
     /// depend on it being asked.
     pub fn take_found(&mut self) -> Vec<Found> {
-        let found = self.matches[self.reported..]
-            .iter()
-            .map(|(index, rank, option)| Found {
-                slot: Slot {
-                    generator: *index as u32,
-                    pass: *rank,
-                },
-                option: option.clone(),
-            })
-            .collect();
+        let found = self.matches[self.reported..].to_vec();
         self.reported = self.matches.len();
         found
     }
 
     /// The options in the order of the final list: those of the generators in the order of the
-    /// generators, each generator's in the order of the passes and then of being found.
+    /// generators, each generator's in the order of the passes, the instances of a schema in
+    /// the order of the candidates chosen for its placeholders, and the rest in the order
+    /// they were found.
     fn sorted_options(&self) -> Vec<AttachOption> {
-        let mut matches: Vec<&(usize, u8, AttachOption)> = self.matches.iter().collect();
-        matches.sort_by_key(|(index, rank, _)| (*index, *rank));
+        let mut matches: Vec<&Found> = self.matches.iter().collect();
+        matches.sort_by(|a, b| a.slot.cmp(&b.slot));
         matches
             .into_iter()
-            .map(|(_, _, option)| option.clone())
+            .map(|found| found.option.clone())
             .collect()
     }
 
@@ -1426,6 +1451,7 @@ fn reflection_options(
             boundary_path,
             embedding: embedding.into_iter().collect(),
             substitution: None,
+            reflection: true,
         })
         .collect()
 }

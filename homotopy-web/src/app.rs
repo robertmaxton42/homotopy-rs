@@ -77,6 +77,15 @@ const STEP_GRACE: u32 = 750;
 /// while the page was busy (and the page has not yet taken in) is heard first.
 const STUCK_CONFIRM: u32 = 100;
 
+/// How long the page is left alone between drawing the list of options again while a search for
+/// attachments is putting more into it, counted from when the last drawing was done. Each arrival
+/// is kept in the state at once, but drawing the app (the formulas of the new rows, and 250 to
+/// 450ms of the debug build for the rest on a large project) takes long enough that a search that
+/// finds options in quick succession would leave the page no time for anything else: a click on
+/// an option would wait behind the drawing of those that came before it. Whatever came meanwhile
+/// is drawn after this.
+const OPTIONS_DRAW_INTERVAL: Duration = Duration::from_millis(200);
+
 /// How long after the app starts the worker is started, so as not to compete with the page for
 /// the processor while it loads.
 const WORKER_DELAY: u32 = 500;
@@ -101,6 +110,9 @@ pub enum Message {
     DismissInferenceNotice,
     /// Look at whether the worker doing the job of the number has said anything lately.
     Watchdog(u64),
+    /// Draw the options that a search found since the list was last drawn (see
+    /// [`OPTIONS_DRAW_INTERVAL`]).
+    DrawOptions,
 }
 
 /// A task that the worker is doing.
@@ -176,6 +188,11 @@ pub struct App {
     inference_notice: Vec<NoticeLine>,
     /// Keeps the settings about inferring instances in this browser when they change.
     inference_setting: Vec<CallbackIdx>,
+    /// When the app was last drawn (that is done), for the interval at which the list of options of
+    /// a search is drawn again (see [`OPTIONS_DRAW_INTERVAL`]), and whether a
+    /// [`Message::DrawOptions`] is on its way for what came since.
+    options_drawn: Option<Instant>,
+    options_draw_pending: bool,
 }
 
 impl Component for App {
@@ -241,6 +258,8 @@ impl Component for App {
             autosave_setting,
             inference_notice: vec![],
             inference_setting,
+            options_drawn: None,
+            options_draw_pending: false,
             state,
             job: None,
             next_job: 0,
@@ -260,6 +279,12 @@ impl Component for App {
         #[cfg(debug_assertions)]
         debug_hooks::publish(&self.state, self.job.as_ref().map(Running::label));
         rerender
+    }
+
+    fn rendered(&mut self, _ctx: &Context<Self>, _first_render: bool) {
+        // The interval for drawing the options of a search again is from here: the page has had
+        // that long to respond to input since the last drawing was done, however long it took.
+        self.options_drawn = Some(Instant::now());
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
@@ -323,6 +348,10 @@ impl App {
                 true
             }
             Message::Watchdog(id) => self.watchdog(ctx, id),
+            Message::DrawOptions => {
+                self.options_draw_pending = false;
+                true
+            }
             Message::Escape(in_text_field) => {
                 if self.job.is_some() {
                     self.cancel()
@@ -342,22 +371,11 @@ impl App {
         tracing::info!("Received action: {:?}", action);
         crate::panic::note_action(&action);
 
-        match &action {
-            model::Action::StopSearch => return self.cancel(),
-            // The option picked from a list that is still being filled in is "this is the one":
-            // the search is ended (it has committed nothing), and it is attached as any option.
-            model::Action::PickStreamed(_) => {
-                if let Some(job) = &self.job {
-                    if !job.task.is_attach_search() {
-                        busy::refused();
-                        return false;
-                    }
-                    self.end_job();
-                }
-            }
-            // Closing the list while it is being filled in puts the search away.
-            model::Action::ClearSelections if self.state.is_searching() => self.end_job(),
-            _ => {}
+        if matches!(action, model::Action::StopSearch) {
+            return self.cancel();
+        }
+        if !self.end_search_for(&action) {
+            return false;
         }
 
         if self.refuse_while_busy(&action) {
@@ -375,9 +393,15 @@ impl App {
         // but do not reset it until we have performed the action.
         let resets_panzoom = self.state.resets_panzoom(&action);
         let exporting = matches!(action, model::Action::ExportProof);
+        let picked = matches!(action, model::Action::PickStreamed(_));
 
         let started = Instant::now();
         let result = self.state.start(action);
+        if picked && !matches!(result, Ok(model::Started::Running(_))) {
+            // The search was ended with the indicator left up, for what the pick goes on to
+            // (see above), and it goes on to nothing that takes time.
+            busy::hide();
+        }
         tracing::info!(
             "State update took {}ms.",
             started.elapsed().as_secs_f64() * 1000.0
@@ -394,6 +418,31 @@ impl App {
             Ok(model::Started::Running(task)) => self.start_job(ctx, task, resets_panzoom),
             Err(error) => self.updated(Err(error), resets_panzoom),
         }
+    }
+
+    /// Ends the search for attachments that is going on, if the action is one that goes on from
+    /// what it has listed: the option picked from a list that is still being filled in is "this is
+    /// the one", so the search is ended (it has committed nothing) and the option is attached as
+    /// any option; closing the list while it is being filled in puts the search away. Returns
+    /// `false` if the action is refused.
+    fn end_search_for(&mut self, action: &model::Action) -> bool {
+        match action {
+            model::Action::PickStreamed(_) => {
+                if let Some(job) = &self.job {
+                    if !job.task.is_attach_search() {
+                        busy::refused();
+                        return false;
+                    }
+                    // (The indicator stays up: what the pick goes on to puts its own label on
+                    // it at once, or takes it down, with no gap in between for it to fade in
+                    // again from.)
+                    self.end_job(true);
+                }
+            }
+            model::Action::ClearSelections if self.state.is_searching() => self.end_job(false),
+            _ => {}
+        }
+        true
     }
 
     /// Refuses rather than queues what would change the project while a job works on it: the
@@ -650,7 +699,8 @@ impl App {
                 if let Some(remote) = self.job.as_mut().and_then(|job| job.remote.as_mut()) {
                     remote.heard = Instant::now();
                 }
-                self.state.found(found)
+                let new = self.state.found(found);
+                self.draw_options(ctx, new)
             }
             Err(message) => {
                 let job = self.job.take().expect("a job was being done");
@@ -737,6 +787,31 @@ impl App {
         self.state.restart_stream();
         job.started = Instant::now();
         self.work(ctx, job)
+    }
+
+    /// Whether to draw the list of options now, given that a search has put more into it (`new`):
+    /// the first, and any that comes [`OPTIONS_DRAW_INTERVAL`] after the list was last drawn,
+    /// are drawn at once; what comes sooner waits for a [`Message::DrawOptions`] after the
+    /// interval, one for all of it.
+    fn draw_options(&mut self, ctx: &Context<Self>, new: bool) -> bool {
+        if !new {
+            return false;
+        }
+        let since = self.options_drawn.map(|drawn| drawn.elapsed());
+        match since {
+            Some(since) if since < OPTIONS_DRAW_INTERVAL => {
+                if !self.options_draw_pending {
+                    self.options_draw_pending = true;
+                    let wait = OPTIONS_DRAW_INTERVAL.saturating_sub(since).as_millis() as u32 + 1;
+                    ctx.link().send_future(async move {
+                        TimeoutFuture::new(wait).await;
+                        Message::DrawOptions
+                    });
+                }
+                false
+            }
+            _ => true,
+        }
     }
 
     /// The worker has answered for the running job: commits what it came to.
@@ -925,7 +1000,8 @@ impl App {
         }
 
         // What the search found in this slice is listed while it goes on.
-        let found = self.state.found(job.task.take_found());
+        let new = self.state.found(job.task.take_found());
+        let found = self.draw_options(ctx, new);
         let id = job.id;
         Self::show(&job);
         self.job = Some(job);
@@ -1006,8 +1082,10 @@ impl App {
     }
 
     /// Ends the running job without a word, to do something else with the project (what was
-    /// found stays in the state, for the action that follows to put away or use).
-    fn end_job(&mut self) {
+    /// found stays in the state, for the action that follows to put away or use). With
+    /// `keep_indicator` the busy indicator is left up, for whatever follows to take over (it must
+    /// then take it down or put something on it).
+    fn end_job(&mut self, keep_indicator: bool) {
         let Some(job) = self.job.take() else {
             return;
         };
@@ -1017,7 +1095,9 @@ impl App {
             job.started.elapsed().as_secs_f64() * 1000.0,
             job.steps
         );
-        busy::hide();
+        if !keep_indicator {
+            busy::hide();
+        }
         if job.remote.is_some() {
             self.worker.stop();
             self.worker.ensure();

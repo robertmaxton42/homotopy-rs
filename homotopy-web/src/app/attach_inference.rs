@@ -120,6 +120,24 @@ pub fn limits() -> InferenceLimits {
     }
 }
 
+/// The limits for the search for one generator that was asked for by name (dropped on the diagram,
+/// or picked and clicked): the settings, except that the time for a generator is not limited, as
+/// it is not for a click.
+///
+/// Someone who names a generator wants it looked for, can see that the search is going on (the
+/// busy pill, and what it has found listed as it goes along) and can end it at any time (`Esc`,
+/// the pill, *Stop*; the project is as it was), so there is no point in giving up for them: the
+/// limit in the settings is for the searches that look at everything and must not be held up by
+/// one generator that has no end. The rest of the settings (whether to infer instances at all,
+/// the dimension up to which to) are theirs still.
+#[must_use]
+pub fn limits_for_generator() -> InferenceLimits {
+    InferenceLimits {
+        generator_ms: 0,
+        ..limits()
+    }
+}
+
 /// Takes the settings that were kept into the settings, at the start.
 pub fn load() {
     let Some(kept) = read_settings().and_then(|json| serde_json::from_str::<Kept>(&json).ok())
