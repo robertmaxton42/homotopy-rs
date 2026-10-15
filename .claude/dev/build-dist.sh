@@ -6,10 +6,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-CARGO_TARGET_DIR=target/wasm cargo build -p homotopy-web --target wasm32-unknown-unknown
+# (A CARGO_TARGET_DIR in the environment is a build directory shared with other checkouts: the
+# wasm build goes in a directory of its own under it.)
+WASM_TARGET="${CARGO_TARGET_DIR:-target}/wasm"
+CARGO_TARGET_DIR="$WASM_TARGET" cargo build -p homotopy-web --target wasm32-unknown-unknown
 mkdir -p dist
 wasm-bindgen --out-dir dist --no-typescript --target web \
-  target/wasm/wasm32-unknown-unknown/debug/homotopy_web.wasm
+  "$WASM_TARGET/wasm32-unknown-unknown/debug/homotopy_web.wasm"
 cp -r homotopy-web/static/* dist/
 
 if [ ! -f dist/highs.wasm ]; then

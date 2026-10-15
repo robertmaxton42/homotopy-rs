@@ -278,6 +278,11 @@ the list that name generators that are gone are dropped, so that a new generator
 the same number does not inherit them. The workspace, the selected boundary and the stash lose
 what mentions anything that goes. Undoing brings everything back.
 
+To see what a deletion would delete before doing it, open the settings of a generator or folder
+and hover over (or focus) its delete button: the rows that would go are tinted and struck out,
+a closed folder, or a schema whose instances are closed, that holds some says how many
+("−2 inside"), and a line under the row says "Deletes 4 more".
+
 ## Not yet
 
 - Inferring replacements longer than three cells, or replacements whose cells are contracted

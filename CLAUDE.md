@@ -877,6 +877,17 @@ and check it with the debug hooks below.
   generators: 8ms per cold preview in the release build, 44ms in the debug build, then microseconds).
   Tests: `homotopy-model/tests/removal.rs` (the cascade, transitivity, no cascade from an instance, undo,
   workspace, preview = deletion on the examples and, with `HOMOTOPY_TANGENT_FIXTURE=<.hom>`, the fixture).
+  **Preview in the signature** (`app/signature/removal_preview.rs`): while the pointer is on the delete button
+  of a row being edited, or the button has the focus (it is a focusable `role=button` with `aria-describedby`
+  the note), `show` computes `removal_preview(node, 16)`, a few diagrams per step and yielding between
+  (`TimeoutFuture(0)`), saying "Checking..." until it is done, then writes to the DOM directly like the
+  tooltip: rows have `data-node`; those that go get `data-removal` (tint and strike-through in
+  `styles.css`), the nearest row on show that holds some out of sight (a closed folder, a schema with its
+  instances closed) gets `data-removal-inside="N"` (a "-N inside" badge), and `.signature__removal-note`
+  under the row says "Deletes N more (M out of sight)" (for a folder: "N generators inside and M more
+  outside it"), with the names in its `title`. `hide` clears it all (mouse leave, blur, click, and the
+  row's `destroy`: a row that goes never sees the pointer leave). `plan` is the pure part (tested natively).
+  There is no confirm step, so nothing else lists the names. Nothing re-renders the signature.
 
 ## Policy: heuristics
 

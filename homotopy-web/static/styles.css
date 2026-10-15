@@ -869,6 +869,67 @@ svg [data-dim="1"] {
   align-items: center;
 }
 
+/* What deleting a generator would delete (app/signature/removal_preview.rs): the delete button
+   can be focused; rows that would go are tinted and struck out; rows that hold some out of sight
+   (a closed folder, the instances of a schema) say how many. The attributes are written to the
+   rows directly, so hovering the button renders nothing. */
+.signature__removal-button {
+  cursor: pointer;
+  border-radius: var(--space-0);
+}
+
+.signature__removal-button:focus-visible {
+  outline: 2px solid var(--slot-error);
+  outline-offset: -2px;
+}
+
+.signature__removal-note {
+  padding: 0 var(--space-1) var(--space-0);
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--slot-error);
+  cursor: default;
+}
+
+.signature__removal-note:empty {
+  display: none;
+}
+
+.signature__item.signature__folder-editing:has(.signature__removal-note:not(:empty)) {
+  height: auto;
+}
+
+.signature__item[data-removal] {
+  background: color-mix(in srgb, var(--slot-error) 22%, transparent);
+  box-shadow: inset 3px 0 0 var(--slot-error);
+}
+
+.signature__item[data-removal] .signature__item-name-wrapper {
+  text-decoration: line-through;
+  text-decoration-color: var(--slot-error);
+  text-decoration-thickness: 2px;
+  opacity: 0.8;
+}
+
+.signature__item[data-removal-inside] {
+  position: relative;
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--slot-error) 55%, transparent);
+}
+
+.signature__item[data-removal-inside]::after {
+  content: "\2212" attr(data-removal-inside) " inside";
+  position: absolute;
+  right: 4px;
+  top: 2px;
+  padding: 0 var(--space-0);
+  border-radius: var(--space-0);
+  font-size: 11px;
+  line-height: 16px;
+  color: #fff;
+  background: var(--slot-error);
+  pointer-events: none;
+}
+
 .signature__item-name, .signature__item-fill {
   flex: 1 1 auto;
   white-space: nowrap;
