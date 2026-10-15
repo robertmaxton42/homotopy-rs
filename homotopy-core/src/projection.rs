@@ -476,19 +476,26 @@ impl<const N: usize> Depths<N> {
     /// into which layer.
     #[must_use]
     pub fn echoes(&self, wire: [Coordinate<N>; 2]) -> usize {
-        let (vertex, beside) = if self.sheets_meeting_at(wire[1]) > 0 {
-            (wire[1], wire[0])
-        } else if self.sheets_meeting_at(wire[0]) > 0 {
-            (wire[0], wire[1])
-        } else {
-            return 0;
-        };
-        let (Some(&vertex), Some(&beside)) = (
-            self.coord_to_node.get(&vertex),
-            self.coord_to_node.get(&beside),
+        let [first, second] = wire;
+        let (Some(&first), Some(&second)) = (
+            self.coord_to_node.get(&first),
+            self.coord_to_node.get(&second),
         ) else {
             return 0;
         };
+        let meets = |n: NodeIndex| {
+            self.sheet_data()
+                .boundaries_to(n)
+                .any(|b| b.kind == SheetBoundaryKind::MergesOrSplits)
+        };
+        let vertex = if meets(second) {
+            second
+        } else if meets(first) {
+            first
+        } else {
+            return 0;
+        };
+        let beside = if vertex == second { first } else { second };
         let Some(layer) = self.node_depths[beside] else {
             return 0;
         };

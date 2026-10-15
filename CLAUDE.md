@@ -627,24 +627,40 @@ indicator: see "Laying out diagrams" below.
       is kept. Tested against the scaffold with every edge (`leaving_out_regular_slices_loses_no_unit_cone`).
       Identity is checked on kept edges only: across the diagonals it differs where the way round passes a
       junction, which cuts the sheet.
-  - **Outlines of sheet boundaries** (`Depths::sheet_boundaries`, `DiagramSvg::view_sheet_outlines`, setting
-    *Outline where sheets end or meet*, `sheet_outlines`, on by default; workspace diagram only, like the rest of
-    the sheet features). Only at *points* of the picture (every coordinate singular: where the cells are): a
-    height there that **one** edge carries a height into is where a sheet *ends* (`BeginsOrEnds`; `matchsticks`,
-    `stacks`, `monoid_unit`), and one that **three or more** carry heights into is where sheets *meet*
-    (`MergesOrSplits`; the 3-cell of the associator: 10, of the snake: 6; `Sheet::arms` is the carried-in count).
-    It is **not** "a cone with `source_len() == 0`" as first specified: every edge goes from a position to one of
-    a dimension less, so a sheet that lies along a wire (a line) has such a cone on every edge from the regions
-    beside it, and where several rows of the grid collapse into one (a crossing) each row's edge lacks the
-    other's sheets: 32 of them for `crossing`, which has none, a boundary along both sides of every wire; and
-    the junction rule applied at every position rang every vertex of the associator's wires (11, against the 1
-    now). Sheets that end or meet along a wire are not marked: the wire is drawn. Drawn as one path per kind
-    in a `g.sheet-boundaries` (counts in `data-ends`/`data-meets`) over the surfaces and under the highlight:
-    for an end the last stretch of the sheet (dashed) from the neighbour that carries it and a dashed ring, for
-    a meeting a double ring; a pale halo under each so they show on any colour; `pointer-events: none`. The
-    tooltip's detail says "a sheet begins or ends here" / "sheets merge or split here". Made on first use;
-    `GraphicElement` is not changed. Gaps: a stretch is drawn along the scaffold edge, not a curve of the
-    layout; sheets that are joined along a wire or end along it are not marked; the 3D view has none.
+  - **Where sheets meet: fans and echoes** (`Depths::sheet_boundaries`, `sheets_meeting_at`, `echoes`;
+    `homotopy-graphics/src/svg/marks.rs` for the geometry; `diagram_svg/marks.rs`; setting *Show where sheets meet
+    (fans and echoes)*, still `sheet_outlines`, on by default; workspace diagram only). These replace the rings
+    and dashed stretches that were drawn at boundaries, which got attention and did not say what they were about.
+    Only at *points* of the picture (every coordinate singular: where the cells are): a height there that **one**
+    edge carries a height into is where a sheet *ends* (`BeginsOrEnds`; `matchsticks`, `stacks`, `monoid_unit`),
+    and one that **three or more** carry heights into is where sheets *meet* (`MergesOrSplits`; the 3-cell of the
+    associator: 10, of the snake: 6, the vertex of `start`: 18; `Sheet::arms` is the carried-in count). It is
+    **not** "a cone with `source_len() == 0`": every edge goes from a position to one of a dimension less, so a
+    sheet that lies along a wire has such a cone on every edge from the regions beside it (32 of them for
+    `crossing`, which has none), and the junction rule at every position rang every vertex of the associator's
+    wires (11, against the 1 now). Sheets that end or meet along a wire are not marked: the wire is drawn.
+    - **Fan**: at a meeting, thin arcs about the vertex on its up and right side, one for each sheet that meets
+      there (`sheets_meeting_at`, at most `MAX_PAGES` = 4), like the edge of a stack of pages; where a sheet
+      only begins or ends, a single arc. A still picture (no curl, no arrow). Tried first: pages radiating from
+      the vertex (looked like a claw) and arcs shifted like a stack (heavy); nested arcs about the vertex read best.
+      Dark with a pale halo so it shows on any colour, `pointer-events: none`, in a `g.sheet-marks`
+      (`data-fans`/`data-ends`/`data-echoes`), over everything, made once for the prepared diagram (`OnceCell`).
+    - **Echoes** (`Depths::echoes(wire)`, at most `MAX_ECHOES` = 3): a wire (a segment between a meeting and the
+      position beside it) gets one echo for each *step* it is behind the front-most of the wires at that point.
+      A wire's layer is the height `z` that the hover marks as drawn at the position beside the point
+      (`node_depth`), and a step is a different `z` among the wires there, so the wires of the first layer have
+      none and the echoes say which wires go into which layer. (Tried first: the edge depth at the vertex, which is
+      0 for every wire at `start`'s vertex and so said nothing.) Wires with no drawn sheet have none. On the
+      associator one wire has one; at `start`'s vertex the three from the top, which are on the second layer. Each
+      echo is the wire's own path (the layout's curve) again, translated by a few pixels to the up and right side
+      of the wire (`echo_side`), in the wire's colour, stroked with a gradient (`reach_from`: 36px from the
+      vertex) that fades out, over a paler wider one for contrast. The gradient element is made with `VTag`
+      because `html!` lowercases `linearGradient`.
+    The tooltip's detail still says "a sheet begins or ends here" / "sheets merge or split here". Gaps: where
+    several wires leave in nearly one direction (the three at `start`) their echoes overlap; echoes are made for
+    the wires of the diagram's own layout and so need no new geometry, but are not interrupted by wires in front;
+    the 3D view has none; the fan for a sheet that ends was checked in a mock, not on an example (none of the
+    five example projects or `start` has one in the 2D view).
   - **Thickness shading** (`thickness_step(s)` in `projection/sheets.rs`, `GraphicElement::build_shaded`,
     `DiagramSvg`, setting *Shade surfaces by the sheets behind them*, `sheet_shading`, on by default; workspace
     diagram only). A surface's thickness is the number of sheets through it: `Depths::thickness`, the number
@@ -720,7 +736,7 @@ indicator: see "Laying out diagrams" below.
     different sheets (two separate wires of one generator), and one that is cut by a different cell on it is two
     (a line with a bead on it is `S1`, the bead, `S2`); "front" is a count (hidden at more positions than drawn),
     so two strands that cross over each other in turn are one front and one behind, or neither, by their
-    majority; `Stack`'s default sheet is still the one drawn (`front`), not the foremost one; the outlines mark
+    majority; `Stack`'s default sheet is still the one drawn (`front`), not the foremost one; the fans and echoes mark
     points only, and shading counts heights (a sheet that comes back to the position counts twice).
 
 New expensive work: write it as a job (or give an existing job another kind of step), label it,

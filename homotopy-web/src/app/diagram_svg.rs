@@ -1,4 +1,5 @@
 use std::{
+    cell::OnceCell,
     convert::{From, Into, TryInto},
     f32::consts::PI,
     rc::Rc,
@@ -51,6 +52,7 @@ use crate::{
 };
 
 pub mod highlight;
+mod marks;
 mod sheets;
 
 pub use self::sheets::{debug_command, debug_summary};
@@ -172,6 +174,8 @@ struct PreparedDiagram<const N: usize> {
     depths: Depths<N>,
     projection: Projection<N>,
     layout: Rc<Layout<N>>,
+    /// The fans and echoes where sheets meet, made when first drawn (see `marks`).
+    marks: OnceCell<marks::SheetMarks>,
 
     /// The width and height of the diagram image in pixels.
     ///
@@ -273,6 +277,7 @@ impl<const N: usize> PreparedDiagram<N> {
             depths,
             projection,
             layout,
+            marks: OnceCell::new(),
             dimensions,
             transform,
         }
@@ -639,6 +644,13 @@ impl<const N: usize> Component for DiagramSvg<N> {
 
         tracing::info!("redrawing diagram");
 
+        // The surfaces come first in what is drawn, then the wires and vertices over them.
+        let surfaces = prepared
+            .graphic
+            .iter()
+            .take_while(|element| matches!(element, GraphicElement::Surface(..)))
+            .count();
+
         html! {
             <svg
                 xmlns={"http://www.w3.org/2000/svg"}
@@ -661,8 +673,9 @@ impl<const N: usize> Component for DiagramSvg<N> {
                 ref={ctx.props().diagram_ref.clone()}
             >
                 {Self::view_placeholder_hatch(ctx, prepared)}
-                {prepared.graphic.iter().enumerate().map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
-                {Self::view_sheet_outlines(ctx, prepared)}
+                {prepared.graphic.iter().enumerate().take(surfaces).map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
+                {prepared.graphic.iter().enumerate().skip(surfaces).map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
+                {Self::view_sheet_marks(ctx, prepared)}
                 {self.view_highlight(ctx)}
                 {self.view_drop_target(prepared)}
             </svg>
@@ -920,86 +933,6 @@ impl<const N: usize> DiagramSvg<N> {
     /// Whether the surfaces are to be shaded by the sheets behind them.
     fn shading(ctx: &Context<Self>) -> bool {
         ctx.props().sheets && AppSettings::get_sheet_shading()
-    }
-
-    /// Marks where sheets end or meet (see `Depths::sheet_boundaries`), over the diagram: for a
-    /// sheet that ends, the last stretch of it and a dashed ring where it ends; for sheets that
-    /// meet, a double ring. Each kind is one path, with a pale halo under it so that it shows on
-    /// any colour. Nothing for a diagram with no more dimensions than the view, or if it is off.
-    fn view_sheet_outlines(ctx: &Context<Self>, prepared: &PreparedDiagram<N>) -> Html {
-        use std::fmt::Write as _;
-
-        use homotopy_core::projection::SheetBoundaryKind::{BeginsOrEnds, MergesOrSplits};
-
-        if !ctx.props().sheets || !AppSettings::get_sheet_outlines() {
-            return html! {};
-        }
-        let boundaries = prepared.depths.sheet_boundaries();
-        if boundaries.is_empty() {
-            return html! {};
-        }
-        let at = |coordinate: &[SliceIndex; N]| {
-            prepared
-                .transform
-                .transform_point(Point::from(project_2d(prepared.layout[coordinate])))
-        };
-        let radius = ctx.props().style.point_radius;
-        let ring = |path: &mut String, centre: Point, r: f32| {
-            write!(
-                path,
-                "M{} {}a{r} {r} 0 1 0 {} 0a{r} {r} 0 1 0 {} 0",
-                centre.x - r,
-                centre.y,
-                2.0 * r,
-                -2.0 * r
-            )
-            .ok();
-        };
-        let (mut stretches, mut ends, mut meets) = (String::new(), String::new(), String::new());
-        let (mut ends_count, mut meets_count) = (0, 0);
-        let mut seen = homotopy_common::hash::FastHashSet::default();
-        for b in boundaries {
-            let to = at(&b.to);
-            match b.kind {
-                BeginsOrEnds => {
-                    let from = at(&b.from);
-                    ends_count += 1;
-                    write!(stretches, "M{} {}L{} {}", from.x, from.y, to.x, to.y).ok();
-                    ring(&mut ends, to, radius * 1.9);
-                }
-                MergesOrSplits => {
-                    // (Several sheets can meet at the one place.)
-                    if seen.insert(b.to) {
-                        meets_count += 1;
-                        ring(&mut meets, to, radius * 1.9);
-                        ring(&mut meets, to, radius * 2.7);
-                    }
-                }
-            }
-        }
-        let layer = |class: &'static str, d: &String| {
-            if d.is_empty() {
-                return html! {};
-            }
-            html! {
-                <>
-                    <path d={d.clone()} class="sheet-boundary__halo" />
-                    <path d={d.clone()} class={classes!("sheet-boundary", class)} />
-                </>
-            }
-        };
-        html! {
-            <g
-                class="sheet-boundaries"
-                pointer-events="none"
-                data-ends={ends_count.to_string()}
-                data-meets={meets_count.to_string()}
-            >
-                {layer("sheet-boundary--stretch", &stretches)}
-                {layer("sheet-boundary--end", &ends)}
-                {layer("sheet-boundary--meet", &meets)}
-            </g>
-        }
     }
 
     fn view_highlight(&self, ctx: &Context<Self>) -> Html {

@@ -4,6 +4,7 @@ use homotopy_core::{Generator, Orientation};
 
 use crate::style::{GeneratorRepresentation, GeneratorStyle, SignatureStyleData};
 
+pub mod marks;
 pub mod render;
 pub mod shape;
 

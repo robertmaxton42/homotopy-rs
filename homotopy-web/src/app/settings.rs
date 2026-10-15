@@ -118,12 +118,12 @@ impl Component for SettingsView {
                     }
                     {
                         Self::view_checkbox(
-                            "Outline where sheets end or meet",
+                            "Show where sheets meet (fans and echoes)",
                             AppSettings::get_sheet_outlines(),
                             AppSettings::set_sheet_outlines,
                         )
                     }
-                    <div class="settings__note">{"In the 2D view of a diagram of more than two dimensions, draws a dashed ring where a sheet (what is hidden behind the cell the view shows) ends, and a double ring where several meet, with the last stretch of the sheet that ends. Hovering over such a place says so. Sheets are found from the cells' rewrites, so this is what the diagram has and not a guess."}</div>
+                    <div class="settings__note">{"In the 2D view of a diagram of more than two dimensions, draws a small fan of pages where sheets (what is hidden behind the cell the view shows) meet, a page for each sheet, and a single page where a sheet begins or ends. Wires that go into a layer behind the front one at such a point get faint echoes alongside them, one for each layer back, fading out from the point. Hovering over such a place says so. Sheets are found from the cells' rewrites, so this is what the diagram has and not a guess."}</div>
                     {
                         Self::view_checkbox(
                             "Shade surfaces by the sheets behind them",

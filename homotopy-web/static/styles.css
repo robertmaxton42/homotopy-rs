@@ -452,34 +452,36 @@ button, .button {
   opacity: 0.6;
 }
 
-/* Where a sheet ends or sheets meet, over the diagram (a pale halo under each). */
+/* Where sheets meet, over the diagram: a fan of pages at the point (a page for each sheet, a
+   single one where a sheet begins or ends) and echoes alongside the wires of the layers behind
+   (a pale halo under the pages so that they show on any colour). */
 
-.sheet-boundary__halo {
+.sheet-mark__halo {
   fill: none;
-  stroke: rgba(255, 255, 255, 0.75);
-  stroke-width: 5px;
+  stroke: rgba(255, 255, 255, 0.85);
+  stroke-width: 3px;
   stroke-linecap: round;
 }
 
-.sheet-boundary {
+.sheet-mark {
+  fill: none;
+  stroke: #1d1d1f;
+  stroke-width: 1.2px;
+  stroke-linecap: round;
+}
+
+.sheet-mark--end {
+  opacity: 0.65;
+}
+
+.sheet-echo {
   fill: none;
   stroke-width: 2px;
   stroke-linecap: round;
 }
 
-.sheet-boundary--stretch {
-  stroke: #c2255c;
-  stroke-width: 3px;
-  stroke-dasharray: 5 4;
-}
-
-.sheet-boundary--end {
-  stroke: #c2255c;
-  stroke-dasharray: 3 3;
-}
-
-.sheet-boundary--meet {
-  stroke: #0b7285;
+.sheet-echo--halo {
+  stroke-width: 4px;
 }
 
 /* Surfaces with more sheets behind them (in steps from the thinnest, which is not shaded). The
