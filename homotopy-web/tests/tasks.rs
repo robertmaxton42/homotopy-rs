@@ -242,6 +242,8 @@ fn what_may_be_done_while_busy_does_not_touch_the_project() {
         Action::ExportProof,
         Action::Select(0),
         Action::SelectPoint(vec![], false, InferenceLimits::default()),
+        Action::SelectCell(vec![], false, InferenceLimits::default()),
+        Action::SearchEverything,
         Action::Draft(proof::DraftEdit::Infer(Generator::new(0, 0))),
     ];
     for action in refused {
@@ -644,4 +646,201 @@ fn attaching_one_generator_gives_the_options_for_that_generator_and_picking_one_
     let attach = Action::AttachGenerator(generator, point, true, limits);
     assert_eq!(attach.heavy_label(), Some("Searching for attachments"));
     assert!(!attach.allowed_while_busy());
+}
+
+/// A state in which a click lands on one cell, which has a definition (one is made for it: a
+/// generator one dimension up from the cell, to itself), and where more than the definition
+/// attaches; with the point of the click and the cell.
+fn on_a_defined_cell() -> (State, Vec<SliceIndex>, Generator) {
+    use homotopy_core::{signature::Signature as _, DiagramN, Height};
+    for json in [ASSOCIATOR, SYMMETRIC_MONOIDAL, MERGE_CONTRACT] {
+        let actions = recorded_actions(json);
+        let state = state_before(&actions, actions.len());
+        let Some(workspace) = state.proof().workspace.clone() else {
+            continue;
+        };
+        let Ok(diagram) = DiagramN::try_from(workspace.diagram.clone()) else {
+            continue;
+        };
+        // The vertices of the first two coordinates.
+        let mut points = vec![];
+        for i in 0..diagram.size() {
+            let Some(Diagram::DiagramN(slice)) = diagram.slice(Height::Singular(i)) else {
+                continue;
+            };
+            for j in 0..slice.size() {
+                points.push(vec![
+                    SliceIndex::Interior(Height::Singular(i)),
+                    SliceIndex::Interior(Height::Singular(j)),
+                ]);
+            }
+        }
+        for point in points {
+            let heights: Vec<_> = point
+                .iter()
+                .map(|index| match index {
+                    SliceIndex::Interior(height) => *height,
+                    SliceIndex::Boundary(_) => unreachable!(),
+                })
+                .collect();
+            let Some(cell) = proof::cell_at(&workspace.diagram, &heights) else {
+                continue;
+            };
+            let mut on = state.clone();
+            let info = on.proof().signature.generator_info(cell).unwrap().clone();
+            on.history.amend(|proof| {
+                proof
+                    .signature
+                    .create_generator(
+                        info.diagram.clone(),
+                        info.diagram.clone(),
+                        "definition",
+                        Invertibility::Directed,
+                    )
+                    .unwrap();
+            });
+            let limits = InferenceLimits::UNLIMITED;
+            let Some(job) = proof::DefinitionsJob::new(on.proof(), &point, true, limits) else {
+                continue;
+            };
+            let defined = homotopy_model::job::run_to_end(job).options.len();
+            let all = proof::AttachOptionsJob::new(on.proof(), &point, true, limits, None)
+                .map(homotopy_model::job::run_to_end)
+                .map_or(0, |outcome| outcome.options.len());
+            // The definition attaches there, and so does more than it (else the click would
+            // attach it at once).
+            if defined >= 1 && all > defined {
+                return (on, point, cell);
+            }
+        }
+    }
+    panic!("an example has a cell with a definition");
+}
+
+#[test]
+fn a_click_on_a_cell_offers_its_definitions_first_and_everything_else_on_asking() {
+    use homotopy_web::model::{Definitions, Selectables};
+    let (state, point, cell) = on_a_defined_cell();
+    let limits = InferenceLimits::UNLIMITED;
+    let before = summary(&state);
+
+    // What a click that looks at everything finds.
+    let mut whole = state.clone();
+    run_in_steps(&mut whole, Action::SelectPoint(point.clone(), true, limits));
+    let all = match whole.options.clone() {
+        Some(Selectables::Attach(all)) => all,
+        _ => panic!("several ways to attach at the point"),
+    };
+
+    // The click with definitions first: a task of its own, that leaves the project alone, and
+    // offers the definitions, without having searched for the rest.
+    let mut clicked = state.clone();
+    let Started::Running(task) = clicked
+        .start(Action::SelectCell(point.clone(), true, limits))
+        .unwrap()
+    else {
+        panic!("looking for definitions is a task");
+    };
+    assert!(matches!(task, Task::Definitions { .. }));
+    assert_eq!(task.label(), "Looking for definitions");
+    assert_eq!(summary(&clicked), before);
+    let mut task = task;
+    let output = loop {
+        if let Some(output) = task.step() {
+            break output;
+        }
+    };
+    assert!(matches!(
+        clicked.finish(output).unwrap(),
+        Started::Done(true)
+    ));
+    let Some(Selectables::Attach(defined)) = clicked.options.clone() else {
+        panic!("the definitions are offered");
+    };
+    let Some(Definitions {
+        of,
+        count,
+        more: Some(_),
+        ..
+    }) = clicked.definitions.clone()
+    else {
+        panic!("they are marked, with the rest of the search to do");
+    };
+    assert_eq!(of, cell);
+    assert_eq!(count, defined.len());
+    assert!(count >= 1);
+    assert_eq!(summary(&clicked), before);
+    // Each is among what the whole search finds (and is for a generator that defines the cell).
+    let definitions = proof::definitions_of(&clicked.proof().signature, cell);
+    for option in &defined {
+        assert!(all.contains(option), "{option:?}");
+        assert!(definitions.contains(&option.generator));
+    }
+    assert!(all.len() > defined.len(), "there is more to search for");
+
+    // Searching for everything keeps them at the top and adds what the whole search finds.
+    let mut more = clicked.clone();
+    let Started::Running(task @ Task::AttachRest { .. }) =
+        more.start(Action::SearchEverything).unwrap()
+    else {
+        panic!("the rest of the search is a task");
+    };
+    assert_eq!(summary(&more), before);
+    let mut task = task;
+    let output = loop {
+        if let Some(output) = task.step() {
+            break output;
+        }
+    };
+    more.finish(output).unwrap();
+    let Some(Selectables::Attach(listed)) = more.options.clone() else {
+        panic!("all the options are listed");
+    };
+    assert_eq!(&listed[..count], &defined[..]);
+    assert_eq!(listed.len(), all.len());
+    for option in &all {
+        assert!(listed.contains(option));
+    }
+    let done = more.definitions.clone().unwrap();
+    assert_eq!((done.count, done.more), (count, None));
+    // (And there is nothing more to search for.)
+    assert!(matches!(
+        more.start(Action::SearchEverything).unwrap(),
+        Started::Done(false)
+    ));
+
+    // Esc puts it all away.
+    clicked.update(Action::ClearSelections).unwrap();
+    assert!(clicked.options.is_none() && clicked.definitions.is_none());
+
+    // A click that is not on one cell is searched for as it always was.
+    let mut elsewhere = state.clone();
+    let regular = vec![SliceIndex::Interior(homotopy_core::Height::Regular(0))];
+    assert!(matches!(
+        elsewhere
+            .start(Action::SelectCell(regular.clone(), false, limits))
+            .unwrap(),
+        Started::Running(Task::AttachOptions(_))
+    ));
+    assert!(matches!(
+        elsewhere
+            .start(Action::SelectCell(vec![], false, limits))
+            .unwrap(),
+        Started::Running(Task::AttachOptions(_))
+    ));
+    // The same as the click: whatever it finds.
+    let mut same = state.clone();
+    run_in_steps(
+        &mut same,
+        Action::SelectCell(regular.clone(), false, limits),
+    );
+    let mut plain = state.clone();
+    run_in_steps(&mut plain, Action::SelectPoint(regular, false, limits));
+    assert_eq!(same.options, plain.options);
+    assert!(same.definitions.is_none());
+
+    // Looking for definitions is heavy, and refused while another job runs.
+    let click = Action::SelectCell(point, true, limits);
+    assert_eq!(click.heavy_label(), Some("Searching for attachments"));
+    assert!(!click.allowed_while_busy());
 }

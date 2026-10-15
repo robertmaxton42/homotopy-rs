@@ -50,6 +50,10 @@ enum Command {
     Proof(proof::Action),
     /// With the limits from the settings.
     SelectPoint(Vec<SliceIndex>, bool),
+    /// A click with definitions first, with the limits from the settings.
+    SelectCell(Vec<SliceIndex>, bool),
+    /// Searches for everything where the definitions were offered.
+    SearchEverything,
     /// With these limits on inferring instances.
     SelectPointWith(Vec<SliceIndex>, bool, proof::InferenceLimits),
     /// Attaches one generator (`{"id": .., "dimension": ..}`) at a point, as dropping it there does,
@@ -85,6 +89,10 @@ impl From<Command> for model::Action {
             Command::SelectPoint(point, weak_units) => {
                 Self::SelectPoint(point, weak_units, super::attach_inference::limits())
             }
+            Command::SelectCell(point, weak_units) => {
+                Self::SelectCell(point, weak_units, super::attach_inference::limits())
+            }
+            Command::SearchEverything => Self::SearchEverything,
             Command::SelectPointWith(point, weak_units, limits) => {
                 Self::SelectPoint(point, weak_units, limits)
             }
@@ -130,6 +138,9 @@ struct Summary {
     project_bytes: usize,
     generators: usize,
     options: Option<usize>,
+    /// If the first options are definitions: how many, and whether the search for everything
+    /// else is still to do.
+    definitions: Option<(usize, bool)>,
     /// The generator picked to be attached by the next click, as `[id, dimension]`.
     armed: Option<(usize, usize)>,
     /// The crash dump's action log: its number of actions, and the size of the import it starts
@@ -170,6 +181,10 @@ fn summary() -> String {
             model::Selectables::Merge(_, tos) => tos.len(),
             model::Selectables::Attach(options) => options.len(),
         }),
+        definitions: state
+            .definitions
+            .as_ref()
+            .map(|definitions| (definitions.count, definitions.more.is_some())),
         armed: state
             .armed
             .map(|generator| (generator.id, generator.dimension)),

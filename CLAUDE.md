@@ -71,7 +71,7 @@ indicator: see "Laying out diagrams" below.
 - **Refusal**: while a job runs, `Action::allowed_while_busy` (an exhaustive `match`: whoever adds an
   action decides) refuses what updates the history, and what is expensive in itself, and allows the rest.
   Refused: every `proof::Action` but the view-only signature edits below, undo/redo (keys and mouse
-  buttons), `ImportActions`, `Select`, `SelectPoint`/`AttachGenerator`, `Draft` (it runs inference),
+  buttons), `ImportActions`, `Select`, `SelectPoint`/`SelectCell`/`SearchEverything`/`AttachGenerator`, `Draft` (it runs inference),
   `ExportImage` and `ExportProof` (it serialises the project on the page, and is the project as it was
   before the job). Allowed: highlights, `Arm`, `ClearSelections`, `Merge` (listing the options),
   `ExportActions`, remote metadata, help, and **opening and closing folders and the instances of a
@@ -480,6 +480,63 @@ indicator: see "Laying out diagrams" below.
     look at there); the diagram cannot be dropped on when it is scrolled out of view or under another panel (what
     is under the pointer decides); the tooltip of a diagram the generator cannot be attached to still shows while
     the refused ghost is over it.
+
+- **Definitions first** (`proof/definitions.rs`, `Action::SelectCell`/`SearchEverything`, setting *Offer
+  definitions first when clicking a cell*, `offer_definitions`, on by default and kept with the inference
+  settings in `homotopy-inference-settings`; user-facing text in `doc/attaching.md`). A heuristic shortcut
+  (policy above): a click on one cell offers that cell's *definition* at once instead of making the person
+  wait for the whole search.
+  - **Lands on a cell** (`cell_at(haystack, point)`, the point after the boundary split): the point is not
+    empty, *every* height in it is `Singular` (a vertex in each coordinate: on a wire or a region there is
+    no cell to define, so the click is as before), and the slice at the point (`generators_near(point, 0)`:
+    the fibre, what the other coordinates have there) has cells of the dimension of the diagram that are all
+    of *one* generator `g`. Several such generators (sheets of different cells), none (a vertex with only
+    lower cells, a crossing) or a point with a chosen sheet that is not a vertex: as before. Cells of lower
+    dimension never count (a definition of one would need raising, which is not a definition of the cell).
+  - **Definition** (`definitions_of(signature, g)`): a generator of dimension `dim(g)+1` with `g`'s diagram as
+    source or target (diagram equality, no search). `id + 1` first (they are made right after the cell), then
+    the others in signature order. An instance `d[σ]` of a schema's definition has `g[σ]` as boundary, so it is
+    found like any other *if it exists as a generator*; instances are not inferred, and reflections
+    (duals...) are not looked for: "Search everything" does those.
+  - **Verification**: `DefinitionsJob` (model crate; a `Job`, label "Looking for definitions") runs, for each
+    candidate in turn, `AttachOptionsJob::new(.., Some(d)).plain_only()` (`plain_only`: only the plain pass, the
+    candidate and its inverse, no reflections or inference), so the options are exactly the full search's options
+    for `d` at the click, in its order and with its time limit per generator (`cut_short` lists the candidates
+    given up on). It stays on the page (`Task::offer` gives it no worker): one step is the setup of a candidate
+    or one cell variant. Native release, the tangent categories fixture, `start` (id 62, dim 5) as the
+    workspace, click on its cell: `Proof 63` offered in 43ms (0.2ms to set up), against 2.95s for the full
+    search at that point.
+  - **Showing**: `State::start(SelectCell)` returns `Task::Definitions` when there are candidates, else the
+    ordinary `Task::AttachOptions`; `finish` of the definitions with none verified starts the full search (the
+    click is as it was), with some it sets `Selectables::Attach(defs)` and `State::definitions =
+    Definitions { of, count, cut_short, more: Some(Search) }` (not `Done(false)`: the drawer changes; the
+    project does not) and *always* shows the drawer, even for one definition (no auto-attach), because
+    otherwise there would be no way to the rest. The drawer (`app/attach.rs`, `view_definitions`) has
+    "Definitions of X", the definitions (`attach__option--definition`), a note that this is a shortcut, and
+    "Search everything for more options" (`Action::SearchEverything`: `Task::AttachRest { job, shown }`, the
+    full `AttachOptionsJob`, with the worker as for any attach search). Its output keeps the definitions at the
+    top (in order) and lists the full search's options except those equal to them (`AttachOption` equality); the
+    inference notice is the full search's. `count` leading options are the definitions, so the keys 1-9 and
+    `Select(i)` index the flat list as before. `ClearSelections`, picking an option, and any other list clear
+    `definitions`; cancelling (Esc) leaves the drawer as it was. The task carries the shown definitions, so a
+    cancelled search leaves nothing stale. Both actions are refused while busy and have the heavy label.
+  - **Setting off**: the workspace dispatches `SelectPoint` as before. Armed clicks and drops
+    (`AttachGenerator`) never use it.
+  - Tests: `homotopy-model/tests/definitions.rs` (every definition offered is among the full search's options,
+    with and without weak units, on definitions that exist in the corpus at the cell's own vertices and on one
+    made for every cell a click lands on; the `g+1` first; the fixture, only with `HOMOTOPY_TANGENT_FIXTURE=<.hom>`,
+    add `HOMOTOPY_FIXTURE_FULL=1` to compare with the full search); `homotopy-web/tests/tasks.rs`
+    (`a_click_on_a_cell_offers_its_definitions_first_and_everything_else_on_asking`: the task, the project
+    untouched, the marks, merging, a click elsewhere being the old click). Debug hooks: `__homotopy.dispatch`
+    takes `{"SelectCell": [point, weak_units]}` and `"SearchEverything"`; `state().definitions` is
+    `[count, more_to_search]`. Web tests run natively: `cargo test --target x86_64-unknown-linux-gnu` in
+    `homotopy-web`.
+  - Gaps: schemas' instances are only found if they exist (not inferred, no "make the instance"); the 3D view,
+    armed clicks and drops do not use it; the definitions are searched on the page, so a definition that is
+    slow to match (high dimensions) takes its time per generator there (steps are one variant: the busy pill
+    and Esc work between them); a click that lands on a cell whose definition is a *reflection* (dual) is not
+    helped; `cell_at` ignores orientation, so a click on the inverse of `g` finds nothing and falls through to
+    the full search.
 
 - **Sheets** (`Depths::fibre/sheets` in `homotopy-core/src/projection.rs`, `homotopy_model::sheets`,
   `homotopy-web/src/app/diagram_svg/sheets.rs`; user-facing text in `doc/attaching.md`). The 2D view of a

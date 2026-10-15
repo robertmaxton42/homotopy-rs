@@ -419,6 +419,40 @@ struct Inferring {
     search: InferSearch,
 }
 
+/// Where a click is in the diagram of the workspace: the diagram that is searched (the workspace's
+/// or one of its boundaries) and the heights of the point in it.
+#[derive(Clone, Debug)]
+pub(super) struct Located {
+    pub(super) haystack: Diagram,
+    pub(super) boundary_path: Option<BoundaryPath>,
+    pub(super) point: Vec<Height>,
+}
+
+impl Located {
+    /// The place that a point (given relative to what the workspace shows) is at.
+    pub(super) fn of(proof: &ProofState, point: &[SliceIndex]) -> Result<Self, NoAttachment> {
+        let workspace = proof.workspace.as_ref().ok_or(NoAttachment::NoWorkspace)?;
+        let point = {
+            let mut point_with_path: Vec<SliceIndex> = workspace.path.iter().copied().collect();
+            point_with_path.extend(point);
+            point_with_path
+        };
+        let (boundary_path, point) = BoundaryPath::split(&point);
+        let haystack = match boundary_path {
+            None => workspace.diagram.clone(),
+            Some(boundary_path) => DiagramN::try_from(workspace.diagram.clone())
+                .ok()
+                .and_then(|diagram| diagram.boundary(boundary_path))
+                .ok_or(NoAttachment::NoBoundary)?,
+        };
+        Ok(Self {
+            haystack,
+            boundary_path,
+            point,
+        })
+    }
+}
+
 impl AttachOptionsJob {
     /// The search for the ways to attach generators at a point of the diagram in the workspace
     /// (given relative to what it shows), also by way of weak units if `weak_units`.
@@ -437,22 +471,11 @@ impl AttachOptionsJob {
     ) -> Result<Self, NoAttachment> {
         let workspace = proof.workspace.as_ref().ok_or(NoAttachment::NoWorkspace)?;
         let asked_for = point.to_vec();
-
-        let point = {
-            let mut point_with_path: Vec<SliceIndex> = workspace.path.iter().copied().collect();
-            point_with_path.extend(point);
-            point_with_path
-        };
-
-        let (boundary_path, point) = BoundaryPath::split(&point);
-
-        let haystack = match boundary_path {
-            None => workspace.diagram.clone(),
-            Some(boundary_path) => DiagramN::try_from(workspace.diagram.clone())
-                .ok()
-                .and_then(|diagram| diagram.boundary(boundary_path))
-                .ok_or(NoAttachment::NoBoundary)?,
-        };
+        let Located {
+            haystack,
+            boundary_path,
+            point,
+        } = Located::of(proof, point)?;
         let generators: Vec<GeneratorInfo> = proof.signature.iter().cloned().collect();
         let only = only
             .map(|generator| {
@@ -542,6 +565,28 @@ impl AttachOptionsJob {
             job.generators.len() + job.to_reflect.len() + job.to_infer.len()
         };
         Ok(job)
+    }
+
+    /// Narrows the search to the plain pass: the generators themselves, their inverses and the
+    /// cells raised from them, with no reflections and no inference of instances. What it finds
+    /// is among what the whole search finds, in the same order (the passes are the same, there
+    /// are fewer of them). For a search that is done in the page and is to stay cheap (see
+    /// [`DefinitionsJob`](super::DefinitionsJob)), so it is not offered to a worker, and has to be
+    /// called before the first step.
+    #[must_use]
+    pub fn plain_only(mut self) -> Self {
+        debug_assert!(!self.started);
+        self.to_reflect.clear();
+        self.to_infer.clear();
+        self.limits.enabled = false;
+        self.report.too_high = None;
+        self.report.narrowed = None;
+        self.planned = if self.only.is_some() {
+            1
+        } else {
+            self.generators.len()
+        };
+        self
     }
 
     /// The work to do to do the search somewhere else (see [`remote`](crate::remote)), on the

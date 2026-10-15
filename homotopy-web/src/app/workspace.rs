@@ -144,6 +144,9 @@ fn view_diagram_svg<const N: usize>(
         match armed {
             // A click attaches the generator that was picked, if it can be.
             Some(generator) => Action::AttachGenerator(generator, p, weak_units, limits),
+            None if AppSettings::get_offer_definitions() => {
+                Action::SelectCell(p, weak_units, limits)
+            }
             None => Action::SelectPoint(p, weak_units, limits),
         }
     });

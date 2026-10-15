@@ -8,7 +8,7 @@ use crate::{
     app::tex::TexSpan,
     model::{
         proof::{self, AttachOption, Signature},
-        Action, Selectables,
+        Action, Definitions, Selectables,
     },
 };
 
@@ -16,6 +16,10 @@ use crate::{
 pub struct Props {
     pub dispatch: Callback<Action>,
     pub options: Selectables,
+    /// If the first options are the definitions of the cell that was clicked (a shortcut: the
+    /// search for the rest may not have been done).
+    #[prop_or_default]
+    pub definitions: Option<Definitions>,
     pub signature: Signature,
 }
 
@@ -23,27 +27,108 @@ pub struct Props {
 pub fn AttachView(props: &Props) -> Html {
     match &props.options {
         Selectables::Attach(att) => {
+            // The definitions, if they were offered first, are the first of the list; the rest
+            // is grouped as it always was.
+            let shown = props
+                .definitions
+                .as_ref()
+                .map_or(0, |definitions| definitions.count.min(att.len()));
+            let (defined, att) = att.split_at(shown);
             let entries = group_instances(att, |option| {
                 option.substitution.is_some().then_some(option.generator)
             });
             html! {
-                { for entries.into_iter().map(|entry| match entry {
-                    Entry::Item(index) => view_attach_option(props, &att[index]),
-                    Entry::Group(schema, indices) => html! {
-                        <InstanceGroup
-                            key={format!("g-{}-{}", schema.id, schema.dimension)}
-                            dispatch={props.dispatch.clone()}
-                            signature={props.signature.clone()}
-                            schema={schema}
-                            options={indices.into_iter().map(|index| att[index].clone()).collect::<Vec<_>>()}
-                        />
-                    },
-                }) }
+                <>
+                    if let Some(definitions) = props.definitions.as_ref().filter(|_| shown > 0) {
+                        { view_definitions(props, definitions, defined, !att.is_empty()) }
+                    }
+                    { for entries.into_iter().map(|entry| match entry {
+                        Entry::Item(index) => view_attach_option(props, &att[index]),
+                        Entry::Group(schema, indices) => html! {
+                            <InstanceGroup
+                                key={format!("g-{}-{}", schema.id, schema.dimension)}
+                                dispatch={props.dispatch.clone()}
+                                signature={props.signature.clone()}
+                                schema={schema}
+                                options={indices.into_iter().map(|index| att[index].clone()).collect::<Vec<_>>()}
+                            />
+                        },
+                    }) }
+                </>
             }
         }
         Selectables::Merge(from, tos) => html! {
             { for tos.iter().map(|to| view_merge_option(props, *from, *to)) }
         },
+    }
+}
+
+/// The definitions that were offered first: under a heading that says whose they are and that
+/// they are a shortcut, then (until everything has been searched for) the way to search for the
+/// rest.
+fn view_definitions(
+    props: &Props,
+    definitions: &Definitions,
+    defined: &[AttachOption],
+    others_follow: bool,
+) -> Html {
+    let name = props
+        .signature
+        .generator_info(definitions.of)
+        .map_or_else(String::new, |info| seal(&info.name));
+    let search = props
+        .dispatch
+        .reform(|_: MouseEvent| Action::SearchEverything);
+    let gave_up = (!definitions.cut_short.is_empty()).then(|| {
+        format!(
+            "Gave up looking for a definition after the time for a generator ({}). What is \
+             listed is valid but may be missing some.",
+            definitions
+                .cut_short
+                .iter()
+                .map(|name| seal(name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    });
+    html! {
+        <>
+            <li class="attach__heading">
+                <TexSpan
+                    class="attach__option-name"
+                    error_color="#c004"
+                    raw_tex={format!("Definitions of {name}")}
+                />
+            </li>
+            { for defined.iter().map(|option| view_option(
+                &props.dispatch,
+                &props.signature,
+                option,
+                "attach__option attach__option--definition",
+            )) }
+            if let Some(gave_up) = gave_up {
+                <li class="attach__note">
+                    <TexSpan class="attach__option-name" error_color="#c004" raw_tex={gave_up} />
+                </li>
+            }
+            if definitions.more.is_some() {
+                <li
+                    class="attach__option attach__more"
+                    role="button"
+                    title="Looks at every generator; this can take a while"
+                    onclick={search}
+                >
+                    <span class="attach__option-name">{"Search everything for more options"}</span>
+                </li>
+                <li class="attach__note">
+                    {"Definitions are offered first as a shortcut (a heuristic): other things may attach here."}
+                </li>
+            } else if others_follow {
+                <li class="attach__heading">{"Other options"}</li>
+            } else {
+                <li class="attach__note">{"Nothing else attaches here."}</li>
+            }
+        </>
     }
 }
 

@@ -8,8 +8,8 @@ pub use homotopy_model::{history, job, migration, proof, serialize};
 use homotopy_model::{
     job::run_to_end,
     proof::{
-        ActionsJob, AttachOption, AttachOptionsJob, DraftEdit, Drafts, InferenceLimits,
-        InferenceReport, NoAttachment,
+        ActionsJob, AttachOption, AttachOptionsJob, DefinitionsJob, DraftEdit, Drafts,
+        InferenceLimits, InferenceReport, NoAttachment,
     },
 };
 use serde::Serialize;
@@ -41,6 +41,14 @@ pub enum Action {
     /// Click on a point of the workspace, to find what can be attached there: through weak units
     /// if the flag is set, and with the limits on inferring instances of schemas.
     SelectPoint(Vec<SliceIndex>, bool, InferenceLimits),
+    /// Click on a point of the workspace with *definitions first*: when the point lands on one
+    /// cell (see `homotopy_model::proof::cell_at`), look for the definitions of that cell first
+    /// and offer those, with a way to search for everything else; any other point is searched as
+    /// for [`SelectPoint`](Self::SelectPoint).
+    SelectCell(Vec<SliceIndex>, bool, InferenceLimits),
+    /// Search for everything that can be attached where the definitions were offered, which are
+    /// kept at the top of the list.
+    SearchEverything,
     /// Drop (or click, once armed) a generator on a point of the workspace, to find only the ways
     /// to attach that generator there: as for [`SelectPoint`](Self::SelectPoint) otherwise.
     AttachGenerator(Generator, Vec<SliceIndex>, bool, InferenceLimits),
@@ -121,7 +129,10 @@ impl Action {
         match self {
             Self::Proof(action) => action.work_label(),
             Self::ImportActions(_) => Some(proof::REPLAYING),
-            Self::SelectPoint(..) | Self::AttachGenerator(..) => Some("Searching for attachments"),
+            Self::SelectPoint(..)
+            | Self::SelectCell(..)
+            | Self::SearchEverything
+            | Self::AttachGenerator(..) => Some("Searching for attachments"),
             Self::Draft(_) => Some("Inferring replacements"),
             Self::ExportImage(
                 ImageFormat::Stl(_) | ImageFormat::Tikz(_) | ImageFormat::Manim(_),
@@ -161,6 +172,8 @@ impl Action {
             | Self::ImportActions(_)
             | Self::Select(_)
             | Self::SelectPoint(..)
+            | Self::SelectCell(..)
+            | Self::SearchEverything
             | Self::AttachGenerator(..)
             | Self::Draft(_)
             | Self::ExportImage(..)
@@ -205,6 +218,30 @@ impl Selectables {
     }
 }
 
+/// The definitions of a cell that were offered first, at the top of the list of attachment options
+/// (see `homotopy_model::proof::DefinitionsJob`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Definitions {
+    /// The cell that was clicked.
+    pub of: Generator,
+    /// How many options at the start of the list are definitions of it.
+    pub count: usize,
+    /// The names of the candidates whose search ran out of its time (what is offered is valid
+    /// and may be less).
+    pub cut_short: Vec<String>,
+    /// The search for everything else that can be attached there, if it has not been done: the
+    /// list is only the definitions until then.
+    pub more: Option<Search>,
+}
+
+/// A search for the attachments at a point, to do again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Search {
+    pub point: Vec<SliceIndex>,
+    pub weak_units: bool,
+    pub limits: InferenceLimits,
+}
+
 /// What starting to update the state came to.
 pub enum Started {
     /// It is done; whether the project changed.
@@ -218,6 +255,9 @@ pub struct State {
     pub remote_project_metadata: Option<account::RemoteProjectMetadata>,
     pub history: History,
     pub options: Option<Selectables>,
+    /// If the first options are the definitions of the cell that was clicked, offered before the
+    /// rest was searched for.
+    pub definitions: Option<Definitions>,
     /// The generator that the next click on the workspace is to attach, if one was picked
     /// (see [`Action::Arm`]).
     pub armed: Option<Generator>,
@@ -477,6 +517,47 @@ impl State {
             Action::SelectPoint(point, weak_units, limits) => {
                 return self.start_attach_search(&point, weak_units, limits, None);
             }
+            Action::SelectCell(point, weak_units, limits) => {
+                // The definitions of the cell that was clicked first, if it is one cell and has
+                // any; else everything, as for a click on anything else.
+                if let Some(job) = DefinitionsJob::new(self.proof(), &point, weak_units, limits) {
+                    return Ok(Started::Running(Task::Definitions {
+                        job: Box::new(job),
+                        search: Search {
+                            point,
+                            weak_units,
+                            limits,
+                        },
+                    }));
+                }
+                return self.start_attach_search(&point, weak_units, limits, None);
+            }
+            Action::SearchEverything => {
+                // (Nothing to search for when the options have moved on: not an error.)
+                let Some(definitions) = self
+                    .definitions
+                    .clone()
+                    .filter(|definitions| definitions.more.is_some())
+                else {
+                    return Ok(Started::Done(false));
+                };
+                let search = definitions.more.clone().unwrap();
+                let started = self.start_attach_search(
+                    &search.point,
+                    search.weak_units,
+                    search.limits,
+                    None,
+                )?;
+                return Ok(match started {
+                    Started::Running(Task::AttachOptions(job)) => {
+                        Started::Running(Task::AttachRest {
+                            job,
+                            shown: definitions,
+                        })
+                    }
+                    other => other,
+                });
+            }
             Action::AttachGenerator(generator, point, weak_units, limits) => {
                 // Whatever came of it, the generator is not waiting any more.
                 self.armed = None;
@@ -595,10 +676,59 @@ impl State {
                     }
                     _ => {
                         self.options = Some(Selectables::Attach(matches));
+                        self.definitions = None;
                         self.attachment_highlight = None;
                         self.slice_highlight = None;
                     }
                 }
+                Ok(Started::Done(true))
+            }
+            TaskOutput::Definitions { outcome, search } => {
+                if outcome.options.is_empty() {
+                    // None of them attaches here: the click is what it always was.
+                    return self.start_attach_search(
+                        &search.point,
+                        search.weak_units,
+                        search.limits,
+                        None,
+                    );
+                }
+                self.definitions = Some(Definitions {
+                    of: outcome.of,
+                    count: outcome.options.len(),
+                    cut_short: outcome.cut_short,
+                    more: Some(search),
+                });
+                self.options = Some(Selectables::Attach(outcome.options));
+                self.attachment_highlight = None;
+                self.slice_highlight = None;
+                Ok(Started::Done(true))
+            }
+            TaskOutput::AttachRest { outcome, shown } => {
+                self.inference_report = Some(outcome.inference);
+                // The definitions stay where they were, at the top; the rest is what the whole
+                // search found that is not one of them.
+                let (defined, rest): (Vec<_>, Vec<_>) = {
+                    let Some(Selectables::Attach(now)) = self.options.take() else {
+                        return Ok(Started::Done(false));
+                    };
+                    let defined: Vec<_> = now.into_iter().take(shown.count).collect();
+                    let rest = outcome
+                        .options
+                        .into_iter()
+                        .filter(|option| !defined.contains(option))
+                        .collect();
+                    (defined, rest)
+                };
+                self.definitions = Some(Definitions {
+                    more: None,
+                    ..shown
+                });
+                self.options = Some(Selectables::Attach(
+                    defined.into_iter().chain(rest).collect(),
+                ));
+                self.attachment_highlight = None;
+                self.slice_highlight = None;
                 Ok(Started::Done(true))
             }
             TaskOutput::Infer(schema, inference) => {
@@ -636,6 +766,7 @@ impl State {
     /// Handler for [Action::ClearSelections].
     fn clear_selections(&mut self) {
         self.options = None;
+        self.definitions = None;
         self.armed = None;
         self.attachment_highlight = None;
         self.slice_highlight = None;
@@ -645,6 +776,7 @@ impl State {
     fn merge_options(&mut self, generator: Generator) {
         let result = self.proof().signature.globular_pairs(generator);
         if !result.is_empty() {
+            self.definitions = None;
             self.options = Some(Selectables::Merge(generator, result));
         }
     }

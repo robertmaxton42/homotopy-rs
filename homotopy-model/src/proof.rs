@@ -8,6 +8,7 @@ pub use attach_options::{
 pub use completion::{
     Ambiguity, InferJob, Inference, Mismatch, Part, ReplacementError, Status, Uncuttable,
 };
+pub use definitions::{cell_at, definitions_of, DefinitionsJob, DefinitionsOutcome};
 pub use drafts::{Draft, DraftEdit, Drafts};
 use homotopy::Homotopy;
 use homotopy_core::{
@@ -35,6 +36,7 @@ mod signature;
 mod actions_job;
 mod attach_options;
 mod completion;
+mod definitions;
 mod describe;
 mod drafts;
 pub mod generators;

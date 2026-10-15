@@ -17,6 +17,8 @@ declare_settings! {
         // In the same view: shade the surfaces that have more sheets behind them.
         sheet_shading: bool = true,
         autosave: bool = true,
+        // A heuristic: a click on one cell offers the cell's definitions first.
+        offer_definitions: bool = true,
         infer_instances: bool = true,
         // Seconds one generator may take when searching for attachments; 0 for no limit.
         generator_budget: u32 = 5,
@@ -138,6 +140,14 @@ impl Component for SettingsView {
                         )
                     }
                     <div class="settings__note">{Self::autosave_status()}</div>
+                    {
+                        Self::view_checkbox(
+                            "Offer definitions first when clicking a cell",
+                            AppSettings::get_offer_definitions(),
+                            AppSettings::set_offer_definitions,
+                        )
+                    }
+                    <div class="settings__note">{"A heuristic. When a click lands on one cell (a vertex of the picture where all the cells of the highest dimension are one generator), the list first offers its definitions: the generators one dimension up that have that cell as their source or target, such as the unfolding made right after it, found by comparing boundaries and checked by matching. They come with a button to search for everything else. It can miss, for instance instances of schemas that were not made yet, but it never offers what does not attach. Turn it off to always search everything."}</div>
                     {
                         Self::view_checkbox(
                             "Infer instances of schemas when attaching",

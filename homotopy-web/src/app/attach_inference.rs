@@ -57,6 +57,8 @@ struct Kept {
     max_dimension: u32,
     #[serde(default)]
     narrow_to_sheet: bool,
+    #[serde(default = "yes")]
+    offer_definitions: bool,
     #[serde(default)]
     version: u32,
     #[serde(default)]
@@ -83,6 +85,10 @@ impl Kept {
             DEFAULT_SECONDS
         }
     }
+}
+
+const fn yes() -> bool {
+    true
 }
 
 /// The default time for one generator, in seconds.
@@ -121,6 +127,7 @@ pub fn load() {
     AppSettings::set_generator_budget(kept.generator_seconds());
     AppSettings::set_infer_max_dimension(kept.max_dimension.clamp(1, NO_DIMENSION_LIMIT));
     AppSettings::set_infer_narrow_to_sheet(kept.narrow_to_sheet);
+    AppSettings::set_offer_definitions(kept.offer_definitions);
 }
 
 /// Keeps the settings.
@@ -129,6 +136,7 @@ pub fn store() {
         enabled: AppSettings::get_infer_instances(),
         max_dimension: AppSettings::get_infer_max_dimension(),
         narrow_to_sheet: AppSettings::get_infer_narrow_to_sheet(),
+        offer_definitions: AppSettings::get_offer_definitions(),
         version: PER_GENERATOR,
         generator_seconds: Some(AppSettings::get_generator_budget()),
         budget_seconds: None,
@@ -314,6 +322,7 @@ mod tests {
             enabled: true,
             max_dimension: 7,
             narrow_to_sheet: true,
+            offer_definitions: false,
             version: PER_GENERATOR,
             generator_seconds: Some(0),
             budget_seconds: Some(20),
@@ -324,6 +333,9 @@ mod tests {
         let read = kept(&written);
         assert_eq!(read.generator_seconds(), 0);
         assert!(read.narrow_to_sheet);
+        // Definitions first is on unless it was turned off.
+        assert!(!read.offer_definitions);
+        assert!(kept(r#"{"enabled":true,"max_dimension":7}"#).offer_definitions);
         let seven = kept(r#"{"enabled":true,"max_dimension":7,"version":2,"generator_seconds":7}"#);
         assert_eq!(seven.generator_seconds(), 7);
     }

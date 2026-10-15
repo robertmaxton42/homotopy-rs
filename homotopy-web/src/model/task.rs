@@ -15,13 +15,13 @@ use homotopy_graphics::{manim, stl, tikz};
 use homotopy_model::{
     job::{Job, Progress},
     proof::{
-        ActionsJob, ActionsOutcome, AttachOptionsJob, AttachOutcome, InferJob, Inference,
-        ProofState, Signature,
+        ActionsJob, ActionsOutcome, AttachOptionsJob, AttachOutcome, DefinitionsJob,
+        DefinitionsOutcome, InferJob, Inference, ProofState, Signature,
     },
     remote::{Output, Work},
 };
 
-use super::{proof, ImageFormat};
+use super::{proof, Definitions, ImageFormat, Search};
 
 /// The size in bytes below which importing a project is not worth having a worker do (the
 /// import takes about as long as preparing the request and taking in the answer, and under
@@ -47,6 +47,17 @@ pub enum Task {
         redone: bool,
     },
     AttachOptions(Box<AttachOptionsJob>),
+    /// The definitions of the cell that was clicked (see [`DefinitionsJob`]), and the search for
+    /// everything to do if there are none: a handful of plain searches, in the page.
+    Definitions {
+        job: Box<DefinitionsJob>,
+        search: Search,
+    },
+    /// The search for everything else, where the definitions were offered first.
+    AttachRest {
+        job: Box<AttachOptionsJob>,
+        shown: Definitions,
+    },
     /// What follows from the replacements chosen for a schema (see [`Drafts`](homotopy_model::proof::Drafts)):
     /// stepped, a candidate at a time, in the page.
     Infer(Box<InferJob>),
@@ -60,6 +71,14 @@ pub enum TaskOutput {
         redone: bool,
     },
     AttachOptions(AttachOutcome),
+    Definitions {
+        outcome: DefinitionsOutcome,
+        search: Search,
+    },
+    AttachRest {
+        outcome: AttachOutcome,
+        shown: Definitions,
+    },
     /// What was inferred for the schema.
     Infer(Generator, Inference),
     Export(ExportOutput),
@@ -72,7 +91,10 @@ impl Task {
     pub fn next_step_may_block(&self) -> bool {
         match self {
             Self::Actions { job, .. } => job.next_step_is_heavy(),
-            Self::AttachOptions(_) | Self::Infer(_) => false,
+            Self::AttachOptions(_)
+            | Self::Definitions { .. }
+            | Self::AttachRest { .. }
+            | Self::Infer(_) => false,
             Self::Export(job) => job.next_step_is_heavy(),
         }
     }
@@ -108,13 +130,15 @@ impl Task {
             }
             // The search takes long when there are schemas to infer instances of, or in high
             // dimensions.
-            Self::AttachOptions(job) => job
+            Self::AttachOptions(job) | Self::AttachRest { job, .. } => job
                 .may_take_long()
                 .then(|| job.offer())
                 .flatten()
                 .map(|work| (proof, work)),
-            // A step is one candidate, which is small however long the whole search takes.
-            Self::Infer(_) | Self::Export(_) => None,
+            // A step is one candidate, which is small however long the whole search takes (and
+            // for the definitions, one plain search for a candidate, cut by the time for a
+            // generator).
+            Self::Definitions { .. } | Self::Infer(_) | Self::Export(_) => None,
         }
     }
 
@@ -132,6 +156,12 @@ impl Task {
             (Self::AttachOptions(_), Output::AttachOptions(outcome)) => {
                 Some(TaskOutput::AttachOptions(outcome))
             }
+            (Self::AttachRest { shown, .. }, Output::AttachOptions(outcome)) => {
+                Some(TaskOutput::AttachRest {
+                    outcome,
+                    shown: shown.clone(),
+                })
+            }
             _ => None,
         }
     }
@@ -143,7 +173,8 @@ impl Job for Task {
     fn label(&self) -> &'static str {
         match self {
             Self::Actions { job, .. } => job.label(),
-            Self::AttachOptions(job) => job.label(),
+            Self::AttachOptions(job) | Self::AttachRest { job, .. } => job.label(),
+            Self::Definitions { job, .. } => job.label(),
             Self::Infer(job) => job.label(),
             Self::Export(job) => job.label(),
         }
@@ -152,7 +183,8 @@ impl Job for Task {
     fn progress(&self) -> Option<Progress> {
         match self {
             Self::Actions { job, .. } => job.progress(),
-            Self::AttachOptions(job) => job.progress(),
+            Self::AttachOptions(job) | Self::AttachRest { job, .. } => job.progress(),
+            Self::Definitions { job, .. } => job.progress(),
             Self::Infer(job) => job.progress(),
             Self::Export(job) => job.progress(),
         }
@@ -166,6 +198,16 @@ impl Job for Task {
                 redone: *redone,
             }),
             Self::AttachOptions(job) => job.step().map(TaskOutput::AttachOptions),
+            Self::AttachRest { job, shown } => job.step().map(|outcome| TaskOutput::AttachRest {
+                outcome,
+                shown: shown.clone(),
+            }),
+            Self::Definitions { job, search } => {
+                job.step().map(|outcome| TaskOutput::Definitions {
+                    outcome,
+                    search: search.clone(),
+                })
+            }
             Self::Infer(job) => {
                 let schema = job.schema();
                 job.step()

@@ -231,6 +231,7 @@ impl Component for App {
                 AppSettingsKey::generator_budget,
                 AppSettingsKey::infer_max_dimension,
                 AppSettingsKey::infer_narrow_to_sheet,
+                AppSettingsKey::offer_definitions,
             ],
             Callback::from(|_: AppSettingsMsg| attach_inference::store()),
         );
@@ -278,6 +279,7 @@ impl Component for App {
                 AppSettingsKey::generator_budget,
                 AppSettingsKey::infer_max_dimension,
                 AppSettingsKey::infer_narrow_to_sheet,
+                AppSettingsKey::offer_definitions,
             ],
             &self.inference_setting,
         );
@@ -1090,6 +1092,7 @@ impl App {
                     dispatch={dispatch}
                     proof={proof.clone()}
                     options={state.options.clone()}
+                    definitions={state.definitions.clone()}
                     drafts={state.drafts.clone()}
                     armed={state.armed}
                     remote_project_metadata={state.remote_project_metadata.clone()}

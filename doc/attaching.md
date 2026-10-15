@@ -37,6 +37,30 @@ it there, and the button tells you why. This is worked out when you pick the gen
 dimensions and which cells there are; it never searches, so it cannot say that there is a way
 to attach it at a particular point, only that there is no way at all.
 
+## Definitions first
+
+When you click on **one cell** of the diagram, what you want next is nearly always that cell's
+*definition*: a generator one dimension up that has the cell as its source or its target, such
+as the unfolding that was made right after it. So the list does not wait for the search of
+everything: it first offers the definitions, at the top, under "Definitions of X". They are found
+by comparing boundaries (no search), checked by matching them where you clicked, so they all
+attach; and a button, **Search everything for more options**, runs the full search, which keeps
+the definitions at the top and lists the rest below them.
+
+"One cell" means: you clicked on a vertex of the picture (not a wire or a region), and the cells
+of the dimension of the diagram there are all of one generator. A vertex with several different
+cells behind each other (see *Sheets*), a vertex where only lower cells are (a crossing), a wire,
+a region and a click with a sheet chosen that is not a vertex are searched for as always, as are
+clicks where the cell has no definition, or none of its definitions attaches there. The
+generator after the cell in the signature is looked at first, then the others.
+
+This is a shortcut and can miss. Instances of schemas are only offered if they already exist as
+generators (they are not inferred or made), and the duals and other reflections of a definition
+are not looked for: use *Search everything*. It never offers something that does not attach.
+Settings: *Offer definitions first when clicking a cell* (on by default); turn it off to have
+every click search everything. Picking a generator and clicking, or dropping one, always search
+for that generator only, as before.
+
 ## Sheets: what is behind a position
 
 In the 2D view of a diagram of more than two dimensions a position of the picture stands for
