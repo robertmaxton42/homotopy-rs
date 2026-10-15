@@ -875,6 +875,14 @@ valid (`narrowing_to_a_sheet_only_finds_valid_instances`, for the sheet heuristi
 - Format with `cargo +nightly fmt` (rustfmt.toml uses nightly options); clippy runs under the
   pinned toolchain with `-D warnings`. Cargo-husky pre-commit/pre-push hooks run test, check,
   clippy and fmt.
+- **Hashing** (`homotopy_common::hash`): every map and set is `FastHashMap`/`FastHashSet` (`clippy.toml`
+  disallows the std ones), with `Hasher64`, the Fx hash of `rustc-hash` 1.1 with a 64-bit state on every
+  target. `rustc_hash::FxHasher` kept a `usize`, 32 bits on wasm32: its `finish` had the top 32 bits zero,
+  so hashbrown's 7-bit tag was always 0 (every probe a tag match), and the iteration order differed from
+  native, so the searches took other paths and listed options in another order. Measured (Node/V8,
+  release, the tangent categories fixture): the four slowest schema inferences went from 2.6-4.8x native to
+  1.2x, all 32 from 254 s to 163 s (native 132 s), with the step counts and the options (and their order)
+  now the same as native; native hashes are bit-identical to before.
 - Shallow clones lack a merge base: `git fetch --unshallow` first.
 - Debug web build: `.claude/dev/build-dist.sh`, then `python3 -m http.server 8765` in `dist/`.
   It uses `.claude/dev/highs-shim.js` because the nix HiGHS build is blocked in the sandbox.
