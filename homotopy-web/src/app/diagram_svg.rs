@@ -36,7 +36,10 @@ use self::{
     highlight::{HighlightKind, HighlightSvg},
     sheets::SheetCommand,
 };
-use super::{attach_target, tooltip};
+use super::{
+    attach_drag::{self, DragSignal},
+    attach_target, tooltip,
+};
 use crate::{
     app::settings::{AppSettings, AppSettingsKey},
     components::{delta::CallbackIdx, read_touch_list_abs, Finger},
@@ -81,6 +84,9 @@ pub struct DiagramSvg<const N: usize> {
     hovering: bool,
     /// The keys that choose a sheet.
     keys: sheets::Keys,
+    /// How a generator dragged with the pointer is told about this diagram (see
+    /// [`attach_drag`]), if it takes drops.
+    drag_sink: Option<usize>,
     /// The settings that change what is drawn on the diagram, which draw it again.
     settings: Vec<CallbackIdx>,
 }
@@ -303,6 +309,18 @@ impl<const N: usize> Component for DiagramSvg<N> {
             pointer: (0.0, 0.0),
             hovering: false,
             keys: sheets::Keys::default(),
+            drag_sink: ctx.props().accepts_drops.then(|| {
+                attach_drag::register(
+                    ctx.props().diagram_ref.clone(),
+                    ctx.link().callback(|signal| match signal {
+                        DragSignal::Over(x, y) => DiagramSvgMessage::OnDragOver((x, y).into()),
+                        DragSignal::Leave => DiagramSvgMessage::OnDragLeave,
+                        DragSignal::Drop(generator, x, y) => {
+                            DiagramSvgMessage::OnDrop(generator, (x, y).into())
+                        }
+                    }),
+                )
+            }),
             settings: AppSettings::subscribe(
                 DRAWING_SETTINGS,
                 ctx.link().callback(|_| DiagramSvgMessage::Setting),
@@ -439,6 +457,9 @@ impl<const N: usize> Component for DiagramSvg<N> {
     fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
         // (What the view drew again is not dimmed, whatever is chosen.)
         self.apply_dimming(ctx);
+        if let Some(sink) = self.drag_sink {
+            attach_drag::set_element(sink, &ctx.props().diagram_ref);
+        }
         if std::mem::take(&mut self.announce) {
             ctx.props().on_laid_out.emit(());
         }
@@ -447,6 +468,9 @@ impl<const N: usize> Component for DiagramSvg<N> {
     fn destroy(&mut self, _ctx: &Context<Self>) {
         self.hide_tooltip();
         self.keys.remove();
+        if let Some(sink) = self.drag_sink.take() {
+            attach_drag::unregister(sink);
+        }
         AppSettings::unsubscribe(DRAWING_SETTINGS, &self.settings);
         if let Some(ticket) = self.pending.take() {
             layout::cancel(ticket);

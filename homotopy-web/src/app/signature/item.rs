@@ -138,6 +138,9 @@ pub struct ItemViewProps {
     pub on_drag_start: Callback<DragEvent>,
     #[prop_or_default]
     pub on_drag_end: Callback<DragEvent>,
+    /// The pointer went down on the row, which may become a drag of a generator to the diagram.
+    #[prop_or_default]
+    pub on_press: Callback<PointerEvent>,
     /// Whether this generator is the one picked to be attached by the next click on the diagram.
     #[prop_or_default]
     pub armed: bool,
@@ -391,6 +394,13 @@ impl Component for ItemView {
             _ => Callback::noop(),
         };
 
+        // (Not while it is being renamed: that is for the text field.)
+        let on_pointer_down = if self.mode == ItemViewMode::Editing {
+            Callback::noop()
+        } else {
+            ctx.props().on_press.clone()
+        };
+
         // (Tells the rows apart for tests, whose names are formulas.)
         let data_generator = match item {
             SignatureItem::Item(info) => Some(format!(
@@ -410,6 +420,7 @@ impl Component for ItemView {
                 ondrop={ctx.props().on_drop.clone()}
                 ondragstart={ctx.props().on_drag_start.clone()}
                 ondragend={ctx.props().on_drag_end.clone()}
+                onpointerdown={on_pointer_down}
                 onmouseover={on_mouse_over}
                 onmouseout={on_mouse_out}
             >
@@ -889,7 +900,7 @@ impl ItemView {
         let title = if armed {
             "Stop attaching this generator"
         } else {
-            "Attach this: pick it, then click a point in the diagram (or drag it there)"
+            "Attach this: pick it, then click a point in the diagram, or drag from here to the diagram"
         };
         html! {
             <div class="signature__item-right">

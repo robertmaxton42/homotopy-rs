@@ -5,7 +5,7 @@ use yew::prelude::*;
 use super::item::ItemView;
 use crate::{
     app::{
-        attach_target,
+        attach_drag, attach_target,
         sidebar::{DraftProps, DrawerViewSize},
     },
     components::{add_class, remove_class},
@@ -53,6 +53,11 @@ fn on_drag_start(props: &Props, node: Node, generator: Option<Generator>) -> Cal
     let signature = props.signature.clone();
     let workspace = props.workspace.clone();
     Callback::from(move |e: DragEvent| {
+        // A drag of a generator towards the diagram is a drag with the pointer instead (so that
+        // the wheel and the keys work during it), and not the browser's.
+        if generator.is_some() && attach_drag::dragstart(&e) {
+            return;
+        }
         if let Some(dt) = e.data_transfer() {
             dt.set_effect_allowed("move");
             dt.set_data("text", &node.index().to_string()).unwrap();
@@ -61,6 +66,16 @@ fn on_drag_start(props: &Props, node: Node, generator: Option<Generator>) -> Cal
             }
         }
     })
+}
+
+/// The pointer going down on a generator, which may be the start of a drag to the diagram.
+fn on_press(props: &Props, generator: Generator) -> Callback<PointerEvent> {
+    let source = attach_drag::Source {
+        generator,
+        signature: props.signature.clone(),
+        workspace: props.workspace.clone(),
+    };
+    Callback::from(move |e: PointerEvent| attach_drag::press(&e, source.clone()))
 }
 
 fn on_drag_end() -> Callback<DragEvent> {
@@ -189,6 +204,7 @@ fn render_item(props: &Props, node: Node) -> Html {
                         on_arm={props.drafts.on_arm.clone()}
                         on_drag_start={on_drag_start(props, node, Some(info.generator))}
                         on_drag_end={on_drag_end()}
+                        on_press={on_press(props, info.generator)}
                     />
                 }
             }

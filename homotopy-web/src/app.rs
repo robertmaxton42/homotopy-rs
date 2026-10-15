@@ -37,6 +37,7 @@ use crate::{
 pub mod account;
 mod armed_chip;
 mod attach;
+mod attach_drag;
 pub mod attach_inference;
 pub mod attach_target;
 mod boundary;
@@ -933,6 +934,11 @@ impl App {
         let link = ctx.link().clone();
         let listener = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
             if event.key() != "Escape" || event.is_composing() {
+                return;
+            }
+            // A generator being dragged to the diagram: Esc is for the drag (which listens
+            // after this and takes it), not for the job that may be running.
+            if attach_drag::active() {
                 return;
             }
             let in_text_field = event

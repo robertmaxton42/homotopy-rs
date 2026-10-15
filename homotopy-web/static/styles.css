@@ -2137,6 +2137,55 @@ input[type="color"]::-webkit-color-swatch {
   border-radius: 50%;
 }
 
+/* A generator of the signature dragged to the diagram with the pointer (see `attach_drag.rs`):
+   the pointing hand is a handle, so a touch on it is a drag and not a scroll. */
+.signature__item-attach {
+  touch-action: none;
+}
+
+body.attach-dragging,
+body.attach-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+body.attach-dragging--refused,
+body.attach-dragging--refused * {
+  cursor: not-allowed !important;
+}
+
+/* The copy of its row that follows the pointer. */
+.signature__drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  margin: 0;
+  z-index: 10000;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0.9;
+  background: var(--drawer-background);
+  color: var(--drawer-foreground);
+  border: 1px solid var(--drawer-border);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
+.signature__drag-ghost * {
+  pointer-events: none !important;
+}
+
+.signature__drag-ghost .signature__item-right,
+.signature__drag-ghost .signature__generator-previews-wrapper,
+.signature__drag-ghost .signature__generator-preview-spacer,
+.signature__drag-ghost .signature__generator-indicator {
+  display: none;
+}
+
+.signature__drag-ghost--refused {
+  opacity: 0.5;
+}
+
 /* The instances of a schema in the list of attachments: a group that is closed until opened. */
 .attach__group {
   align-items: center;
