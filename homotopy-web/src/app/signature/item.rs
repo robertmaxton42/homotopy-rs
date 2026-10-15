@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use homotopy_common::tree::Node;
+use homotopy_common::{idx::Idx, tree::Node};
 use homotopy_core::{
     signature::{Invertibility, Signature as _},
     Diagram, Generator,
@@ -32,6 +32,8 @@ use crate::{
 
 mod preference;
 use preference::GeneratorPreferenceCheckbox;
+
+use super::removal_preview::{self, DeleteButton};
 
 // FIXME(@doctorn)
 //
@@ -228,6 +230,9 @@ pub struct ItemView {
     name: String,
     preview_cache: Option<Preview>,
     callback_idx: CallbackIdx,
+    /// Says what deleting this would delete, while the delete button is hovered or focused (see
+    /// [`removal_preview`]).
+    removal_note: NodeRef,
 }
 
 impl Component for ItemView {
@@ -251,6 +256,7 @@ impl Component for ItemView {
             name,
             preview_cache: Default::default(),
             callback_idx,
+            removal_note: NodeRef::default(),
         }
     }
 
@@ -336,6 +342,10 @@ impl Component for ItemView {
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
         const ITEM_SUBSCRIPTIONS: &[AppSettingsKey] = &[AppSettingsKey::show_previews];
+        // (A row that goes while its delete button is hovered never sees the pointer leave.)
+        if self.mode == ItemViewMode::Editing {
+            removal_preview::hide();
+        }
         AppSettings::unsubscribe(ITEM_SUBSCRIPTIONS, &[self.callback_idx]);
     }
 
@@ -414,6 +424,7 @@ impl Component for ItemView {
             <div
                 class={class}
                 data-generator={data_generator}
+                data-node={ctx.props().node.index().to_string()}
                 draggable={(self.mode != ItemViewMode::Editing).to_string()}
                 ondragover={ctx.props().on_drag_over.clone()}
                 ondragenter={ctx.props().on_drag_enter.clone()}
@@ -433,6 +444,7 @@ impl Component for ItemView {
                         {self.view_preview(ctx)}
                         {self.view_right_buttons(ctx)}
                     </div>
+                    {self.view_removal_note(ctx)}
                     {picker_and_prefs}
                 </div>
             </div>
@@ -742,6 +754,43 @@ impl ItemView {
         }
     }
 
+    /// The delete button, which shows what the deletion would delete while it is hovered or has
+    /// the focus.
+    fn view_delete_button(&self, ctx: &Context<Self>, light: bool) -> Html {
+        html! {
+            <DeleteButton
+                dispatch={ctx.props().dispatch.clone()}
+                signature={ctx.props().signature.clone()}
+                node={ctx.props().node}
+                note={self.removal_note.clone()}
+                note_id={Self::removal_note_id(ctx)}
+                {light}
+            />
+        }
+    }
+
+    fn removal_note_id(ctx: &Context<Self>) -> String {
+        format!("removal-note-{}", ctx.props().node.index())
+    }
+
+    /// The line under a row being edited that says what deleting it would delete. Empty (and
+    /// not shown) until the delete button is hovered or focused; written to directly by
+    /// [`removal_preview`].
+    fn view_removal_note(&self, ctx: &Context<Self>) -> Html {
+        if self.mode != ItemViewMode::Editing {
+            return html! {};
+        }
+        html! {
+            <div
+                class="signature__removal-note"
+                id={Self::removal_note_id(ctx)}
+                ref={self.removal_note.clone()}
+                role="status"
+                aria-live="polite"
+            />
+        }
+    }
+
     fn view_left_buttons(&self, ctx: &Context<Self>) -> Html {
         use ItemViewMode::{Editing, Hovering, Viewing};
         if let SignatureItem::Item(ref info) = ctx.props().item {
@@ -790,8 +839,6 @@ impl ItemView {
                     </>
                 },
                 Editing => {
-                    let node = ctx.props().node;
-
                     html! {
                         <>
                             <ItemViewButton icon={"done"} light={icon_light} on_click={
@@ -799,11 +846,7 @@ impl ItemView {
                                     ItemViewMessage::SwitchTo(Hovering)
                                 })
                             } />
-                        <ItemViewButton icon={"delete"} light={icon_light} on_click={
-                            ctx.props().dispatch.reform(
-                                move |_| proof::Action::EditSignature(SignatureEdit::Remove(node)).into()
-                                )
-                        } />
+                        {self.view_delete_button(ctx, icon_light)}
                         </>
                     }
                 }
@@ -821,7 +864,6 @@ impl ItemView {
 
     fn view_right_buttons(&self, ctx: &Context<Self>) -> Html {
         if let SignatureItem::Folder(info) = &ctx.props().item {
-            let node = ctx.props().node;
             let class = format!(
                 "signature__folder-right {}",
                 match self.mode {
@@ -862,11 +904,7 @@ impl ItemView {
                 }
                 ItemViewMode::Editing => html! {
                     <>
-                        <ItemViewButton icon={"delete"} on_click={
-                            ctx.props().dispatch.reform(
-                                move |_| proof::Action::EditSignature(SignatureEdit::Remove(node)).into()
-                            )
-                        } />
+                        {self.view_delete_button(ctx, false)}
                         <ItemViewButton icon={"done"} on_click={
                             ctx.link().callback(move |_| {
                                 ItemViewMessage::SwitchTo(ItemViewMode::Hovering)

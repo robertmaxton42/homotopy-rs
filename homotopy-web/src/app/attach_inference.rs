@@ -43,6 +43,9 @@ const TIMEOUTS_BEFORE_SUSPENDING: u32 = 2;
 /// The highest dimension limit that the slider offers, which means no limit.
 pub const NO_DIMENSION_LIMIT: u32 = 12;
 
+/// The most seconds that the time for a generator can be set to (an hour).
+pub const MAX_GENERATOR_SECONDS: u32 = 3600;
+
 /// The version of the settings as they are kept in which the time is for one generator.
 const PER_GENERATOR: u32 = 2;
 
@@ -124,7 +127,7 @@ pub fn load() {
         return;
     };
     AppSettings::set_infer_instances(kept.enabled);
-    AppSettings::set_generator_budget(kept.generator_seconds());
+    AppSettings::set_generator_budget(kept.generator_seconds().min(MAX_GENERATOR_SECONDS));
     AppSettings::set_infer_max_dimension(kept.max_dimension.clamp(1, NO_DIMENSION_LIMIT));
     AppSettings::set_infer_narrow_to_sheet(kept.narrow_to_sheet);
     AppSettings::set_offer_definitions(kept.offer_definitions);

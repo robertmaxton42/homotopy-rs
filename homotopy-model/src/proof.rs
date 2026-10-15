@@ -12,6 +12,7 @@ pub use completion::{
 pub use definitions::{cell_at, definitions_of, DefinitionsJob, DefinitionsOutcome};
 pub use drafts::{Draft, DraftEdit, Drafts};
 use homotopy::Homotopy;
+use homotopy_common::hash::FastHashSet;
 use homotopy_core::{
     common::{Boundary, BoundaryPath, Direction, Generator, Height, SliceIndex},
     contraction::{self, ContractionError},
@@ -352,6 +353,12 @@ impl Action {
     }
 }
 
+/// Whether a diagram has a cell of any of the generators.
+fn mentions_any(diagram: &Diagram, generators: &FastHashSet<Generator>) -> bool {
+    let mentioned = diagram.generators();
+    generators.iter().any(|g| mentioned.contains_key(g))
+}
+
 #[derive(Debug, Error)]
 pub enum ProofError {
     #[error(transparent)]
@@ -451,10 +458,11 @@ impl ProofState {
     #[must_use]
     pub fn resets_panzoom(&self, action: &Action) -> bool {
         match *action {
-            Action::EditSignature(SignatureEdit::Remove(node)) => self
-                .workspace
-                .as_ref()
-                .is_some_and(|ws| self.signature.has_descendents_in(node, &ws.diagram)),
+            Action::EditSignature(SignatureEdit::Remove(node)) => {
+                self.workspace.as_ref().is_some_and(|ws| {
+                    mentions_any(&ws.diagram, &self.signature.removal_generators(node))
+                })
+            }
             Action::AscendSlice(i) => i > 0,
             Action::SelectGenerator(_)
             | Action::ClearWorkspace
@@ -1118,22 +1126,24 @@ impl ProofState {
     fn edit_signature(&mut self, edit: &SignatureEdit) -> Result<bool, ProofError> {
         // intercept remove events in order to clean-up workspace and boundaries
         if let SignatureEdit::Remove(node) = edit {
+            // (Everything the removal removes, not only what mentions the node: a generator
+            // that depends on a placeholder it does not mention goes with it.)
+            let removed = self.signature.removal_generators(*node);
             // remove from the workspace
             if let Some(ws) = &self.workspace {
-                if self.signature.has_descendents_in(*node, &ws.diagram) {
+                if mentions_any(&ws.diagram, &removed) {
                     self.workspace = None;
                 }
             }
             // remove from the boundary
             if let Some(selected) = &self.boundary {
-                if self.signature.has_descendents_in(*node, &selected.diagram) {
+                if mentions_any(&selected.diagram, &removed) {
                     self.boundary = None;
                 }
             }
 
             // remove from stashed workspaces
-            self.stash
-                .retain(|ws| !self.signature.has_descendents_in(*node, &ws.diagram));
+            self.stash.retain(|ws| !mentions_any(&ws.diagram, &removed));
         }
 
         if let SignatureEdit::Edit(node, SignatureItemEdit::MakeOriented(true)) = edit {

@@ -12,6 +12,7 @@ use crate::{
 
 mod folder;
 mod item;
+mod removal_preview;
 mod symmetries;
 
 #[derive(Clone, PartialEq, Properties)]

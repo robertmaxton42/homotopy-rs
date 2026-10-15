@@ -891,6 +891,53 @@ and check it with the debug hooks below.
   `style::tests`; browser: a black placeholder region in 2D shows white stripes, blue, white and orange keep
   dark ones; the 3D view with black placeholders renders (software GL).
 
+- **Deleting generators** (`Signature::removal_nodes`, `removal_cascade`, `removal_preview` in
+  `proof/signature.rs`; user-facing text in `doc/placeholders.md`). `SignatureEdit::Remove` removes
+  `removal_nodes(node)`: the node and its descendants (a folder's contents, a generator's instances) and,
+  transitively, every generator that mentions one of them (diagram, or an instance's substitution) or
+  lists a removed **placeholder** in `depends_on` ("there always exists"). Listing an *instance* does
+  not cascade (the settings only offer placeholders, `parameters` ignores other entries, and a
+  placeholder flag on an instance does not count); that rule is tied to the meaning of explicit
+  dependencies and would differ for templates, whose instances would cascade. `depends_on` entries that
+  name removed generators are dropped (ids are reused: `next_generator_id` is the max plus one). The
+  workspace, boundary and stash are cleared by what the *whole* cascade mentions (`removal_generators`),
+  not only the node (a generator that depends on a placeholder it does not mention is in the workspace
+  without mentioning it). The preview shares the code, so it cannot disagree; the one pass over the
+  diagrams of the signature remembers each diagram's generators in a thread-local (`mentioned_by`, keyed by
+  the hash-consed diagram, so renames do not invalidate it) and `removal_preview(node, budget)` looks at
+  at most `budget` new diagrams per call (`None`: ask again), so hovering stays cheap (fixture, 125
+  generators: 8ms per cold preview in the release build, 44ms in the debug build, then microseconds).
+  Tests: `homotopy-model/tests/removal.rs` (the cascade, transitivity, no cascade from an instance, undo,
+  workspace, preview = deletion on the examples and, with `HOMOTOPY_TANGENT_FIXTURE=<.hom>`, the fixture).
+  **Preview in the signature** (`app/signature/removal_preview.rs`): while the pointer is on the delete button
+  of a row being edited, or the button has the focus (it is a focusable `role=button` with `aria-describedby`
+  the note), `show` computes `removal_preview(node, 16)`, a few diagrams per step and yielding between
+  (`TimeoutFuture(0)`), saying "Checking..." until it is done, then writes to the DOM directly like the
+  tooltip: rows have `data-node`; those that go get `data-removal` (tint and strike-through in
+  `styles.css`), the nearest row on show that holds some out of sight (a closed folder, a schema with its
+  instances closed) gets `data-removal-inside="N"` (a "-N inside" badge), and `.signature__removal-note`
+  under the row says "Deletes N more (M out of sight)" (for a folder: "N generators inside and M more
+  outside it"), with the names in its `title`. `hide` clears it all (mouse leave, blur, click, and the
+  row's `destroy`: a row that goes never sees the pointer leave). `plan` is the pure part (tested natively).
+  There is no confirm step, so nothing else lists the names. Nothing re-renders the signature.
+
+- **Settings drawer** (`app/settings.rs`, `components/help_tip.rs`). The drawer shows titles, controls and a
+  line of *status* only (`settings__note`: when the last backup was, why backups do not work, inference
+  turned off for the session); every explanation is in a `HelpTip` after the title: a "?" button (Tab
+  reaches it, `aria-describedby` the popover, `role="tooltip"`) whose popover over the row shows on hover,
+  focus and tap and is closed by Esc (`data-open`/`data-dismissed` on the wrapper, written directly). The
+  texts are constants (`*_HELP`) of one or two short sentences; **new settings with an explanation add one
+  there and keep it short**; keep the facts that matter (Esc ends a search; the limit is per generator and
+  covers matching, reflections and inference; a search for one dragged generator has no limit; the
+  browser's back button also undoes while *Mouse back and forward buttons undo and redo* is on).
+  *Give up on a generator after* is a number box in seconds (`view_number`, `parse_count`: 0 = no limit, negative
+  is 0, fractions round down, at most `MAX_GENERATOR_SECONDS` = 3600, not a number goes back to the setting;
+  committed on input and put right on change; kept as `generator_seconds` as before). Every slider shows its
+  number and updates it on `input`, by writing into its text node (`show_value`; never `set_text_content` on
+  the `output`, which would replace the node Yew updates); settings that cost nothing to change (`live`:
+  the inference dimension, the contraction step) also take effect on `input`, the 3D ones on `change` only
+  (each change rebuilds geometry or the renderer). Ids are `help-<slug>` and `setting-<slug>`.
+
 ## Policy: heuristics
 
 False negatives are acceptable: a useful heuristic may miss solutions. But a heuristic must never
