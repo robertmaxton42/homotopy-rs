@@ -859,6 +859,25 @@ and check it with the debug hooks below.
   `style::tests`; browser: a black placeholder region in 2D shows white stripes, blue, white and orange keep
   dark ones; the 3D view with black placeholders renders (software GL).
 
+- **Deleting generators** (`Signature::removal_nodes`, `removal_cascade`, `removal_preview` in
+  `proof/signature.rs`; user-facing text in `doc/placeholders.md`). `SignatureEdit::Remove` removes
+  `removal_nodes(node)`: the node and its descendants (a folder's contents, a generator's instances) and,
+  transitively, every generator that mentions one of them (diagram, or an instance's substitution) or
+  lists a removed **placeholder** in `depends_on` ("there always exists"). Listing an *instance* does
+  not cascade (the settings only offer placeholders, `parameters` ignores other entries, and a
+  placeholder flag on an instance does not count); that rule is tied to the meaning of explicit
+  dependencies and would differ for templates, whose instances would cascade. `depends_on` entries that
+  name removed generators are dropped (ids are reused: `next_generator_id` is the max plus one). The
+  workspace, boundary and stash are cleared by what the *whole* cascade mentions (`removal_generators`),
+  not only the node (a generator that depends on a placeholder it does not mention is in the workspace
+  without mentioning it). The preview shares the code, so it cannot disagree; the one pass over the
+  diagrams of the signature remembers each diagram's generators in a thread-local (`mentioned_by`, keyed by
+  the hash-consed diagram, so renames do not invalidate it) and `removal_preview(node, budget)` looks at
+  at most `budget` new diagrams per call (`None`: ask again), so hovering stays cheap (fixture, 125
+  generators: 8ms per cold preview in the release build, 44ms in the debug build, then microseconds).
+  Tests: `homotopy-model/tests/removal.rs` (the cascade, transitivity, no cascade from an instance, undo,
+  workspace, preview = deletion on the examples and, with `HOMOTOPY_TANGENT_FIXTURE=<.hom>`, the fixture).
+
 ## Policy: heuristics
 
 False negatives are acceptable: a useful heuristic may miss solutions. But a heuristic must never

@@ -255,6 +255,29 @@ a placeholder `f : A ⊗ X → B`, a currying `λf : X → [A, B]` that depends 
 `f ⇛ ev ∘ (A ⊗ λf)`. For compact closed categories, use duals instead (see
 `doc/duals.md`).
 
+## Deleting generators
+
+Deleting a generator deletes every generator that depends on it, and those in turn
+(`Signature::removal_nodes`, which is the one definition of this; the preview in the signature
+panel is made from it). A generator goes with another if
+
+- its diagram mentions it (or one of its instances),
+- it is an instance made with a substitution that mentions it, or
+- it lists it under **Depends on** and it is a **placeholder**. The list says "there always exists
+  a cell for each replacement of this placeholder" (the mediating map `u_α` of a limit), which is
+  no longer so when the placeholder is gone.
+
+Deleting a schema deletes its instances, as before. Deleting an **instance** deletes what
+mentions it, but not what lists it under *Depends on*: the list is made of placeholders (the
+settings only offer those, and for anything else the entry is not looked at), and an instance
+that is deleted is just a replacement that was never needed, whereas the generator that
+depends on it still has all the replacements it had. (This is tied to the "there always exists"
+meaning. *Templates*, which are not made yet, would differ: an instance of a template is a cell
+the dependent generator promises, so deleting one would delete its dependents too.) Entries of
+the list that name generators that are gone are dropped, so that a new generator that is given
+the same number does not inherit them. The workspace, the selected boundary and the stash lose
+what mentions anything that goes. Undoing brings everything back.
+
 ## Not yet
 
 - Inferring replacements longer than three cells, or replacements whose cells are contracted

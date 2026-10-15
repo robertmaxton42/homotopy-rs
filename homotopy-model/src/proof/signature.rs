@@ -1,6 +1,9 @@
 use std::{collections::VecDeque, str::FromStr};
 
-use homotopy_common::tree::{Node, Tree};
+use homotopy_common::{
+    hash::{FastHashMap, FastHashSet},
+    tree::{Node, Tree},
+};
 use homotopy_core::{
     diagram::NewDiagramError,
     signature::{Invertibility, Signature as _, Symmetry},
@@ -23,6 +26,35 @@ pub const COLORS: &[&str] = &[
     "#f6f5f4", // white(ish)
     "#000000", // black
 ];
+
+/// How many diagrams' generators are remembered (see [`mentioned_by`]).
+const MENTIONS_REMEMBERED: usize = 0x4000;
+
+thread_local! {
+    #[allow(clippy::mutable_key_type)] // `Diagram` is hash-consed; its caches are not hashed.
+    static MENTIONS: std::cell::RefCell<FastHashMap<Diagram, std::rc::Rc<[Generator]>>> =
+        std::cell::RefCell::new(FastHashMap::default());
+}
+
+/// The generators a diagram has cells of, and whether they had to be worked out (the answers are
+/// remembered by the diagram, which is hash-consed: the same diagram anywhere in the signature
+/// is the same key, and a rename or any other change that leaves the diagrams alone costs
+/// nothing). Working them out visits all of the diagram.
+#[allow(clippy::mutable_key_type)]
+fn mentioned_by(diagram: &Diagram) -> (std::rc::Rc<[Generator]>, bool) {
+    MENTIONS.with(|memo| {
+        if let Some(found) = memo.borrow().get(diagram) {
+            return (found.clone(), false);
+        }
+        let found: std::rc::Rc<[Generator]> = diagram.generators().into_keys().collect();
+        let mut memo = memo.borrow_mut();
+        if memo.len() >= MENTIONS_REMEMBERED {
+            memo.clear();
+        }
+        memo.insert(diagram.clone(), found.clone());
+        (found, true)
+    })
+}
 
 /// The largest direction of a [`Symmetry`], which is stored as a 64-bit mask.
 pub const MAX_SYMMETRY_DIRECTION: usize = 64;
@@ -192,7 +224,8 @@ impl Signature {
         self.tree.push_onto(node, item);
     }
 
-    pub(crate) fn find_node(&self, generator: Generator) -> Option<Node> {
+    #[must_use]
+    pub fn find_node(&self, generator: Generator) -> Option<Node> {
         self.tree
             .iter()
             .find_map(|(node, item)| match item.inner() {
@@ -201,7 +234,8 @@ impl Signature {
             })
     }
 
-    pub(crate) fn find_generator(&self, node: Node) -> Option<Generator> {
+    #[must_use]
+    pub fn find_generator(&self, node: Node) -> Option<Generator> {
         self.tree
             .with(node, |n| match n.inner() {
                 SignatureItem::Item(info) => Some(info.generator),
@@ -311,6 +345,168 @@ impl Signature {
             }
         }
         Ok(())
+    }
+
+    /// Every node that removing `node` removes, `node` and all its descendants first (a
+    /// folder's contents, a generator's instances) and then what the removal forces, in the
+    /// order it is found. This is the one definition of the cascade: [`SignatureEdit::Remove`]
+    /// removes exactly these nodes, and the preview of a deletion
+    /// ([`removal_cascade`](Self::removal_cascade)) is made from them.
+    ///
+    /// A generator is removed with another when
+    /// - its diagram mentions it (or any generator removed with it, such as its instances),
+    /// - it is an instance whose substitution mentions it, as a placeholder that was replaced or
+    ///   in a replacement (an instance of a schema made with a replacement that mentions a
+    ///   placeholder depends on that placeholder, see
+    ///   [`instance_parameters`](Self::instance_parameters)), or
+    /// - it lists it as an explicit dependency ([`GeneratorInfo::depends_on`]) **and it is a
+    ///   placeholder**. Explicit dependencies mean "there always exists a cell for each
+    ///   replacement of this placeholder", which a deleted placeholder cannot have. Nothing else
+    ///   can be depended on: the dependencies in the settings are placeholders, and for a
+    ///   generator that is not a placeholder (an ordinary generator, an instance) the entry in
+    ///   the list is not looked at by [`parameters`](Self::parameters). So deleting an instance
+    ///   removes only what mentions it, not what lists it as a dependency. (Instances of
+    ///   *templates*, which are not made yet, would cascade, since "there always exists" would
+    ///   no longer be true of an instance that is gone.)
+    ///
+    /// The cost is one pass over the diagrams of the signature, whatever is removed (the
+    /// generators of each diagram are remembered, see [`removal_preview`](Self::removal_preview)).
+    #[must_use]
+    pub fn removal_nodes(&self, node: Node) -> Vec<Node> {
+        let dependents = self.dependents_index(None).unwrap_or_default();
+        self.cascade(&dependents, node)
+    }
+
+    /// [`removal_nodes`](Self::removal_nodes) for showing before the deletion, which may not
+    /// take long however large the signature: finding out which generators a diagram mentions
+    /// is what costs, so at most `budget` diagrams that have not been looked at yet (the answer
+    /// is remembered, so that it is not asked again, and survives renaming and the like) are
+    /// looked at, and if there are more the answer is `None`; asking again continues where this
+    /// left off, and ends. The nodes are exactly those of `removal_nodes`.
+    #[must_use]
+    pub fn removal_preview(&self, node: Node, budget: usize) -> Option<Vec<Node>> {
+        let dependents = self.dependents_index(Some(budget))?;
+        Some(self.cascade(&dependents, node))
+    }
+
+    fn cascade(&self, dependents: &FastHashMap<Generator, Vec<Node>>, node: Node) -> Vec<Node> {
+        let mut removed = FastHashSet::default();
+        let mut order = vec![];
+        let mut queue = VecDeque::from([node]);
+        while let Some(root) = queue.pop_front() {
+            for removing in self.tree.descendents_of(root) {
+                if !removed.insert(removing) {
+                    continue;
+                }
+                order.push(removing);
+                if let Some(generator) = self.find_generator(removing) {
+                    if let Some(implied) = dependents.get(&generator) {
+                        queue.extend(implied.iter().copied());
+                    }
+                }
+            }
+        }
+        order
+    }
+
+    /// The generators other than `generator` that deleting it would delete: the instances of
+    /// it, what mentions it or them, and what lists it as an explicit dependency if it is a
+    /// placeholder, transitively (see [`removal_nodes`](Self::removal_nodes), which this is
+    /// made from, so that it can never disagree with the deletion). In the order the cascade
+    /// finds them. Empty for a generator that is not in the signature.
+    #[must_use]
+    pub fn removal_cascade(&self, generator: Generator) -> Vec<Generator> {
+        let Some(node) = self.find_node(generator) else {
+            return vec![];
+        };
+        self.removal_nodes(node)
+            .into_iter()
+            .filter_map(|n| self.find_generator(n))
+            .filter(|&g| g != generator)
+            .collect()
+    }
+
+    /// The generators that removing `node` removes, itself included, as a set.
+    #[must_use]
+    pub fn removal_generators(&self, node: Node) -> FastHashSet<Generator> {
+        self.removal_nodes(node)
+            .into_iter()
+            .filter_map(|n| self.find_generator(n))
+            .collect()
+    }
+
+    /// For each generator, the nodes whose removal it forces: those that mention it in their
+    /// diagram or in the substitution of an instance, or that list it as an explicit dependency
+    /// when it is a placeholder.
+    ///
+    /// With a `budget`, `None` if more than that many diagrams have to be looked at that were not
+    /// before.
+    fn dependents_index(&self, budget: Option<usize>) -> Option<FastHashMap<Generator, Vec<Node>>> {
+        let mut looked_at = 0;
+        let placeholders: FastHashSet<Generator> = self
+            .iter()
+            .filter(|info| info.placeholder && info.instance.is_none())
+            .map(|info| info.generator)
+            .collect();
+        let mut index: FastHashMap<Generator, Vec<Node>> = FastHashMap::default();
+        for (node, data) in self.tree.iter() {
+            let SignatureItem::Item(info) = data.inner() else {
+                continue;
+            };
+            let mut mentions: FastHashSet<Generator> = FastHashSet::default();
+            let mut mention = |diagram: &Diagram, mentions: &mut FastHashSet<Generator>| {
+                let (found, fresh) = mentioned_by(diagram);
+                looked_at += usize::from(fresh);
+                mentions.extend(found.iter().copied());
+            };
+            mention(&info.diagram, &mut mentions);
+            mentions.extend(
+                info.depends_on
+                    .iter()
+                    .filter(|g| placeholders.contains(g))
+                    .copied(),
+            );
+            if let Some(made) = &info.instance {
+                for (placeholder, replacement) in &made.substitution {
+                    mentions.insert(*placeholder);
+                    mention(replacement, &mut mentions);
+                }
+            }
+            if budget.is_some_and(|budget| looked_at > budget) {
+                return None;
+            }
+            mentions.remove(&info.generator);
+            for g in mentions {
+                index.entry(g).or_default().push(node);
+            }
+        }
+        Some(index)
+    }
+
+    /// Drops the explicit dependencies on generators that are no longer in the signature, which
+    /// would otherwise stay in the list (an instance can be deleted with no cascade) and be
+    /// taken for a new generator that is given the same number.
+    fn forget_missing_dependencies(&mut self) {
+        let present: FastHashSet<Generator> = self.iter().map(|info| info.generator).collect();
+        let stale: Vec<Node> = self
+            .tree
+            .iter()
+            .filter_map(|(node, data)| match data.inner() {
+                SignatureItem::Item(info)
+                    if info.depends_on.iter().any(|g| !present.contains(g)) =>
+                {
+                    Some(node)
+                }
+                _ => None,
+            })
+            .collect();
+        for node in stale {
+            self.tree.with_mut(node, |n| {
+                if let SignatureItem::Item(info) = n.inner_mut() {
+                    info.depends_on.retain(|g| present.contains(g));
+                }
+            });
+        }
     }
 
     pub fn remove(&mut self, generator: Generator) {
@@ -448,30 +644,11 @@ impl Signature {
                 }
             }
             SignatureEdit::Remove(node) => {
-                // Prepare to remove all of the descendents of the deleted node
-                let mut to_remove: VecDeque<_> = self.tree.descendents_of(*node).collect();
-                // So long as we have something left to delete
-                while let Some(removing) = to_remove.pop_front() {
-                    let mut implied = self
-                        .tree
-                        .iter()
-                        .filter_map(|(node, item)| {
-                            // Find all of the generators in the signature
-                            if let SignatureItem::Item(info) = item.inner() {
-                                if self.has_descendents_in(removing, &info.diagram) {
-                                    return Some(node);
-                                }
-                            }
-
-                            None
-                        })
-                        .collect();
-
-                    // Queue these for deletion
-                    to_remove.append(&mut implied);
-                    // Delete the node
+                let removed = self.removal_nodes(*node);
+                for removing in removed {
                     self.tree.remove(removing);
                 }
+                self.forget_missing_dependencies();
             }
         }
 
