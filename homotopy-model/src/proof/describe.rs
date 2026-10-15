@@ -16,10 +16,11 @@
 //!    it as whiskers (see below). The inverse of a cell is `f^{-1}` if it is invertible and
 //!    `f^{*}` otherwise (for 1-cells; `\overline{f}` for others, as the directions it was
 //!    reflected in are not known any more);
-//! 6. one step that exchanges two cells, `\mathrm{ex}_{f,g}`, with `f` the one that is first
+//! 6. one step that exchanges two cells, the braid `\beta_{f,g}`, with `f` the one that is first
 //!    (lowest) in the source. If nothing but the exchange itself fixes on which side of each
-//!    other the cells are (neither cell is attached to anything), it is a braid,
-//!    `\beta_{f,g}`, or `\beta^{-1}_{f,g}` if `f` passes on the other side;
+//!    other the cells are (neither cell is attached to anything), it is `\beta^{-1}_{f,g}` if
+//!    `f` passes on the other side (and when a cell is attached to something that says which
+//!    way they pass, the sign is not shown: it is `\beta_{f,g}`);
 //! 7. one step that cancels or creates a cell `f` with its reverse: the counit `\varepsilon_f`
 //!    for `f ; f^*` becoming nothing, the unit `\eta_f` for `f^* ; f` created out of nothing
 //!    (`\varepsilon_{f^*}` and `\eta_{f^*}` for the other order); any other step that does not
@@ -93,7 +94,7 @@ impl Signature {
     /// 2-diagram is named with the whiskers that it has (see the [module](self)). A vertex where no cell of the
     /// dimension of the diagram is, but several things happen at once (two strands crossing,
     /// a cell cancelled or created), is named for the step of the diagram that it is (see the
-    /// [module](self)): `\mathrm{ex}_{f,g}`, `\beta_{f,g}`, `\varepsilon_f`, `\eta_f`. If the step is
+    /// [module](self)): `\beta_{f,g}`, `\varepsilon_f`, `\eta_f`. If the step is
     /// not recognised, a cell drawn as a fold is `\mathrm{h}(f)`, and any other is named as it is.
     #[must_use]
     pub fn describe_point(
@@ -1078,7 +1079,7 @@ mod tests {
         );
         let (merged, merges) = wrench.merge_exchanges(&sig);
         assert_eq!(merges, 1);
-        assert_eq!(describe(&sig, merged), r"$\mathrm{ex}_{\text{α},\text{β}}$");
+        assert_eq!(describe(&sig, merged), r"$\beta_{\text{α},\text{β}}$");
     }
 
     #[test]
@@ -1257,7 +1258,7 @@ mod tests {
         for generator in [alpha, beta] {
             assert_eq!(
                 sig.describe_point(&merged, &vertex(0, 0), drawn(generator)),
-                r"$\mathrm{ex}_{\text{α},\text{β}}$"
+                r"$\beta_{\text{α},\text{β}}$"
             );
         }
         // Not anywhere else: where nothing happens (there is no height 1), it is the cell.

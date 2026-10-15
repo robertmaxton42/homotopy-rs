@@ -1,4 +1,5 @@
 use std::{
+    cell::{OnceCell, RefCell},
     convert::{From, Into, TryInto},
     f32::consts::PI,
     rc::Rc,
@@ -13,7 +14,7 @@ use homotopy_core::{
     complex::{make_complex, Simplex},
     contraction::Bias,
     layout::Layout,
-    projection::{thickness_step, Depths, Projection},
+    projection::{Depths, Projection, Shading},
     rewrite::RewriteN,
     signature::Signature as _,
     Boundary, Diagram, DiagramN, Generator, Height, SliceIndex,
@@ -51,6 +52,8 @@ use crate::{
 };
 
 pub mod highlight;
+mod marks;
+mod sheet_highlight;
 mod sheets;
 
 pub use self::sheets::{debug_command, debug_summary};
@@ -172,6 +175,12 @@ struct PreparedDiagram<const N: usize> {
     depths: Depths<N>,
     projection: Projection<N>,
     layout: Rc<Layout<N>>,
+    /// The fans and echoes where sheets meet, made when first drawn (see `marks`).
+    marks: OnceCell<marks::SheetMarks>,
+    /// Which shapes are of which sheet, and the shapes made for the sheets that were highlighted
+    /// (see `sheet_highlight`).
+    sheet_index: OnceCell<sheet_highlight::SheetIndex>,
+    extents: RefCell<sheet_highlight::Extents>,
 
     /// The width and height of the diagram image in pixels.
     ///
@@ -197,37 +206,25 @@ impl<const N: usize> PreparedDiagram<N> {
         let complex = make_complex(diagram);
         let depths = Depths::new(diagram).unwrap();
         let projection = Projection::new(diagram, &layout, &depths).unwrap();
-        // How many sheets pass through a surface: the fewest of its corners (those on wires and
-        // vertices have the sheets of the wire or vertex as well).
-        let thickness = |corners: &[[SliceIndex; N]; 3]| {
-            corners
-                .iter()
-                .map(|corner| depths.thickness(*corner))
-                .min()
-                .unwrap_or(0)
-        };
-        let (min, max) = shade
-            .then(|| {
-                let counts = complex
+        // How many sheets pass through a surface: those of the region it belongs to, which is
+        // the position that hovering over it lists the sheets of (see `Shading`).
+        let shading = shade.then(|| {
+            Shading::new(
+                &depths,
+                complex
                     .iter()
                     .filter_map(|(simplex, visible)| match simplex {
-                        Simplex::Surface(corners) if *visible => Some(thickness(corners)),
+                        Simplex::Surface(corners) if *visible => Some(*corners),
                         _ => None,
-                    });
-                counts.fold(None, |range: Option<(usize, usize)>, count| {
-                    Some(range.map_or((count, count), |(lo, hi)| (lo.min(count), hi.max(count))))
-                })
-            })
-            .flatten()
-            .unwrap_or_default();
-        let varies = max > min;
+                    }),
+                SHADING_STEPS,
+            )
+        });
         let (graphic, steps): (Vec<_>, Vec<_>) =
             GraphicElement::build_shaded(&complex, &layout, &projection, &depths, |corners| {
-                if varies {
-                    thickness_step(thickness(corners), min, max, SHADING_STEPS)
-                } else {
-                    0
-                }
+                shading
+                    .as_ref()
+                    .map_or(0, |shading| shading.step(&depths, corners))
             })
             .into_iter()
             .unzip();
@@ -285,6 +282,9 @@ impl<const N: usize> PreparedDiagram<N> {
             depths,
             projection,
             layout,
+            marks: OnceCell::new(),
+            sheet_index: OnceCell::new(),
+            extents: RefCell::default(),
             dimensions,
             transform,
         }
@@ -457,6 +457,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
     fn rendered(&mut self, ctx: &Context<Self>, _first_render: bool) {
         // (What the view drew again is not dimmed, whatever is chosen.)
         self.apply_dimming(ctx);
+        self.apply_highlight(ctx);
         if let Some(sink) = self.drag_sink {
             attach_drag::set_element(sink, &ctx.props().diagram_ref);
         }
@@ -651,6 +652,13 @@ impl<const N: usize> Component for DiagramSvg<N> {
 
         tracing::info!("redrawing diagram");
 
+        // The surfaces come first in what is drawn, then the wires and vertices over them.
+        let surfaces = prepared
+            .graphic
+            .iter()
+            .take_while(|element| matches!(element, GraphicElement::Surface(..)))
+            .count();
+
         html! {
             <svg
                 xmlns={"http://www.w3.org/2000/svg"}
@@ -673,8 +681,11 @@ impl<const N: usize> Component for DiagramSvg<N> {
                 ref={ctx.props().diagram_ref.clone()}
             >
                 {Self::view_placeholder_hatch(ctx, prepared)}
-                {prepared.graphic.iter().enumerate().map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
-                {Self::view_sheet_outlines(ctx, prepared)}
+                {prepared.graphic.iter().enumerate().take(surfaces).map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
+                {Self::view_sheet_highlight_under(ctx)}
+                {Self::view_sheet_marks(ctx, prepared)}
+                {prepared.graphic.iter().enumerate().skip(surfaces).map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
+                {Self::view_sheet_highlight_over(ctx)}
                 {self.view_highlight(ctx)}
                 {self.view_drop_target(prepared)}
             </svg>
@@ -934,86 +945,6 @@ impl<const N: usize> DiagramSvg<N> {
         ctx.props().sheets && AppSettings::get_sheet_shading()
     }
 
-    /// Marks where sheets end or meet (see `Depths::sheet_boundaries`), over the diagram: for a
-    /// sheet that ends, the last stretch of it and a dashed ring where it ends; for sheets that
-    /// meet, a double ring. Each kind is one path, with a pale halo under it so that it shows on
-    /// any colour. Nothing for a diagram with no more dimensions than the view, or if it is off.
-    fn view_sheet_outlines(ctx: &Context<Self>, prepared: &PreparedDiagram<N>) -> Html {
-        use std::fmt::Write as _;
-
-        use homotopy_core::projection::SheetBoundaryKind::{BeginsOrEnds, MergesOrSplits};
-
-        if !ctx.props().sheets || !AppSettings::get_sheet_outlines() {
-            return html! {};
-        }
-        let boundaries = prepared.depths.sheet_boundaries();
-        if boundaries.is_empty() {
-            return html! {};
-        }
-        let at = |coordinate: &[SliceIndex; N]| {
-            prepared
-                .transform
-                .transform_point(Point::from(project_2d(prepared.layout[coordinate])))
-        };
-        let radius = ctx.props().style.point_radius;
-        let ring = |path: &mut String, centre: Point, r: f32| {
-            write!(
-                path,
-                "M{} {}a{r} {r} 0 1 0 {} 0a{r} {r} 0 1 0 {} 0",
-                centre.x - r,
-                centre.y,
-                2.0 * r,
-                -2.0 * r
-            )
-            .ok();
-        };
-        let (mut stretches, mut ends, mut meets) = (String::new(), String::new(), String::new());
-        let (mut ends_count, mut meets_count) = (0, 0);
-        let mut seen = homotopy_common::hash::FastHashSet::default();
-        for b in boundaries {
-            let to = at(&b.to);
-            match b.kind {
-                BeginsOrEnds => {
-                    let from = at(&b.from);
-                    ends_count += 1;
-                    write!(stretches, "M{} {}L{} {}", from.x, from.y, to.x, to.y).ok();
-                    ring(&mut ends, to, radius * 1.9);
-                }
-                MergesOrSplits => {
-                    // (Several sheets can meet at the one place.)
-                    if seen.insert(b.to) {
-                        meets_count += 1;
-                        ring(&mut meets, to, radius * 1.9);
-                        ring(&mut meets, to, radius * 2.7);
-                    }
-                }
-            }
-        }
-        let layer = |class: &'static str, d: &String| {
-            if d.is_empty() {
-                return html! {};
-            }
-            html! {
-                <>
-                    <path d={d.clone()} class="sheet-boundary__halo" />
-                    <path d={d.clone()} class={classes!("sheet-boundary", class)} />
-                </>
-            }
-        };
-        html! {
-            <g
-                class="sheet-boundaries"
-                pointer-events="none"
-                data-ends={ends_count.to_string()}
-                data-meets={meets_count.to_string()}
-            >
-                {layer("sheet-boundary--stretch", &stretches)}
-                {layer("sheet-boundary--end", &ends)}
-                {layer("sheet-boundary--meet", &meets)}
-            </g>
-        }
-    }
-
     fn view_highlight(&self, ctx: &Context<Self>) -> Html {
         let Some(highlight) = &ctx.props().highlight else {
             return Default::default();
@@ -1241,6 +1172,7 @@ impl<const N: usize> DiagramSvg<N> {
             None => tooltip::hide(),
         }
         self.apply_dimming(ctx);
+        self.apply_highlight(ctx);
         self.publish_summary(ctx);
     }
 
@@ -1287,26 +1219,17 @@ impl<const N: usize> DiagramSvg<N> {
 }
 
 impl<const N: usize> DiagramSvg<N> {
-    /// What to say of the place, if a sheet ends or sheets meet there (when they are outlined).
+    /// What to say of the place, if distinct sheets meet there (when they are marked).
     fn boundary_note(
         ctx: &Context<Self>,
         prepared: &PreparedDiagram<N>,
         position: [SliceIndex; N],
     ) -> Option<&'static str> {
-        use homotopy_core::projection::SheetBoundaryKind::{BeginsOrEnds, MergesOrSplits};
-
         if !ctx.props().sheets || !AppSettings::get_sheet_outlines() {
             return None;
         }
-        let boundaries = prepared.depths.sheet_boundaries_at(position);
-        let meets = boundaries.iter().any(|b| b.kind == MergesOrSplits);
-        let ends = boundaries.iter().any(|b| b.kind == BeginsOrEnds);
-        match (ends, meets) {
-            (_, true) if ends => Some("sheets begin, end, merge or split here"),
-            (_, true) => Some("sheets merge or split here"),
-            (true, false) => Some("a sheet begins or ends here"),
-            (false, false) => None,
-        }
+        (!prepared.depths.sheet_boundaries_at(position).is_empty())
+            .then_some("sheets merge or split here")
     }
 }
 

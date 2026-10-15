@@ -720,8 +720,16 @@ impl InferSearch {
         self.stack.push(Candidates { list, next: 0 });
     }
 
-    /// The instances found, in the order that choosing the candidates for the placeholders from
-    /// the lowest dimension would find them.
+    /// The instances found since the last time this was asked, each with the numbers of the
+    /// candidates chosen for the placeholders (from the lowest dimension), which is what they are
+    /// sorted by in the end: in the order they were found. Taking them as the search goes on
+    /// does not change what [`finish`](Self::finish) gives for the rest.
+    pub(super) fn take_results(&mut self) -> Vec<(Vec<usize>, InferredInstance)> {
+        std::mem::take(&mut self.results)
+    }
+
+    /// The instances found and not taken, in the order that choosing the candidates for the
+    /// placeholders from the lowest dimension would find them.
     pub(super) fn finish(mut self) -> Vec<InferredInstance> {
         self.results.sort_by(|(a, _), (b, _)| a.cmp(b));
         self.results.into_iter().map(|(_, found)| found).collect()
@@ -1100,6 +1108,90 @@ mod tests {
             }
             assert!(instances > 0, "instances are inferred");
         }
+    }
+
+    /// The instances of a schema are options as soon as the search finds them, and not when the
+    /// schema is done with (a schema can have no end, and the options found are what there is to
+    /// show meanwhile): each in the place that it has in the end, which is where the search that
+    /// is not taken from as it goes puts it (the order of [`Signature::infer_instances`]).
+    #[test]
+    fn instances_are_listed_as_they_are_found_in_the_places_they_will_have() {
+        use crate::proof::Streamed;
+
+        let mut several_arrivals = 0;
+        for big in [false, true] {
+            let proof = schema_proof(big);
+            let mut job =
+                AttachOptionsJob::new(&proof, &[], false, InferenceLimits::UNLIMITED, None)
+                    .unwrap();
+            let mut streamed = Streamed::default();
+            let mut shown: Vec<crate::proof::AttachOption> = vec![];
+            let (mut arrivals, mut before_the_end) = (0, 0);
+            let outcome = loop {
+                let output = job.step();
+                let found = job.take_found();
+                if found
+                    .iter()
+                    .any(|found| found.option.substitution.is_some())
+                {
+                    arrivals += 1;
+                    // (Not in the step that ends the search: it has found them before.)
+                    if output.is_none() {
+                        assert_eq!(job.label(), "Inferring instances");
+                        before_the_end += 1;
+                    }
+                }
+                streamed.extend(found);
+                // What is listed is only added to.
+                let now = streamed.options();
+                let mut rest = now.iter();
+                assert!(shown.iter().all(|option| rest.any(|other| other == option)));
+                shown = now;
+                if let Some(outcome) = output {
+                    break outcome;
+                }
+            };
+            assert_eq!(streamed.options(), outcome.options);
+            assert!(job.take_found().is_empty());
+
+            // The instances, in the order the whole search of the schema gives them.
+            let haystack = proof.workspace.as_ref().unwrap().diagram.clone();
+            let schema = proof
+                .signature
+                .iter()
+                .find(|info| {
+                    info.generator.dimension == haystack.dimension() + 1
+                        && !proof.signature.parameters(info.generator).is_empty()
+                })
+                .map(|info| info.generator)
+                .unwrap();
+            let expected: Vec<_> = proof
+                .signature
+                .infer_instances(schema, &haystack, Boundary::Target, &[])
+                .into_iter()
+                .map(|inferred| (inferred.substitution, inferred.embedding))
+                .collect();
+            let listed: Vec<_> = outcome
+                .options
+                .iter()
+                .filter_map(|option| {
+                    Some((
+                        option.substitution.clone()?,
+                        option.embedding.iter().copied().collect::<Vec<_>>(),
+                    ))
+                })
+                .collect();
+            assert!(!expected.is_empty(), "instances are found (big: {big})");
+            assert!(
+                listed == expected,
+                "the order is that of the search (big: {big})"
+            );
+            several_arrivals += usize::from(arrivals > 1 && before_the_end > 0);
+        }
+        assert!(
+            several_arrivals > 0,
+            "they arrive before their schema is done"
+        );
     }
 
     /// The heuristic of narrowing the pool of cells for the replacements of placeholders to

@@ -30,11 +30,12 @@ use crate::{
 mod sheets;
 
 use self::sheets::SheetData;
-pub use self::sheets::{
-    thickness_step, thickness_steps, SheetBoundary, SheetBoundaryKind, SheetId,
-};
+pub use self::sheets::{thickness_step, thickness_steps, Shading, SheetBoundary, SheetId};
 
 type Coordinate<const N: usize> = [SliceIndex; N];
+
+/// The most echoes that a wire has (see [`Depths::echoes`]).
+pub const MAX_ECHOES: usize = 3;
 
 #[derive(Copy, Clone, Debug)]
 pub enum Homotopy {
@@ -381,7 +382,7 @@ impl<const N: usize> Depths<N> {
             .then(|| self.coord_to_node.get(&coord).copied())
             .flatten();
         let data = node.map(|_| self.sheet_data());
-        let arms = |z: usize| node.zip(data).map_or(0, |(n, data)| data.arms(n, z));
+        let merges = |z: usize| node.zip(data).map_or(0, |(n, data)| data.merged(n, z));
         fibre
             .singular_slices()
             .enumerate()
@@ -393,7 +394,7 @@ impl<const N: usize> Depths<N> {
                     front: front == Some(z),
                     id,
                     foremost: id.zip(data).is_some_and(|(id, data)| data.foremost(id)),
-                    arms: arms(z),
+                    merges: merges(z),
                 }
             })
             .collect()
@@ -407,22 +408,99 @@ impl<const N: usize> Depths<N> {
         self.sheet_data().count()
     }
 
-    /// The places where a sheet begins or ends, or where sheets merge or split: the cones of the
-    /// rewrites along the edges of the scaffold that are not one height to one (see
-    /// [`SheetBoundary`]). Empty for a diagram that has only the dimensions of the projection.
+    /// The places where distinct sheets meet: the cones of the rewrites along the edges of the
+    /// scaffold that take two or more heights that are different sheets to one (see
+    /// [`SheetBoundary`]). Empty for a diagram that has only the dimensions of the projection, and
+    /// for one with a single sheet.
     #[must_use]
     pub fn sheet_boundaries(&self) -> &[SheetBoundary<N>] {
         self.sheet_data().boundaries()
     }
 
-    /// The boundaries of sheets that end at the position `coord`: the sheets there that begin
-    /// or are merged out of several, as seen from its neighbours.
+    /// The meetings of sheets at the position `coord`: its heights that several distinct sheets
+    /// of its neighbours are merged into.
     #[must_use]
     pub fn sheet_boundaries_at(&self, coord: Coordinate<N>) -> Vec<&SheetBoundary<N>> {
         match self.coord_to_node.get(&coord) {
             Some(&n) => self.sheet_data().boundaries_to(n).collect(),
             None => vec![],
         }
+    }
+
+    /// The sheets at the position `coord` by their [`SheetId`], in the order of their heights
+    /// (the same as the first coordinate after the position's in [`sheets`](Self::sheets), but
+    /// without making a [`Sheet`] of each).
+    #[must_use]
+    pub fn sheet_ids_at(&self, coord: Coordinate<N>) -> &[SheetId] {
+        self.coord_to_node
+            .get(&coord)
+            .map_or(&[], |&n| self.sheet_data().ids_at(n))
+    }
+
+    /// Everywhere the sheet `id` is: each position that it passes through, with its height there
+    /// (twice, if it comes back to a position). Made from the lists that are kept for the
+    /// sheets, so it costs what it returns.
+    #[must_use]
+    pub fn sheet_places(&self, id: SheetId) -> Vec<(Coordinate<N>, usize)> {
+        self.sheet_data()
+            .places(id)
+            .iter()
+            .map(|&(n, z)| (self.graph[n].key, z))
+            .collect()
+    }
+
+    /// How many distinct sheets meet at the position `coord`, if some do: the most that are merged
+    /// into one of its heights, two or more (see [`SheetBoundary`]). 0 if no sheets meet there.
+    #[must_use]
+    pub fn sheets_meeting_at(&self, coord: Coordinate<N>) -> usize {
+        self.sheet_boundaries_at(coord)
+            .iter()
+            .map(|b| b.branches)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// How many echoes to draw along a wire, which is a segment of the picture between a point
+    /// where sheets meet (see [`sheets_meeting_at`](Self::sheets_meeting_at)) and the position
+    /// beside it: 0 for a wire that is not at such a point, or that is on no sheet, or on the
+    /// front-most of the sheets that the wires at the point are on, and else one for each step
+    /// that it is behind, at most [`MAX_ECHOES`].
+    ///
+    /// The sheet that a wire is on is the one that is drawn at the position beside the point
+    /// ([`node_depth`](Self::node_depth): the height `z` that hovering over the wire marks as
+    /// drawn). A step is a different `z` among the wires at the point: the wires of the first
+    /// have none, those of the next have one, and so on, so that the echoes say which wires go
+    /// into which layer.
+    #[must_use]
+    pub fn echoes(&self, wire: [Coordinate<N>; 2]) -> usize {
+        let [first, second] = wire;
+        let (Some(&first), Some(&second)) = (
+            self.coord_to_node.get(&first),
+            self.coord_to_node.get(&second),
+        ) else {
+            return 0;
+        };
+        let meets = |n: NodeIndex| self.sheet_data().boundaries_to(n).next().is_some();
+        let vertex = if meets(second) {
+            second
+        } else if meets(first) {
+            first
+        } else {
+            return 0;
+        };
+        let beside = if vertex == second { first } else { second };
+        let Some(layer) = self.node_depths[beside] else {
+            return 0;
+        };
+        let mut layers: Vec<usize> = self
+            .graph
+            .edges_directed(vertex, EdgeDirection::Incoming)
+            .filter_map(|e| self.node_depths[e.source()])
+            .collect();
+        layers.sort_unstable();
+        layers.dedup();
+        let behind = layers.iter().take_while(|&&other| other < layer).count();
+        behind.min(MAX_ECHOES)
     }
 
     /// How many sheets pass through the position `coord`, counted by their heights (a sheet
@@ -434,6 +512,22 @@ impl<const N: usize> Depths<N> {
             Some(Diagram::DiagramN(fibre)) => fibre.size(),
             _ => 0,
         }
+    }
+
+    /// The position of the projection that a triangle of a surface belongs to, and so whose sheets
+    /// are the ones behind it: its first corner, which is the one that is a region (in the
+    /// coordinates of the view, no singular height) for the triangles that a cube of the mesh is
+    /// cut into. Hovering over the surface lists the sheets of this position.
+    #[must_use]
+    pub const fn surface_position(corners: &[Coordinate<N>; 3]) -> Coordinate<N> {
+        corners[0]
+    }
+
+    /// How many sheets pass through a triangle of a surface: those of its
+    /// [position](Self::surface_position).
+    #[must_use]
+    pub fn surface_thickness(&self, corners: &[Coordinate<N>; 3]) -> usize {
+        self.thickness(Self::surface_position(corners))
     }
 
     #[must_use]
@@ -468,12 +562,10 @@ pub struct Sheet {
     /// `None` for the sheets *inside* a sheet (`within` of [`Depths::sheets`] not empty): only
     /// the identity of the sheets of the first coordinate after the position's is followed.
     pub id: Option<SheetId>,
-    /// How many heights of the neighbouring positions the edges into this position carry into
-    /// this one (see the `sheets` module): 1 where a sheet ends (at a point of the picture), 2
-    /// where it passes through, 3 or more where sheets meet at a cell, and 0 for a sheet that
-    /// lies in the position and not in the ones beside it, such as a line along a wire. 0 for
-    /// sheets inside a sheet.
-    pub arms: usize,
+    /// How many distinct sheets of the neighbouring positions the edges into this position merge
+    /// into this one, where sheets meet (see the `sheets` module): 2 or more at a point of the
+    /// picture where they do, and 0 everywhere else, and for sheets inside a sheet.
+    pub merges: usize,
     /// Whether the sheet is in front along its whole length, which is not what [`front`](Self::front)
     /// says: it is not hidden by another sheet, or is hidden at fewer of the positions that it
     /// shares with others than it is the front-most at (see the `sheets` module).

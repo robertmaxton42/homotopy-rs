@@ -452,34 +452,70 @@ button, .button {
   opacity: 0.6;
 }
 
-/* Where a sheet ends or sheets meet, over the diagram (a pale halo under each). */
+/* Where sheets meet, over the surfaces and under the wires: a stack of pages at the point (a
+   flat ellipse for each sheet, tangent at the bottom, so that the thickness shows on top) and
+   echoes alongside the wires of the layers behind. The pages have no backing: they are creases
+   in the layer, a darker shade of whatever colour is under them (multiplied), so that they read
+   as part of the surface and not as a sticker on it. */
 
-.sheet-boundary__halo {
+.sheet-mark {
   fill: none;
-  stroke: rgba(255, 255, 255, 0.75);
-  stroke-width: 5px;
+  stroke: rgba(0, 0, 0, 0.42);
+  stroke-width: 1.4px;
   stroke-linecap: round;
+  mix-blend-mode: multiply;
 }
 
-.sheet-boundary {
+/* The lower edges of the pages, which nearly coincide: much fainter than the rims. */
+.sheet-mark--under {
+  opacity: 0.3;
+}
+
+.sheet-echo {
   fill: none;
   stroke-width: 2px;
   stroke-linecap: round;
 }
 
-.sheet-boundary--stretch {
-  stroke: #c2255c;
-  stroke-width: 3px;
+.sheet-echo--halo {
+  stroke-width: 4px;
+}
+
+/* The sheet that is current in the stack under the pointer, over the whole diagram: its regions
+   tinted, a halo round its wires (under the wires, so it shows as an outline), a disc under its
+   vertices, and a dashed line where it is behind another along a wire. */
+
+.sheet-highlight__regions {
+  fill: #22d3ee;
+  fill-opacity: 0.32;
+  stroke: none;
+}
+
+.sheet-highlight__halo {
+  fill: none;
+  stroke: #22d3ee;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sheet-highlight__discs {
+  fill: #22d3ee;
+  stroke: none;
+}
+
+.sheet-highlight__behind-halo {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.8);
+  stroke-width: 4.5px;
+  stroke-linecap: round;
+}
+
+.sheet-highlight__behind {
+  fill: none;
+  stroke: #0e7490;
+  stroke-width: 2.2px;
   stroke-dasharray: 5 4;
-}
-
-.sheet-boundary--end {
-  stroke: #c2255c;
-  stroke-dasharray: 3 3;
-}
-
-.sheet-boundary--meet {
-  stroke: #0b7285;
+  stroke-linecap: round;
 }
 
 /* Surfaces with more sheets behind them (in steps from the thinnest, which is not shaded). The
@@ -833,6 +869,67 @@ svg [data-dim="1"] {
   padding: var(--space-0);
   display: flex;
   align-items: center;
+}
+
+/* What deleting a generator would delete (app/signature/removal_preview.rs): the delete button
+   can be focused; rows that would go are tinted and struck out; rows that hold some out of sight
+   (a closed folder, the instances of a schema) say how many. The attributes are written to the
+   rows directly, so hovering the button renders nothing. */
+.signature__removal-button {
+  cursor: pointer;
+  border-radius: var(--space-0);
+}
+
+.signature__removal-button:focus-visible {
+  outline: 2px solid var(--slot-error);
+  outline-offset: -2px;
+}
+
+.signature__removal-note {
+  padding: 0 var(--space-1) var(--space-0);
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--slot-error);
+  cursor: default;
+}
+
+.signature__removal-note:empty {
+  display: none;
+}
+
+.signature__item.signature__folder-editing:has(.signature__removal-note:not(:empty)) {
+  height: auto;
+}
+
+.signature__item[data-removal] {
+  background: color-mix(in srgb, var(--slot-error) 22%, transparent);
+  box-shadow: inset 3px 0 0 var(--slot-error);
+}
+
+.signature__item[data-removal] .signature__item-name-wrapper {
+  text-decoration: line-through;
+  text-decoration-color: var(--slot-error);
+  text-decoration-thickness: 2px;
+  opacity: 0.8;
+}
+
+.signature__item[data-removal-inside] {
+  position: relative;
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--slot-error) 55%, transparent);
+}
+
+.signature__item[data-removal-inside]::after {
+  content: "\2212" attr(data-removal-inside) " inside";
+  position: absolute;
+  right: 4px;
+  top: 2px;
+  padding: 0 var(--space-0);
+  border-radius: var(--space-0);
+  font-size: 11px;
+  line-height: 16px;
+  color: #fff;
+  background: var(--slot-error);
+  pointer-events: none;
 }
 
 .signature__item-name, .signature__item-fill {
@@ -1452,16 +1549,20 @@ svg {
   margin-bottom: var(--space-1);
 }
 
+.settings__toggle-setting,
+.settings__slider-setting,
+.settings__number-setting {
+  position: relative;
+}
+
 .settings__toggle-setting {
   display: flex;
-  align-items: left;
+  align-items: baseline;
   padding-bottom: var(--space-1);
 }
 
-.settings__note {
-  margin: 0 0 var(--space-1);
-  font-size: 12px;
-  opacity: 0.7;
+.settings__label {
+  cursor: pointer;
 }
 
 .settings__toggle-setting input {
@@ -1469,13 +1570,119 @@ svg {
   cursor: pointer;
 }
 
-.settings__slider-setting {
-  padding: var(--space-0) var(--space-0) var(--space-0) 0;
+/* What is the case at the moment (a status), not an explanation: those are in popovers. */
+.settings__note {
+  margin: 0 0 var(--space-1);
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.settings__slider-setting,
+.settings__number-setting {
+  padding: var(--space-0) var(--space-0) var(--space-1) 0;
+}
+
+.settings__setting-title {
+  display: flex;
+  align-items: baseline;
+}
+
+/* The number of a slider, which follows the slider as it is dragged. */
+.settings__value {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
 }
 
 .settings__slider-setting input {
   width: 100%;
   cursor: pointer;
+}
+
+.settings__number-box {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+
+.settings__number-box input {
+  width: 6em;
+  box-sizing: border-box;
+}
+
+.settings__unit {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* The "?" after the title of a setting (components/help_tip.rs): its explanation is in a popover
+   over the row of the setting, shown on hover, on focus and on a tap, and closed with Esc. */
+.settings__help {
+  display: inline-block;
+  margin-left: var(--space-0);
+}
+
+.settings__help-button {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  line-height: 14px;
+  text-align: center;
+  cursor: help;
+  opacity: 0.6;
+}
+
+.settings__help-button:hover,
+.settings__help-button:focus-visible,
+.settings__help[data-open] .settings__help-button {
+  opacity: 1;
+}
+
+.settings__help-button:focus-visible {
+  outline: 2px solid var(--drawer-foreground);
+  outline-offset: 1px;
+}
+
+.settings__help-text {
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 20;
+  padding: var(--space-1);
+  border-radius: var(--space-0);
+  background: var(--tooltip-background);
+  color: var(--tooltip-foreground);
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* A bridge over the gap to the button, so that the pointer can go to the text (and select it). */
+.settings__help-text::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -12px;
+  height: 12px;
+}
+
+.settings__help:hover .settings__help-text,
+.settings__help:focus-within .settings__help-text,
+.settings__help[data-open] .settings__help-text {
+  display: block;
+}
+
+.settings__help[data-dismissed] .settings__help-text {
+  display: none;
 }
 
 .version {
@@ -2186,9 +2393,20 @@ body.attach-dragging--refused * {
   opacity: 0.5;
 }
 
-/* The instances of a schema in the list of attachments: a group that is closed until opened. */
+/* The instances of a schema, or the reflections of a generator, in the list of attachments: a
+   group that is closed until opened. */
 .attach__group {
   align-items: center;
+}
+
+/* The generator's colour at the edge of the group's header, as at the edge of its row in the
+   signature (the header centres its contents, which would leave the swatch no height). */
+.attach__group .attach__swatch {
+  align-self: stretch;
+  padding-left: 0;
+  width: var(--space-1);
+  flex: 0 0 auto;
+  box-sizing: border-box;
 }
 
 .attach__group-toggle {
@@ -2204,6 +2422,70 @@ body.attach-dragging--refused * {
 
 .attach__option--grouped .attach__option-name {
   padding-left: calc(var(--space-1) * 3);
+}
+
+/* The definitions offered first in the list of attachments (a shortcut), and the way to search
+   for the rest. */
+.attach__heading,
+.attach__note {
+  list-style: none;
+  padding: var(--space-1) var(--space-2);
+  font-size: 12px;
+  color: var(--drawer-foreground-dimmed-text);
+}
+
+.attach__heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding-top: var(--space-2);
+  font-weight: bold;
+}
+
+.attach__more {
+  cursor: pointer;
+  font-style: italic;
+}
+
+.attach__option--definition {
+  border-left: 3px solid #66aeeb;
+}
+
+/* The line at the top of a list that is still being filled in (components/search_status.rs). */
+.attach__searching {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  font-size: 12px;
+  background: var(--drawer-background);
+  border-bottom: 1px solid var(--drawer-selected);
+}
+
+.attach__searching-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.attach__searching-doing {
+  font-variant-numeric: tabular-nums;
+}
+
+.attach__searching-hint {
+  flex: 1 0 100%;
+  color: var(--drawer-foreground-dimmed-text);
+}
+
+.attach__searching-stop {
+  flex: none;
 }
 
 /* The lists in the notice about the search: shut until opened. */

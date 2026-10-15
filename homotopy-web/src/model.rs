@@ -8,8 +8,8 @@ pub use homotopy_model::{history, job, migration, proof, serialize};
 use homotopy_model::{
     job::run_to_end,
     proof::{
-        ActionsJob, AttachOption, AttachOptionsJob, DraftEdit, Drafts, InferenceLimits,
-        InferenceReport, NoAttachment,
+        ActionsJob, AttachOption, AttachOptionsJob, DefinitionsJob, DraftEdit, Drafts, Found,
+        InferenceLimits, InferenceReport, NoAttachment, Streamed,
     },
 };
 use serde::Serialize;
@@ -41,6 +41,22 @@ pub enum Action {
     /// Click on a point of the workspace, to find what can be attached there: through weak units
     /// if the flag is set, and with the limits on inferring instances of schemas.
     SelectPoint(Vec<SliceIndex>, bool, InferenceLimits),
+    /// Click on a point of the workspace with *definitions first*: when the point lands on one
+    /// cell (see `homotopy_model::proof::cell_at`), look for the definitions of that cell first
+    /// and offer those, with a way to search for everything else; any other point is searched as
+    /// for [`SelectPoint`](Self::SelectPoint).
+    SelectCell(Vec<SliceIndex>, bool, InferenceLimits),
+    /// Search for everything that can be attached where the definitions were offered, which are
+    /// kept at the top of the list.
+    SearchEverything,
+    /// Pick an option from the list of a search that is still going on (see [`Listing`]): ends the
+    /// search, which has not committed anything, and attaches that option. The option is
+    /// what was clicked and not its place in the list, which grows as the search finds more.
+    PickStreamed(AttachOption),
+    /// Stop the search for attachments that is going on, and keep the options it has found
+    /// so far (see [`Listing::Stopped`]). The app does this; there is nothing to do for the state
+    /// of a search that is not going on.
+    StopSearch,
     /// Drop (or click, once armed) a generator on a point of the workspace, to find only the ways
     /// to attach that generator there: as for [`SelectPoint`](Self::SelectPoint) otherwise.
     AttachGenerator(Generator, Vec<SliceIndex>, bool, InferenceLimits),
@@ -121,7 +137,10 @@ impl Action {
         match self {
             Self::Proof(action) => action.work_label(),
             Self::ImportActions(_) => Some(proof::REPLAYING),
-            Self::SelectPoint(..) | Self::AttachGenerator(..) => Some("Searching for attachments"),
+            Self::SelectPoint(..)
+            | Self::SelectCell(..)
+            | Self::SearchEverything
+            | Self::AttachGenerator(..) => Some("Searching for attachments"),
             Self::Draft(_) => Some("Inferring replacements"),
             Self::ExportImage(
                 ImageFormat::Stl(_) | ImageFormat::Tikz(_) | ImageFormat::Manim(_),
@@ -161,11 +180,18 @@ impl Action {
             | Self::ImportActions(_)
             | Self::Select(_)
             | Self::SelectPoint(..)
+            | Self::SelectCell(..)
+            | Self::SearchEverything
             | Self::AttachGenerator(..)
             | Self::Draft(_)
             | Self::ExportImage(..)
             | Self::ExportProof => false,
-            Self::ExportActions
+            // Picking from the list of a search that is going on ends the search first (the
+            // app does that), which commits nothing, so what is attached is the option as it
+            // was listed; stopping the search is what `Esc` does.
+            Self::PickStreamed(_)
+            | Self::StopSearch
+            | Self::ExportActions
             | Self::ClearSelections
             | Self::Merge(_)
             | Self::Arm(_)
@@ -205,6 +231,59 @@ impl Selectables {
     }
 }
 
+/// How the options on show were come by.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Listing {
+    /// The search is over (or there was none: merges): this is the list.
+    #[default]
+    Complete,
+    /// The search is going on, and the options are the ones found so far, each in the place that
+    /// it has in the final list (see [`Streamed`]). The list grows, in the middle as well as at the
+    /// end, and what is there is never moved; the keys 1 to 9 are refused (the numbers they stand
+    /// for are those of the final list), and picking an option ends the search
+    /// ([`Action::PickStreamed`]).
+    Searching,
+    /// The search was stopped before it was over: these are the options it had found, which is
+    /// all there is, and there may be others.
+    Stopped,
+}
+
+/// The options of a search for attachments that is going on, as they are found.
+#[derive(Debug, Clone)]
+struct Stream {
+    /// The definitions that are offered above the search (if the search is for the rest of what
+    /// attaches where they were offered: see [`Definitions`]) and their options.
+    above: Option<(Definitions, Vec<AttachOption>)>,
+    /// What the search has found, in its places.
+    found: Streamed,
+    /// Whether the options on show are this stream's.
+    shown: bool,
+}
+
+/// The definitions of a cell that were offered first, at the top of the list of attachment options
+/// (see `homotopy_model::proof::DefinitionsJob`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Definitions {
+    /// The cell that was clicked.
+    pub of: Generator,
+    /// How many options at the start of the list are definitions of it.
+    pub count: usize,
+    /// The names of the candidates whose search ran out of its time (what is offered is valid
+    /// and may be less).
+    pub cut_short: Vec<String>,
+    /// The search for everything else that can be attached there, if it has not been done: the
+    /// list is only the definitions until then.
+    pub more: Option<Search>,
+}
+
+/// A search for the attachments at a point, to do again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Search {
+    pub point: Vec<SliceIndex>,
+    pub weak_units: bool,
+    pub limits: InferenceLimits,
+}
+
 /// What starting to update the state came to.
 pub enum Started {
     /// It is done; whether the project changed.
@@ -218,6 +297,14 @@ pub struct State {
     pub remote_project_metadata: Option<account::RemoteProjectMetadata>,
     pub history: History,
     pub options: Option<Selectables>,
+    /// If the first options are the definitions of the cell that was clicked, offered before the
+    /// rest was searched for.
+    pub definitions: Option<Definitions>,
+    /// Whether the options are those of a search that is going on, or that was stopped.
+    pub listing: Listing,
+    /// The options that the search for attachments that is going on has found so far, from
+    /// which the options on show are made (see [`found`](Self::found)).
+    stream: Option<Stream>,
     /// The generator that the next click on the workspace is to attach, if one was picked
     /// (see [`Action::Arm`]).
     pub armed: Option<Generator>,
@@ -477,6 +564,60 @@ impl State {
             Action::SelectPoint(point, weak_units, limits) => {
                 return self.start_attach_search(&point, weak_units, limits, None);
             }
+            Action::SelectCell(point, weak_units, limits) => {
+                // The definitions of the cell that was clicked first, if it is one cell and has
+                // any; else everything, as for a click on anything else.
+                if let Some(job) = DefinitionsJob::new(self.proof(), &point, weak_units, limits) {
+                    return Ok(Started::Running(Task::Definitions {
+                        job: Box::new(job),
+                        search: Search {
+                            point,
+                            weak_units,
+                            limits,
+                        },
+                    }));
+                }
+                return self.start_attach_search(&point, weak_units, limits, None);
+            }
+            Action::SearchEverything => {
+                // (Nothing to search for when the options have moved on: not an error.)
+                let Some(definitions) = self
+                    .definitions
+                    .clone()
+                    .filter(|definitions| definitions.more.is_some())
+                else {
+                    return Ok(Started::Done(false));
+                };
+                let search = definitions.more.clone().unwrap();
+                let started = self.start_attach_search(
+                    &search.point,
+                    search.weak_units,
+                    search.limits,
+                    None,
+                )?;
+                return Ok(match started {
+                    Started::Running(Task::AttachOptions(job)) => {
+                        // The definitions stay on show, above what is found.
+                        self.begin_stream(Some(&definitions));
+                        Started::Running(Task::AttachRest {
+                            job,
+                            shown: definitions,
+                        })
+                    }
+                    other => other,
+                });
+            }
+            Action::PickStreamed(option) => {
+                // (The search was ended by whoever has the task; there is nothing to commit
+                // of it, and the option is complete.)
+                self.stream = None;
+                self.listing = Listing::Complete;
+                return self.start(Action::Proof(proof::Action::Attach(option)));
+            }
+            Action::StopSearch => {
+                self.stopped();
+                return Ok(Started::Done(false));
+            }
             Action::AttachGenerator(generator, point, weak_units, limits) => {
                 // Whatever came of it, the generator is not waiting any more.
                 self.armed = None;
@@ -509,17 +650,125 @@ impl State {
         Ok(Started::Done(true))
     }
 
+    /// Begins to keep the options that the search which has just been started finds: for the rest
+    /// of what attaches where definitions are on show, those stay above what is found.
+    fn begin_stream(&mut self, above: Option<&Definitions>) {
+        let above = above.map(|definitions| {
+            let defined = match &self.options {
+                Some(Selectables::Attach(options)) => {
+                    options.iter().take(definitions.count).cloned().collect()
+                }
+                _ => vec![],
+            };
+            (definitions.clone(), defined)
+        });
+        let shown = above.is_some();
+        if let Some((_, defined)) = &above {
+            // (Whatever a search before this one had found below them is not what this finds.)
+            self.options = Some(Selectables::Attach(defined.clone()));
+        }
+        self.stream = Some(Stream {
+            above,
+            found: Streamed::default(),
+            shown,
+        });
+        if shown {
+            self.listing = Listing::Searching;
+        }
+    }
+
+    /// Takes in options that the running search for attachments has found, and shows them in the
+    /// list, each in its place in the final list (the list is the options so far, so it grows in
+    /// the middle as well as at the end, and nothing that is there is moved). Returns whether
+    /// there is anything new to show.
+    ///
+    /// The first option opens the list (replacing the one that was there, if any). Nothing here
+    /// is part of the project: that is up to the outcome of the search, which `finish` takes.
+    pub fn found(&mut self, found: impl IntoIterator<Item = Found>) -> bool {
+        let Some(stream) = &mut self.stream else {
+            return false;
+        };
+        let before = stream.found.len();
+        stream.found.extend(found);
+        if stream.found.len() == before {
+            return false;
+        }
+        let first = !std::mem::replace(&mut stream.shown, true);
+        let rest = stream.found.options();
+        match &stream.above {
+            None => {
+                self.options = Some(Selectables::Attach(rest));
+                self.definitions = None;
+            }
+            Some((definitions, defined)) => {
+                let rest = rest.into_iter().filter(|option| !defined.contains(option));
+                self.options = Some(Selectables::Attach(
+                    defined.iter().cloned().chain(rest).collect(),
+                ));
+                self.definitions = Some(definitions.clone());
+            }
+        }
+        self.listing = Listing::Searching;
+        if first {
+            self.attachment_highlight = None;
+            self.slice_highlight = None;
+        }
+        true
+    }
+
+    /// Forgets what the search that is going on has found, and what was shown of it, because the
+    /// search is to be done over (the worker failed, and the page does it instead).
+    pub fn restart_stream(&mut self) {
+        let Some(stream) = self.stream.take() else {
+            return;
+        };
+        if let Some((definitions, defined)) = stream.above {
+            self.options = Some(Selectables::Attach(defined));
+            self.begin_stream(Some(&definitions));
+        } else {
+            if stream.shown {
+                self.options = None;
+            }
+            self.listing = Listing::Complete;
+            self.begin_stream(None);
+        }
+    }
+
+    /// The running search for attachments is ended before it is over (`Esc`, the busy
+    /// indicator, the button in the list): what it has found so far stays on show and the list
+    /// is marked as stopped, since it may be missing options. Returns how many options that
+    /// is, or `None` if it had found none (then the list is as it was before the search, as
+    /// for any job that is cancelled).
+    pub fn stopped(&mut self) -> Option<usize> {
+        let stream = self.stream.take()?;
+        if stream.found.is_empty() {
+            self.listing = Listing::Complete;
+            return None;
+        }
+        self.listing = Listing::Stopped;
+        Some(stream.found.len())
+    }
+
+    /// Whether the options on show are those of a search that is going on.
+    #[must_use]
+    pub fn is_searching(&self) -> bool {
+        self.listing == Listing::Searching
+    }
+
     /// Starts the search for the ways to attach at a point of the workspace, all of them or those
     /// of one generator.
     fn start_attach_search(
-        &self,
+        &mut self,
         point: &[SliceIndex],
         weak_units: bool,
         limits: InferenceLimits,
         only: Option<Generator>,
     ) -> Result<Started, ModelError> {
         match AttachOptionsJob::new(self.proof(), point, weak_units, limits, only) {
-            Ok(job) => Ok(Started::Running(Task::AttachOptions(Box::new(job)))),
+            Ok(job) => {
+                self.begin_stream(None);
+                Ok(Started::Running(Task::AttachOptions(Box::new(job))))
+            }
             Err(NoAttachment::NoWorkspace) => Ok(Started::Done(true)),
             Err(NoAttachment::NoBoundary | NoAttachment::UnknownGenerator) => {
                 Err(ModelError::NoAttachment)
@@ -581,13 +830,18 @@ impl State {
             }
             TaskOutput::AttachOptions(outcome) => {
                 let matches = outcome.options;
+                let forced = outcome.inference.forced;
                 self.inference_report = Some(outcome.inference);
+                self.stream = None;
+                self.listing = Listing::Complete;
                 match matches.len() {
                     0 => {
                         self.clear_selections();
                         return Err(ModelError::NoAttachment);
                     }
-                    1 => {
+                    // Exactly one, at the end of the search (not at the first that was found):
+                    // but not when the search was ended from outside and may have missed more.
+                    1 if !forced => {
                         self.clear_selections();
                         return self.start(Action::Proof(proof::Action::Attach(
                             matches.into_iter().next().unwrap(),
@@ -595,10 +849,61 @@ impl State {
                     }
                     _ => {
                         self.options = Some(Selectables::Attach(matches));
+                        self.definitions = None;
                         self.attachment_highlight = None;
                         self.slice_highlight = None;
                     }
                 }
+                Ok(Started::Done(true))
+            }
+            TaskOutput::Definitions { outcome, search } => {
+                if outcome.options.is_empty() {
+                    // None of them attaches here: the click is what it always was.
+                    return self.start_attach_search(
+                        &search.point,
+                        search.weak_units,
+                        search.limits,
+                        None,
+                    );
+                }
+                self.definitions = Some(Definitions {
+                    of: outcome.of,
+                    count: outcome.options.len(),
+                    cut_short: outcome.cut_short,
+                    more: Some(search),
+                });
+                self.options = Some(Selectables::Attach(outcome.options));
+                self.attachment_highlight = None;
+                self.slice_highlight = None;
+                Ok(Started::Done(true))
+            }
+            TaskOutput::AttachRest { outcome, shown } => {
+                self.inference_report = Some(outcome.inference);
+                self.stream = None;
+                self.listing = Listing::Complete;
+                // The definitions stay where they were, at the top; the rest is what the whole
+                // search found that is not one of them.
+                let (defined, rest): (Vec<_>, Vec<_>) = {
+                    let Some(Selectables::Attach(now)) = self.options.take() else {
+                        return Ok(Started::Done(false));
+                    };
+                    let defined: Vec<_> = now.into_iter().take(shown.count).collect();
+                    let rest = outcome
+                        .options
+                        .into_iter()
+                        .filter(|option| !defined.contains(option))
+                        .collect();
+                    (defined, rest)
+                };
+                self.definitions = Some(Definitions {
+                    more: None,
+                    ..shown
+                });
+                self.options = Some(Selectables::Attach(
+                    defined.into_iter().chain(rest).collect(),
+                ));
+                self.attachment_highlight = None;
+                self.slice_highlight = None;
                 Ok(Started::Done(true))
             }
             TaskOutput::Infer(schema, inference) => {
@@ -636,6 +941,10 @@ impl State {
     /// Handler for [Action::ClearSelections].
     fn clear_selections(&mut self) {
         self.options = None;
+        self.definitions = None;
+        self.listing = Listing::Complete;
+        // (A search that is going on shows its options when it is over.)
+        self.stream = None;
         self.armed = None;
         self.attachment_highlight = None;
         self.slice_highlight = None;
@@ -645,6 +954,7 @@ impl State {
     fn merge_options(&mut self, generator: Generator) {
         let result = self.proof().signature.globular_pairs(generator);
         if !result.is_empty() {
+            self.definitions = None;
             self.options = Some(Selectables::Merge(generator, result));
         }
     }
@@ -685,9 +995,8 @@ pub enum ModelError {
 
 fn help() -> Result<(), ModelError> {
     let window = web_sys::window().ok_or(ModelError::Internal)?;
-    let document = window.document().ok_or(ModelError::Internal)?;
-    let location = document.location().ok_or(ModelError::Internal)?;
-    location.set_href("#help").or(Err(ModelError::Internal))
+    window.document().ok_or(ModelError::Internal)?;
+    crate::app::history_trap::fragment("#help").or(Err(ModelError::Internal))
 }
 
 pub fn zip_files(files: impl Iterator<Item = (String, impl AsRef<[u8]>)>) -> Vec<u8> {
@@ -731,15 +1040,8 @@ pub fn generate_download(name: &str, ext: &str, data: &[u8]) -> Result<(), wasm_
 pub fn update_window_url_path(new_path: &str) {
     let window = web_sys::window().unwrap();
     let origin = window.location().origin().unwrap();
-    window
-        .history()
-        .unwrap()
-        .replace_state_with_url(
-            &None::<u8>.into(),
-            "title",
-            Some(&format!("{origin}{new_path}")),
-        )
-        .unwrap();
+    // Replaces the entry and keeps its state, which carries the history trap's marker.
+    crate::app::history_trap::url_changed(&format!("{origin}{new_path}"));
 }
 
 #[must_use]

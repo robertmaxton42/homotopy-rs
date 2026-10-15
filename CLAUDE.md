@@ -11,7 +11,9 @@ anything that can exceed ~100 ms on a realistic diagram) must:
 2. **Say that it is working, and on what.** Show a visible busy indicator naming the operation
    (e.g. "Inferring instances…"), with progress where progress is knowable.
 3. **Be cancellable.** Clicking the indicator or pressing `Esc` cancels it, leaving the project
-   exactly as it was before the operation started.
+   exactly as it was before the operation started. (A search for attachments lists the options it
+   has found as it goes, and cancelling it keeps them listed: listing options is not changing the
+   project. See "The list fills in as the search goes" under the attach options drawer.)
 
 While such an operation runs, further expensive input is **refused, not queued**: the indicator
 stays up (and should visibly acknowledge the refused input), and cancelling never replays
@@ -71,7 +73,7 @@ indicator: see "Laying out diagrams" below.
 - **Refusal**: while a job runs, `Action::allowed_while_busy` (an exhaustive `match`: whoever adds an
   action decides) refuses what updates the history, and what is expensive in itself, and allows the rest.
   Refused: every `proof::Action` but the view-only signature edits below, undo/redo (keys and mouse
-  buttons), `ImportActions`, `Select`, `SelectPoint`/`AttachGenerator`, `Draft` (it runs inference),
+  buttons), `ImportActions`, `Select`, `SelectPoint`/`SelectCell`/`SearchEverything`/`AttachGenerator`, `Draft` (it runs inference),
   `ExportImage` and `ExportProof` (it serialises the project on the page, and is the project as it was
   before the job). Allowed: highlights, `Arm`, `ClearSelections`, `Merge` (listing the options),
   `ExportActions`, remote metadata, help, and **opening and closing folders and the instances of a
@@ -81,7 +83,10 @@ indicator: see "Laying out diagrams" below.
   undo of them, no unload warning, and the position (autosave's version) does not change. A job works
   on a copy, so a toggle made while a long `ActionsJob` runs is lost when that commits (the open state
   of that moment is the copy's): a known gap, harmless. Refused input shakes the pill (and shows it
-  at once); allowed input neither shakes it nor cancels the job. Pure view changes that do not go
+  at once); allowed input neither shakes it nor cancels the job. Two actions are allowed that *do* end the
+  running job, both only for a search for attachments whose options are on show (`Listing::Searching`):
+  `PickStreamed(option)` (the app ends the job, then attaches the option as `Attach` does; refused if the
+  running job is not an attach search) and `StopSearch` (what `Esc` does; the drawer's Stop button). Pure view changes that do not go
   through `dispatch` (pan/zoom, opening drawers, settings, opening a group of options or a list in a
   notice: component state) still work. Test: `what_may_be_done_while_busy_does_not_touch_the_project`
   in `homotopy-web/tests/tasks.rs`.
@@ -253,8 +258,15 @@ indicator: see "Laying out diagrams" below.
     total to run out of and no generator is "not tried" for lack of time (`not_tried` only comes from a search
     that was ended from outside, below). There is no total limit by design (Esc ends the search and the project
     is as it was); an optional total was considered and dropped as one more setting that would bring back the
-    skipping the user does not want. A search for one generator (`only`) has the same time, not more: raise the
-    setting to wait longer for it. One setting, not two (cells and schemas), because the user thinks of "a
+    skipping the user does not want. A search for one generator (`only`) *dropped on the diagram or picked*
+    has **no limit at all** (`attach_inference::limits_for_generator`: the settings but `generator_ms = 0`; user
+    decision: "now that I can just cancel it if I didn't mean it or change my mind, it's better to default to
+    letting it search"); a search for one generator that is made some other way (`AttachGeneratorWith` in the
+    debug hooks, tests) has the time it is given. No limit means `Job::step_limit` is `None`, so the worker's
+    progress reports say `limit_ms: 0` and the page's watchdog is never started (`remote.limit_ms == 0`: tested by
+    `a_search_without_a_time_limit_says_that_no_step_has_one`), and there are no checkpoints. Gap: a search on the page
+    (no ready worker) for one generator has no limit either, and a step of it (one cell made from the generator, one
+    reflection) is as long as it is. The settings note and `doc/attaching.md` say so. One setting, not two (cells and schemas), because the user thinks of "a
     generator" and a schema's plain matching is cheap: it is the inference that uses the time, and that gets what
     matching left.
     - **Why 5 s.** The costliest single generator's plain matching natively is 2.5 s (the reflections of `lc=l`,
@@ -320,8 +332,11 @@ indicator: see "Laying out diagrams" below.
       with an answer that does for the job if it is ended (`Job::checkpoint`: for `AttachOptionsJob`, the options
       so far, with the generator it is in the middle of in `cut_short` and the ones after it in `not_tried`;
       `Executor::run_with_checkpoints`; the first before anything is done, then as generators are finished but
-      not before ten times the time the last took to make, as packing the options is as costly as packing the
-      answer, 1.5MB for the fixture). The page keeps the latest without decoding it. **When stuck** the page
+      not before ten times the time the last took to make). Since the options are streamed (below) a
+      checkpoint of a streamed search is the report only (`WireOutput::AttachOptions { streamed: Some(n) }`,
+      the options being those sent ahead, which the executor flushes *before* it makes the checkpoint), so it
+      is cheap whatever the size; without a stream it still holds all the options (1.5MB for the fixture). The
+      page keeps the latest without decoding it. **When stuck** the page
       decodes it, ends the worker as Esc would (`stop` + `ensure`) and commits it as the outcome of the job
       (`InferenceReport::forced`; the notice says that a generator took longer than its time and could not be
       stopped, so it was ended: what the search had found before then is offered, the generator it was in the
@@ -481,6 +496,67 @@ indicator: see "Laying out diagrams" below.
     is under the pointer decides); the tooltip of a diagram the generator cannot be attached to still shows while
     the refused ghost is over it.
 
+- **Definitions first** (`proof/definitions.rs`, `Action::SelectCell`/`SearchEverything`, setting *Offer
+  definitions first when clicking a cell*, `offer_definitions`, on by default and kept with the inference
+  settings in `homotopy-inference-settings`; user-facing text in `doc/attaching.md`). A heuristic shortcut
+  (policy above): a click on one cell offers that cell's *definition* at once instead of making the person
+  wait for the whole search.
+  - **Lands on a cell** (`cell_at(haystack, point)`, the point after the boundary split): the point is not
+    empty, *every* height in it is `Singular` (a vertex in each coordinate: on a wire or a region there is
+    no cell to define, so the click is as before), and the slice at the point (`generators_near(point, 0)`:
+    the fibre, what the other coordinates have there) has cells of the dimension of the diagram that are all
+    of *one* generator `g`. Several such generators (sheets of different cells), none (a vertex with only
+    lower cells, a crossing) or a point with a chosen sheet that is not a vertex: as before. Cells of lower
+    dimension never count (a definition of one would need raising, which is not a definition of the cell).
+  - **Definition** (`definitions_of(signature, g)`): a generator of dimension `dim(g)+1` with `g`'s diagram as
+    source or target (diagram equality, no search). `id + 1` first (they are made right after the cell), then
+    the others in signature order. An instance `d[σ]` of a schema's definition has `g[σ]` as boundary, so it is
+    found like any other *if it exists as a generator*; instances are not inferred, and reflections
+    (duals...) are not looked for: "Search everything" does those.
+  - **Verification**: `DefinitionsJob` (model crate; a `Job`, label "Looking for definitions") runs, for each
+    candidate in turn, `AttachOptionsJob::new(.., Some(d)).plain_only()` (`plain_only`: only the plain pass, the
+    candidate and its inverse, no reflections or inference), so the options are exactly the full search's options
+    for `d` at the click, in its order and with its time limit per generator (`cut_short` lists the candidates
+    given up on). It stays on the page (`Task::offer` gives it no worker): one step is the setup of a candidate
+    or one cell variant. Native release, the tangent categories fixture, `start` (id 62, dim 5) as the
+    workspace, click on its cell: `Proof 63` offered in 43ms (0.2ms to set up), against 2.95s for the full
+    search at that point.
+  - **Showing**: `State::start(SelectCell)` returns `Task::Definitions` when there are candidates, else the
+    ordinary `Task::AttachOptions`; `finish` of the definitions with none verified starts the full search (the
+    click is as it was), with some it sets `Selectables::Attach(defs)` and `State::definitions =
+    Definitions { of, count, cut_short, more: Some(Search) }` (not `Done(false)`: the drawer changes; the
+    project does not) and *always* shows the drawer, even for one definition (no auto-attach), because
+    otherwise there would be no way to the rest. The drawer (`app/attach.rs`, `view_definitions`) has
+    "Definitions of X", the definitions (`attach__option--definition`), a note that this is a shortcut, and
+    "Search everything for more options" (`Action::SearchEverything`: `Task::AttachRest { job, shown }`, the
+    full `AttachOptionsJob`, with the worker as for any attach search). Its output keeps the definitions at the
+    top (in order) and lists the full search's options except those equal to them (`AttachOption` equality); the
+    inference notice is the full search's. `count` leading options are the definitions, so the keys 1-9 and
+    `Select(i)` index the flat list as before. `ClearSelections`, picking an option, and any other list clear
+    `definitions`; cancelling (Esc) with nothing found yet leaves the drawer as it was, and with options found
+    keeps the definitions and what was found (`more` stays, so *Search everything again* is offered). The task
+    carries the shown definitions, so a cancelled search leaves nothing stale. Both actions are refused while
+    busy and have the heavy label. The rest of the search **streams** (below): `State::begin_stream(Some(defs))`
+    keeps the definitions on top and `Listing::Searching` from the start, and the options that arrive are
+    filtered of those equal to a definition as the final one is.
+  - **Setting off**: the workspace dispatches `SelectPoint` as before. Armed clicks and drops
+    (`AttachGenerator`) never use it.
+  - Tests: `homotopy-model/tests/definitions.rs` (every definition offered is among the full search's options,
+    with and without weak units, on definitions that exist in the corpus at the cell's own vertices and on one
+    made for every cell a click lands on; the `g+1` first; the fixture, only with `HOMOTOPY_TANGENT_FIXTURE=<.hom>`,
+    add `HOMOTOPY_FIXTURE_FULL=1` to compare with the full search); `homotopy-web/tests/tasks.rs`
+    (`a_click_on_a_cell_offers_its_definitions_first_and_everything_else_on_asking`: the task, the project
+    untouched, the marks, merging, a click elsewhere being the old click). Debug hooks: `__homotopy.dispatch`
+    takes `{"SelectCell": [point, weak_units]}` and `"SearchEverything"`; `state().definitions` is
+    `[count, more_to_search]`. Web tests run natively: `cargo test --target x86_64-unknown-linux-gnu` in
+    `homotopy-web`.
+  - Gaps: schemas' instances are only found if they exist (not inferred, no "make the instance"); the 3D view,
+    armed clicks and drops do not use it; the definitions are searched on the page, so a definition that is
+    slow to match (high dimensions) takes its time per generator there (steps are one variant: the busy pill
+    and Esc work between them); a click that lands on a cell whose definition is a *reflection* (dual) is not
+    helped; `cell_at` ignores orientation, so a click on the inverse of `g` finds nothing and falls through to
+    the full search.
+
 - **Sheets** (`Depths::fibre/sheets` in `homotopy-core/src/projection.rs`, `homotopy_model::sheets`,
   `homotopy-web/src/app/diagram_svg/sheets.rs`; user-facing text in `doc/attaching.md`). The 2D view of a
   diagram of more dimensions shows at each position the front-most (`Depths::node_depth`, smaller z is nearer)
@@ -558,29 +634,106 @@ indicator: see "Laying out diagrams" below.
       is kept. Tested against the scaffold with every edge (`leaving_out_regular_slices_loses_no_unit_cone`).
       Identity is checked on kept edges only: across the diagonals it differs where the way round passes a
       junction, which cuts the sheet.
-  - **Outlines of sheet boundaries** (`Depths::sheet_boundaries`, `DiagramSvg::view_sheet_outlines`, setting
-    *Outline where sheets end or meet*, `sheet_outlines`, on by default; workspace diagram only, like the rest of
-    the sheet features). Only at *points* of the picture (every coordinate singular: where the cells are): a
-    height there that **one** edge carries a height into is where a sheet *ends* (`BeginsOrEnds`; `matchsticks`,
-    `stacks`, `monoid_unit`), and one that **three or more** carry heights into is where sheets *meet*
-    (`MergesOrSplits`; the 3-cell of the associator: 10, of the snake: 6; `Sheet::arms` is the carried-in count).
-    It is **not** "a cone with `source_len() == 0`" as first specified: every edge goes from a position to one of
-    a dimension less, so a sheet that lies along a wire (a line) has such a cone on every edge from the regions
-    beside it, and where several rows of the grid collapse into one (a crossing) each row's edge lacks the
-    other's sheets: 32 of them for `crossing`, which has none, a boundary along both sides of every wire; and
-    the junction rule applied at every position rang every vertex of the associator's wires (11, against the 1
-    now). Sheets that end or meet along a wire are not marked: the wire is drawn. Drawn as one path per kind
-    in a `g.sheet-boundaries` (counts in `data-ends`/`data-meets`) over the surfaces and under the highlight:
-    for an end the last stretch of the sheet (dashed) from the neighbour that carries it and a dashed ring, for
-    a meeting a double ring; a pale halo under each so they show on any colour; `pointer-events: none`. The
-    tooltip's detail says "a sheet begins or ends here" / "sheets merge or split here". Made on first use;
-    `GraphicElement` is not changed. Gaps: a stretch is drawn along the scaffold edge, not a curve of the
-    layout; sheets that are joined along a wire or end along it are not marked; the 3D view has none.
+  - **Where sheets meet: stacks of pages and echoes** (`Depths::sheet_boundaries`, `sheets_meeting_at`, `echoes`;
+    `homotopy-graphics/src/svg/marks.rs` for the geometry; `diagram_svg/marks.rs`; setting *Show where sheets meet
+    (fans and echoes)*, still `sheet_outlines`, on by default; workspace diagram only). Only at *points* of the
+    picture (every coordinate singular: where the cells are). **A meeting is where several distinct sheets of
+    a neighbouring position become one**: a height `z` at a point that an edge into it takes two or more
+    heights of one neighbour's fibre to (a cone with `source_len() >= 2`), whose source heights are at least two
+    distinct `SheetId`s, **and** whose own sheet is at this position alone (`places(id)`: no other position has
+    the cell). `SheetBoundary { from, to, z, sheet, branches }`, `branches` the distinct sheets merged (the 3-cell
+    of the associator: 5, the vertex of `start`: 9); `Sheet::merges` is the same per height; there is no
+    `SheetBoundaryKind` any more.
+    - **Why it was wrong before** (user, on the workspace and on `p`/`ε`: "every vertex on overlapping sheets is
+      marked", "that screenshot is of p, which has only one sheet"). The rule was "three or more edges carry a
+      height into `z`" (`carried`), which counts *neighbouring positions*, not distinct sheets: a point of a
+      wire has four neighbours, each carrying its one height in, so every point of every wire at the height of
+      some vertex was a "meeting". And `p` has one height of the third coordinate at every position (the cell
+      `𝒞`, with a line `T` and a vertex `p` in it): the identity of sheets is by *cell* (the max generator of the
+      height's slice: 𝒞 in the regions, `T` on the line, `p` at the vertex), so those were three `SheetId`s and
+      the vertex "merged" three of them although no edge joins two heights. A cone that joins heights is what a
+      meeting is made of. The second condition is for what that leaves: where the sheets beside a wire end on it
+      (two heights in the region, one on the wire) the cone joins them at every point of the wire, including the
+      ones at the heights where something else happens; the wire's sheet is the same cell at the next point, so it
+      is not at this one alone, and nothing happens here. Tested on the tangent categories project
+      (`homotopy-model/tests/sheet_meetings.rs`, with `HOMOTOPY_TANGENT_FIXTURE`; skipped without): `p` and `ε`
+      have none and no echoes; the workspace has one (at its one dot, `[S0,S0]`); the target of the definition of
+      `T(Tp)₍₂₎ → (T²p)₍₂₎` (a diagram of the shape of the user's, 3 dots and 2 more) has exactly one at each of
+      its five dots and none on the left wire's points. Core: `meetings_are_of_distinct_sheets_at_the_points_of_the_picture`.
+    - **Ends are not marked.** An earlier version marked where a sheet *begins or ends* (one height carried in: a
+      single arc), which on `ε` and every line that stops at a vertex of a single sheet said nothing true. What
+      can be seen of an end from the heights alone is one neighbour that carries a height in, which is also what a
+      line that stops looks like inside one sheet; `matchsticks`, `stacks` and `monoid_unit` no longer have marks.
+    - **The stack of pages** (`marks::fan`, `Fan { rims, undersides }`; user: "slightly-non-concentric ellipsoids
+      with the centres tracking upward from the vertex and mostly degenerate below, so that the thickness of the
+      stack is only visible on top"). One flat ellipse for each distinct sheet that meets (`sheets_meeting_at`, at
+      most `MAX_PAGES` = 4), each taller and wider than the one before and all tangent at the bottom, so that
+      their centres rise from the vertex, their lower edges are one curve and their tops part: like plates seen
+      from a little above. The upper half of each is drawn as the *rim* (the strong stroke), the lower half faintly
+      (`sheet-mark--under`, 0.3 opacity). The first is `2.1` and `1.2` vertex radii in half width and half
+      height, each next `0.42` radii more (`PAGE_WIDTH`, `PAGE_HEIGHT`, `PAGE_RISE`). Variants mocked first on a
+      blue ground with a wire and a dot (`marks-v3/fan-variants.png`): A full nested ellipses tangent at the
+      bottom, B equal ellipses shifted up (a coil), C upper arcs only (ripples), D = A with faint undersides, E, F
+      smaller; D read best (C and D are the only ones whose bottoms do not clutter the vertex; D keeps the sense of
+      a disc). A still picture. No backing (it should read as part of the layer's material, not a stick pasted on
+      top): a translucent dark stroke with `mix-blend-mode: multiply`, a darker shade of the colour under it, like
+      creases in the surface; `pointer-events: none`. It is drawn **over the surfaces and under the wires and
+      vertices** (`view_sheet_marks` is called after the surfaces and the highlight under them), so that wires
+      pass over it, and the vertex dot over its middle; in a `g.sheet-marks`
+      (`data-fans`/`data-echoes`), made once for the prepared diagram (`OnceCell`).
+    - **Echoes** (`Depths::echoes(wire)`, at most `MAX_ECHOES` = 3), only on the wires that leave a meeting (so,
+      now, only those of the dots that are meetings): a wire (a segment between a meeting and the
+      position beside it) gets one echo for each *step* it is behind the front-most of the wires at that point.
+      A wire's layer is the height `z` that the hover marks as drawn at the position beside the point
+      (`node_depth`), and a step is a different `z` among the wires there, so the wires of the first layer have
+      none and the echoes say which wires go into which layer. (Tried first: the edge depth at the vertex, which is
+      0 for every wire at `start`'s vertex and so said nothing.) Wires with no drawn sheet have none. On the
+      associator one wire has one; at `start`'s vertex the three from the top, which are on the second layer. Each
+      echo is the wire's own path (the layout's curve) again, translated by a few pixels to the up and right side
+      of the wire (`echo_side`), in the wire's colour, stroked with a gradient (`reach_from`: 36px from the
+      vertex) that fades out, over a paler wider one for contrast. The gradient element is made with `VTag`
+      because `html!` lowercases `linearGradient`. **They are under the wires too** (user: the echo "is
+      visible over the top wire" where a wire braids in front): the layer is under every wire and vertex, so a
+      wire that crosses an echo hides it, whichever of the two is in front (wires hide each other by masks, not by
+      the order they are drawn in, so no echo can be put "just under its wire").
+    The tooltip says "sheets merge or split here" at a meeting. Gaps: where several wires leave in nearly one
+    direction (the three at `start`) their echoes overlap; an echo of a front wire is also hidden by a wire behind
+    it that crosses it (rare: within 36px of the vertex); the 3D view has none; a meeting where an `N`-fold
+    merging cone is at a position that is also a vertex of the same cell elsewhere (a cell that appears at two
+    points of the picture and is joined by an edge) is not marked, which is the price of "this sheet is here
+    alone".
+  - **Highlighting a sheet** (`diagram_svg/sheet_highlight.rs`; `Depths::sheet_places`, `sheet_ids_at`). The
+    current sheet of the stack under the pointer (the one chosen with Shift+wheel, `[`/`]`, Tab, or the
+    default; the outer sheet when one is fixed) is highlighted over the whole diagram, wherever it is: the
+    regions it is at are tinted (cyan), the wires drawn for it get a halo under the wires (so it shows as an
+    outline), the drawn vertices it passes through a disc, and where it is behind another at a wire a dashed
+    line runs along the wire. Always on (it follows the hover; no setting) and only where the tooltip lists a
+    stack (several sheets, or one chosen). The tooltip is not interactive, so the "hover a row" behaviour is
+    that the highlight follows the current entry. Done like `apply_dimming`: four paths in two groups
+    (`g.sheet-highlight`, under the wires and over everything) are rendered empty and their `d` is set by
+    `apply_highlight` (in `refresh`, `leave` and `rendered`); the diagram is not rendered again. The shapes of a
+    sheet (`Extent`) are made from `PreparedDiagram::sheet_index` (which action shapes are at which sheet and
+    height, built once from `Depths::sheet_ids_at` at the first hover) and kept per sheet. Shapes belong to the
+    sheet by the position `simplex[0]`, as the hover does. Cost: one pass over the diagram's shapes at the first
+    hover, then a few attribute writes. Gaps: wires are matched by their first position only; the colour is one
+    cyan (it can be close to a generator's); the 3D view has none.
+  - **Cost of the sheet marks on `start`** (release, native): `Depths::new` 60µs, the sheet data 70µs, the echoes
+    of all 96 wires 120µs, listing the wires 190µs; shading reads one fibre size per triangle. Highlighting is
+    attribute writes after the first hover of a sheet (one pass over the shapes).
   - **Thickness shading** (`thickness_step(s)` in `projection/sheets.rs`, `GraphicElement::build_shaded`,
     `DiagramSvg`, setting *Shade surfaces by the sheets behind them*, `sheet_shading`, on by default; workspace
     diagram only). A surface's thickness is the number of sheets through it: `Depths::thickness`, the number
-    of singular heights of the fibre, the fewest of the three corners of the surface (the corners on wires have
-    the wire's sheets too). It is normalised to the thinnest *surface drawn* (0, as it always was), scaled into
+    of singular heights of the fibre, **at the region the triangle belongs to** (`Depths::surface_position`, its
+    first corner: the same position that hovering over it lists the sheets of, so a surface shaded for `k` is one
+    that the hover says has `k` sheets; `Shading` in `projection/sheets.rs` is the range and the step). It was
+    the fewest of the three corners, which was wrong: two of them are on the wire and the vertex beside the
+    region, and where a sheet ends on a wire the wire has fewer sheets than the region, so a two-sheet region
+    was shaded as one (20 of the 74 triangles of `start` of the tangent categories project, 16 of 44 of the
+    associator; tested against `Stack` in `homotopy-model/tests/shading.rs`, with the fixture when
+    `HOMOTOPY_TANGENT_FIXTURE` is set, and against `Depths::sheets` on the 3D examples in
+    `homotopy-core/tests/sheets.rs`). The shade follows the grid of regions (one position each) and not the
+    coloured areas of a generator, which can hold positions of different thickness; that is what the hover says.
+    It is normalised to the thinnest *surface drawn* (0, as it always was), scaled into
     `SHADING_STEPS` = 4 steps (0 to 3: differences from the minimum when the range fits, else scaled and
     rounded so that anything thicker than the thinnest is at least 1 and the thickest is 3; tested). Surfaces
     of the same generator and step are merged as before, so the elements are those of `build` split by
@@ -642,24 +795,156 @@ indicator: see "Laying out diagrams" below.
     different sheets (two separate wires of one generator), and one that is cut by a different cell on it is two
     (a line with a bead on it is `S1`, the bead, `S2`); "front" is a count (hidden at more positions than drawn),
     so two strands that cross over each other in turn are one front and one behind, or neither, by their
-    majority; `Stack`'s default sheet is still the one drawn (`front`), not the foremost one; the outlines mark
+    majority; `Stack`'s default sheet is still the one drawn (`front`), not the foremost one; the fans and echoes mark
     points only, and shading counts heights (a sheet that comes back to the position counts twice).
 
 New expensive work: write it as a job (or give an existing job another kind of step), label it,
 and check it with the debug hooks below.
 
-- **Attach options drawer: instances in groups** (`app/attach.rs`). The inferred instances of schemas
-  (`AttachOption::substitution` is `Some`) are not listed one by one: plain options stay ungrouped at the
-  top in their order, then one collapsible group per schema (in the order of its first instance), labelled
-  with the schema's name (KaTeX, one formula) and "N instances". Typesetting the formulas of a screenful of
-  instances was a couple of seconds of lag (user report), so **a closed group renders nothing under its
-  header** (`InstanceGroup` renders its options only when open: no KaTeX for hidden ones). Closed by
-  default; a group that was opened stays open for the rest of the session (`OPENED`, a thread-local set of
-  schemas, so that the next click that has instances of the same schema does not shut it). Hover
-  highlighting and clicking work as for any option (`view_option`). The keys 1 to 9 still index the flat
+- **The list fills in as the search goes** (`AttachOptionsJob::take_found`, `Slot`, `Found`, `Streamed`;
+  `State::found/stopped/restart_stream`, `Listing`; `Action::PickStreamed/StopSearch`; `Remote::options`,
+  `Executor::run_streaming`; `components/search_status.rs`; user-facing text in `doc/attaching.md`). A search can
+  take many seconds and the option wanted is often found early, so the drawer opens at the **first option found**
+  and the rest are put into it as they come, instead of when the whole search is over.
+  - **Every route streams.** The ways to start a search for attachments are `SelectPoint`, `SelectCell` (its
+    `DefinitionsJob`, and when no definition attaches the `Task::AttachOptions` that `State::finish` starts, which
+    `start_attach_search` puts a stream on like any other), `SearchEverything` (`Task::AttachRest`, with the
+    definitions kept above) and `AttachGenerator` (a drop, an armed click: `only`), each in the page (`App::work`
+    takes what a slice found) and in the worker (`Executor::run_streaming`, the options sent ahead before each
+    step); `Task::AttachOptions` and `AttachRest` are the same job with the same `take_found`. What was *not*
+    streamed (PR #15 user report: "the incremental drawer only sometimes streams … I think it doesn't work
+    properly on instances"): **inferred instances were options only when the inference of their schema was over**
+    (`InferSearch::finish` was called at the end, and a schema can take the time for a generator or, for a drop
+    now, no end at all), so a click whose options were instances showed nothing until each schema was done, in
+    bursts, and a drop of a schema showed nothing until it gave up. Now `InferSearch::check` keeps the instances
+    and `AttachOptionsJob::infer` takes them after *every step* (`collect_instances`, `take_results`). Tests:
+    `inference::tests::instances_are_listed_as_they_are_found_in_the_places_they_will_have` (more than one
+    arrival for one schema, in the order of `Signature::infer_instances`), `tests/streaming.rs`
+    (`instances_are_streamed_as_they_are_found_for_a_click_and_for_one_generator`,
+    `instances_sent_ahead_by_a_worker_are_the_instances_of_the_answer`), and in `homotopy-web/tests/tasks.rs`
+    `a_click_lists_what_it_finds_as_it_goes_and_instances_as_they_are_found` (click and `SelectCell`, page and
+    worker), `dropping_a_schema_lists_its_instances_as_they_are_found` (page and worker),
+    `a_click_on_a_cell_with_no_definition_that_attaches_goes_on_to_a_search_that_lists_as_it_goes` (the
+    fall-through), with `the_rest_of_what_attaches_is_listed_below_the_definitions_as_it_is_found` for
+    `SearchEverything`.
+  - **Deltas.** `take_found` hands out `matches[reported..]` (the job only appends to `matches`; `outcome` and
+    `checkpoint` sort a copy, so taking is valid until the very end). In the page `App::work` takes them after
+    each slice (`Task::take_found`); in the worker `run_checkpointed`'s `on_progress` hook takes them before each
+    step (before the step's delay, so they are not held up by it) and the executor sends **only the new options**
+    as `{kind: "options", job, bytes}` (`Delta { store, found }`: its own store, each option with its `Slot`),
+    which the page decodes as they arrive (`Remote::options`, which also keeps them). The final answer then
+    carries the report and `streamed: Some(n)`, **not the options again**; `Remote::response` puts what it kept
+    in their slots and refuses the answer (`Err`, so the job is done in the page) if it does not have exactly
+    `n`. If the executor did not stream (`run`, `run_with_checkpoints`) or `n` is not all of them, the answer is
+    whole as before (`streamed: None`), so the wire stays readable both ways. A garbled delta is a failure of
+    the worker like a garbled answer: the job is done in the page, and `State::restart_stream` forgets what the
+    worker had sent (the page's job lists them again).
+  - **Order and numbering.** The final list is the options sorted (stably) by `Slot { generator, pass, key }`: the
+    index of the generator in the signature, the part of the search (`Pass::rank`) and, **for an inferred
+    instance only, the numbers of the candidates chosen for the placeholders** (`key`, empty for everything else;
+    `InferSearch` sorted its results by it at the end, which is why instances could not be handed out as found
+    with only `(generator, pass)`: an instance found later can come before one found earlier, among the
+    instances of its schema), i.e. exactly the old `(index, rank)` sort and, for instances, the order of
+    `Signature::infer_instances`. `AttachOptionsJob::matches` is a `Vec<Found>` sorted by slot. `Streamed` keeps a `BTreeMap<Slot, Vec<_>>` and lists it flat, so the list shown is
+    *always* in the final order: an option is put in its slot, the list grows in the middle as well as at the
+    end, and what was shown only gets further apart (test: each list is a subsequence of the next). A slot is
+    filled in order by one source, so a search split over several workers (a later change, one per generator
+    group) can send deltas for disjoint generators in any interleaving, and the page's `Streamed` is the same.
+    Chosen: **no numbers while searching**. The drawer shows none anyway, and the keys 1-9 (`Select(i)`, indices
+    of the final flat list) are refused while the job runs (they are not `allowed_while_busy`), so an index never
+    changes meaning under the user's finger; when the search is over (or stopped) they index the list on show as
+    before. Rendering: option rows have keys (`option_keys`: the generator, label, embedding, and a count for
+    duplicates) so that an insertion in the middle does not typeset the shifted rows again; instance groups
+    stay closed and render nothing under the header.
+  - **State.** `State::stream` (private: `above` the definitions of an `AttachRest`, `found: Streamed`, `shown`)
+    is made when the search is started (`begin_stream`) and `State::found` shows it (`options`, `definitions`,
+    `listing = Searching`; the first replaces the list that was there and clears highlights). `Listing` is
+    `Complete | Searching | Stopped`; `finish` sets `Complete` and the final list (so streamed and final are the
+    same), `clear_selections` drops the stream and the listing. The app renders because `found` returns `true`.
+  - **Drawer.** While `Searching`: a sticky line at the top (`SearchStatus`: "Still searching…", the busy job's
+    label and `k of n` as the busy pill has them, from `busy::watch`, a second listener of the pill's events, so
+    progress does not re-render the app) with a **Stop** button; while `Stopped`: a note. Clicking an option
+    dispatches `PickStreamed(option)` while searching and `Proof(Attach(option))` otherwise.
+  - **Picking while searching** (`App::dispatch`): `PickStreamed(option)` ends the job (`end_job(true)`: take it,
+    `stop` + `ensure` the worker, no toast; nothing was committed, so the project is as it was) and goes on
+    to `State::start`, which clears the stream and starts `Proof(Attach(option))`. The option travels by value,
+    not as an index, since the list grows between the render and the click; it is complete (`AttachOption`
+    holds its diagrams), so nothing of the job is needed. **PR #15 user report: "I'm also not entirely sure that
+    selecting an attachment while the search is running properly interrupts the search — it lagged, at the very
+    least, and possibly just completed."** Measured in the browser (debug build, the tangent categories project,
+    worker and page, a step delay to make the search slow) the job *was* ended at once (a
+    pending `Message::Slice` finds no job; the worker is terminated, and the attach of the option is what
+    follows), so what the user saw was: (1) **the pill vanished and, 150ms later at best, came back**, because
+    `end_job` hid it and attaching an instance (*Instantiating*) put it up again, which fades in (so for a plain
+    option there was no sign of anything between the click and the drawer closing, and for an instance the pill
+    was gone while the attach ran on the page, the new worker not being ready); now `end_job(true)` leaves the
+    pill up and `dispatch` takes it down if the pick goes on to nothing that runs (`Done`, an error) and
+    otherwise the job's `show` puts its label on it at once: no gap; (2) **every arrival of options drew the whole
+    list again** (formulas typeset for the new rows: 250 to 900ms of the debug build, 1.2 to 1.7s for the first,
+    in the page's longest gaps), so a click was handled after however many arrivals were queued before it:
+    `App::draw_options` now draws at most every `OPTIONS_DRAW_INTERVAL` (200ms; the first arrival at once, what
+    comes between with one `Message::DrawOptions` after the interval; the state has all of it at once, only the
+    drawing waits). A click in the page still waits for the step the page is in (a step cannot be interrupted),
+    which is the case for a search on the page for lack of a ready worker; the page's longest steps are one
+    generator's plain pass. Measured (debug build, tangent categories project, click at `[S1,S1]`, a pick of
+    an instance 16s into the search, worker): click to pill and drawer gone 585ms (`Instantiating` 185ms on the
+    page, the new worker not being ready), a plain option 410ms; page, steps of 150ms: 465ms; the job is ended
+    ("Ended ... for what the person picked") before the attach starts. Test: `picking_an_option_while_the_search_goes_on_ends_it_and_attaches_exactly_that_option`.
+  - **Esc / pill / Stop keep the options** (`App::cancel` -> `State::stopped`): the job is dropped as ever (the
+    worker ended) and `listing = Stopped`, the options stay, a notice says the search was stopped and the list
+    may be incomplete (there is no report: the worker is gone), a toast says how many. If nothing had been
+    found, the list is as before and the toast says "Cancelled". This is within the policy (the project is
+    exactly as it was: listing options changes nothing). A worker that crashes mid-search keeps them too. The
+    close button of the drawer (`ClearSelections`) while searching ends the job and puts the list away.
+  - **One option.** `finish` attaches a lone option only when the search *ends* with it (`outcome.options.len()
+    == 1`), never on the first arrival; and not when the outcome is `forced` (the stuck-worker path: it may have
+    missed others), where the list is shown. Test: `one_option_is_attached_at_once_only_when_the_search_ends_with_it`.
+  - **The stuck-worker path** is unchanged in kind: `end_stuck_worker` decodes the latest partial (now the report plus
+    `streamed: n`, merged with the options the page has received; a mismatch falls back to doing the job in the
+    page and `restart_stream`). Test: `options_sent_ahead_by_a_worker_are_the_options_of_the_answer` decodes
+    every checkpoint against the deltas before it.
+  - **Tests.** `homotopy-model/tests/streaming.rs` (job-level deltas equal the outcome, same order, on the example
+    corpus at points with and without weak units, taking every step and every third; late-found before early;
+    cut-short search; worker deltas, checkpoints and answer on a thread of its own; a missing delta refuses the
+    answer; no stream = whole answer; the tangent categories fixture with `HOMOTOPY_TANGENT_FIXTURE`, at `[]`
+    with 150 ms for a generator: 131 options in 9 arrivals, debug build 7 s), and in `homotopy-web/tests/tasks.rs`
+    the listing, picking, stopping, one-option and definitions-plus-rest tests. Debug hooks: `{"PickStreamed":
+    i}` (the i-th of the list on show) and `"StopSearch"` in `__homotopy.dispatch`, `state().listing`.
+  - Gaps: the progress is the count of steps (generators, reflections, schemas), not "generator k of n"
+    exactly; options of a stopped worker search that were found but not yet sent are lost (they are sent before
+    each step, so only the step that was running); the page draws the whole drawer list on an arrival (rows
+    are keyed, groups closed; at most five times a second); several sources are supported by `Streamed` but
+    there is one worker; the options of one generator's plain pass or of its reflections (a step each in a
+    search of everything) are listed when that step is over, not as each cell is matched (a search for one
+    generator is in pieces, so there they are); with more instances arriving (a schema is now streamed) the
+    stuck-worker path finds more often that the partial it holds says fewer options were sent ahead than the
+    page has (`Remote::response` refuses a count that is not its own, so the job is then done in the page): a
+    partial could be taken with `>=`. Drawing the app takes 250 to 450ms of the debug build on the tangent categories
+    project whatever is new in it (the formulas of the rows: the first drawing of the list 1.2 to 1.7s, one
+    with several new schema folders 1 to 4s), which is the floor for a click's latency during a search.
+
+- **Attach options drawer: instances and reflections in groups** (`app/attach.rs`). The inferred instances of schemas
+  (`AttachOption::substitution` is `Some`) and the **reflections** of generators (`AttachOption::reflection`, set
+  by `reflection_options`: the options of `Pass::Reflections`, which are the duals, mates, rotations and symmetry
+  images, not the inverse, which is a plain variant; it is on the wire and `serde(default)`, so recorded actions
+  read as before) are not listed one by one: plain options stay ungrouped at the top in their order, then one
+  collapsible group per (kind, generator) (`Kind::{Instances, Reflections}`, `group_options`, in the order of its
+  first option), labelled with the generator's name (KaTeX, one formula) and "N instances" / "N reflections".
+  Typesetting the formulas of a screenful of instances was a couple of seconds of lag (user report), so **a
+  closed group renders nothing under its header** (`OptionGroup` renders its options only when open: no KaTeX
+  for hidden ones). Closed by default; a group that was opened stays open for the rest of the session (`OPENED`,
+  a thread-local set of `(Kind, Generator)`, so that the next click that has options of the same group does not
+  shut it). **The folder shows the generator's colour** (`swatch`, user: "to aid in navigation"): the same
+  sliver as the signature row (`info.color`, `signature__generator-color-sliver-light` for a light colour, the
+  hatching of `signature__generator-placeholder[-light]` for a placeholder by `Color::stripes`); it had been in
+  the group header since the instances were grouped but invisible: `.attach__group { align-items: center }`
+  gave the empty swatch span no height, and `.attach__group .attach__swatch { align-self: stretch }` fixes it.
+  Hover highlighting and clicking work as for any option (`view_option`). The keys 1 to 9 still index the flat
   list in the order the search made it (`Action::Select(i)`), which is not the order shown. The signature
   sidebar already keeps the instances of a schema as its children, closed by default and rendered only when
-  open (`GeneratorInfo::instances_open`, the "▸ N" toggle). `group_instances` is pure and tested.
+  open (`GeneratorInfo::instances_open`, the "▸ N" toggle). `group_options` is pure and tested; the
+  reflection marker through the worker in `tests/streaming.rs`
+  (`reflections_are_marked_and_the_mark_goes_through_a_worker`).
 - **The notice about the search** (`components/inference_notice.rs`, lines are `NoticeLine::Text` or
   `NoticeLine::Names { text, names }`): the lists of generators ("Gave up on 19 schemas after 5 s each ▸",
   "Not tried: 14 generators ▸") show only a header with the count; opened, the names are rendered with
@@ -675,6 +960,53 @@ and check it with the debug hooks below.
   stripes' colours and opaque white on a light-stripe one (`light_stripes` uniform, `frag.glsl`). Tests:
   `style::tests`; browser: a black placeholder region in 2D shows white stripes, blue, white and orange keep
   dark ones; the 3D view with black placeholders renders (software GL).
+
+- **Deleting generators** (`Signature::removal_nodes`, `removal_cascade`, `removal_preview` in
+  `proof/signature.rs`; user-facing text in `doc/placeholders.md`). `SignatureEdit::Remove` removes
+  `removal_nodes(node)`: the node and its descendants (a folder's contents, a generator's instances) and,
+  transitively, every generator that mentions one of them (diagram, or an instance's substitution) or
+  lists a removed **placeholder** in `depends_on` ("there always exists"). Listing an *instance* does
+  not cascade (the settings only offer placeholders, `parameters` ignores other entries, and a
+  placeholder flag on an instance does not count); that rule is tied to the meaning of explicit
+  dependencies and would differ for templates, whose instances would cascade. `depends_on` entries that
+  name removed generators are dropped (ids are reused: `next_generator_id` is the max plus one). The
+  workspace, boundary and stash are cleared by what the *whole* cascade mentions (`removal_generators`),
+  not only the node (a generator that depends on a placeholder it does not mention is in the workspace
+  without mentioning it). The preview shares the code, so it cannot disagree; the one pass over the
+  diagrams of the signature remembers each diagram's generators in a thread-local (`mentioned_by`, keyed by
+  the hash-consed diagram, so renames do not invalidate it) and `removal_preview(node, budget)` looks at
+  at most `budget` new diagrams per call (`None`: ask again), so hovering stays cheap (fixture, 125
+  generators: 8ms per cold preview in the release build, 44ms in the debug build, then microseconds).
+  Tests: `homotopy-model/tests/removal.rs` (the cascade, transitivity, no cascade from an instance, undo,
+  workspace, preview = deletion on the examples and, with `HOMOTOPY_TANGENT_FIXTURE=<.hom>`, the fixture).
+  **Preview in the signature** (`app/signature/removal_preview.rs`): while the pointer is on the delete button
+  of a row being edited, or the button has the focus (it is a focusable `role=button` with `aria-describedby`
+  the note), `show` computes `removal_preview(node, 16)`, a few diagrams per step and yielding between
+  (`TimeoutFuture(0)`), saying "Checking..." until it is done, then writes to the DOM directly like the
+  tooltip: rows have `data-node`; those that go get `data-removal` (tint and strike-through in
+  `styles.css`), the nearest row on show that holds some out of sight (a closed folder, a schema with its
+  instances closed) gets `data-removal-inside="N"` (a "-N inside" badge), and `.signature__removal-note`
+  under the row says "Deletes N more (M out of sight)" (for a folder: "N generators inside and M more
+  outside it"), with the names in its `title`. `hide` clears it all (mouse leave, blur, click, and the
+  row's `destroy`: a row that goes never sees the pointer leave). `plan` is the pure part (tested natively).
+  There is no confirm step, so nothing else lists the names. Nothing re-renders the signature.
+
+- **Settings drawer** (`app/settings.rs`, `components/help_tip.rs`). The drawer shows titles, controls and a
+  line of *status* only (`settings__note`: when the last backup was, why backups do not work, inference
+  turned off for the session); every explanation is in a `HelpTip` after the title: a "?" button (Tab
+  reaches it, `aria-describedby` the popover, `role="tooltip"`) whose popover over the row shows on hover,
+  focus and tap and is closed by Esc (`data-open`/`data-dismissed` on the wrapper, written directly). The
+  texts are constants (`*_HELP`) of one or two short sentences; **new settings with an explanation add one
+  there and keep it short**; keep the facts that matter (Esc ends a search; the limit is per generator and
+  covers matching, reflections and inference; a search for one dragged generator has no limit; the
+  browser's back button also undoes while *Mouse back and forward buttons undo and redo* is on).
+  *Give up on a generator after* is a number box in seconds (`view_number`, `parse_count`: 0 = no limit, negative
+  is 0, fractions round down, at most `MAX_GENERATOR_SECONDS` = 3600, not a number goes back to the setting;
+  committed on input and put right on change; kept as `generator_seconds` as before). Every slider shows its
+  number and updates it on `input`, by writing into its text node (`show_value`; never `set_text_content` on
+  the `output`, which would replace the node Yew updates); settings that cost nothing to change (`live`:
+  the inference dimension, the contraction step) also take effect on `input`, the 3D ones on `change` only
+  (each change rebuilds geometry or the renderer). Ids are `help-<slug>` and `setting-<slug>`.
 
 ## Policy: heuristics
 
@@ -694,9 +1026,23 @@ valid (`narrowing_to_a_sheet_only_finds_valid_instances`, for the sheet heuristi
 - Format with `cargo +nightly fmt` (rustfmt.toml uses nightly options); clippy runs under the
   pinned toolchain with `-D warnings`. Cargo-husky pre-commit/pre-push hooks run test, check,
   clippy and fmt.
+- **Hashing** (`homotopy_common::hash`): every map and set is `FastHashMap`/`FastHashSet` (`clippy.toml`
+  disallows the std ones), with `Hasher64`, the Fx hash of `rustc-hash` 1.1 with a 64-bit state on every
+  target. `rustc_hash::FxHasher` kept a `usize`, 32 bits on wasm32: its `finish` had the top 32 bits zero,
+  so hashbrown's 7-bit tag was always 0 (every probe a tag match), and the iteration order differed from
+  native, so the searches took other paths and listed options in another order. Measured (Node/V8,
+  release, the tangent categories fixture): the four slowest schema inferences went from 2.6-4.8x native to
+  1.2x, all 32 from 254 s to 163 s (native 132 s), with the step counts and the options (and their order)
+  now the same as native; native hashes are bit-identical to before.
 - Shallow clones lack a merge base: `git fetch --unshallow` first.
 - Debug web build: `.claude/dev/build-dist.sh`, then `python3 -m http.server 8765` in `dist/`.
-  It uses `.claude/dev/highs-shim.js` because the nix HiGHS build is blocked in the sandbox.
+  It uses `.claude/dev/highs-shim.js` because the nix HiGHS build is blocked in the sandbox. It honours
+  `CARGO_TARGET_DIR` (the wasm build is in `$CARGO_TARGET_DIR/wasm`) and `DIST=<dir>` (default `dist`).
+- Several git worktrees sharing one `CARGO_TARGET_DIR` overwrite each other's artifacts: cargo names the
+  artifacts of workspace members by their path *relative* to the workspace, so another worktree's build, newer
+  than your sources, is taken as fresh and you get errors about items that are in your tree but not in its
+  compiled crate (`no field reflection on AttachOption`). Give each worktree its own artifacts by changing the
+  profile hash, e.g. `CARGO_PROFILE_DEV_DEBUG=limited` in the environment of every cargo command.
 - Commit messages containing backticks: write them to a file and use `git commit -F`.
 - The worker needs no build step of its own (see above), but it is only used once ready: in a
   headless browser wait ~3s after load (or for the log line "The worker is ready") before
@@ -715,11 +1061,6 @@ valid (`narrowing_to_a_sheet_only_finds_valid_instances`, for the sheet heuristi
   worker, cached, cancelled, pending) are for testing. `__homotopy.profileLayouts()` times the
   layout and geometry of every diagram of the project and its slices next to their weight, for
   choosing the thresholds.
-- **Temporary input logger** (`app/input_log.rs`, for diagnosing the mouse back/forward buttons and the
-  history-trap redesign; remove when done): with `localStorage["homotopy-log-input"] = "1"` (read once at
-  startup) the console logs `[homotopy input] ...` lines for mouse buttons above 2 (all of `auxclick`),
-  `Browser*` keys and Alt+Left/Right, `popstate` (history length and state), `beforeunload` and `pagehide`.
-  It works in the release build and only logs.
 - `.claude/dev/highs-shim.js` and `flake.nix`'s `post.js` assign `self.Highs_*` rather than
   `window.Highs_*`, so that HiGHS is there in a worker too. The shim was tested here; the `flake.nix`
   edit (a textual replacement of `window.` by `self.` in `post.js`, which goes through the Closure
@@ -746,6 +1087,39 @@ valid (`narrowing_to_a_sheet_only_finds_valid_instances`, for the sheet heuristi
   limits the delay to steps whose label contains it (`"Inferring"`), and `window.__homotopy_infer_grace_ms`
   sets how long past the time for a step the page lets the worker be silent before it ends it (see "The limit is
   hard").
+
+## The history trap (mouse back/forward, Alt+Left/Right)
+
+`app/history_trap.rs` (glue) and `app/history_trap/machine.rs` (the pure state machine, unit-tested
+natively), active only while *Mouse back and forward buttons undo and redo* is on. Some mice (a
+Logitech under Firefox, found with the now removed input logger) send back/forward to the browser as
+navigation commands with no DOM mouse event, no `Browser*` key and no `popstate`, and the page, having
+no entries of its own, was simply left. So the page keeps `[back, centre, forward]` in the history
+(same URL, `state` `{homotopy: "back"|"centre"|"forward"}`) and sits on the centre; a navigation is
+then a `popstate` that is turned into undo (landed on `back`) or redo (`forward`), through the normal
+dispatch (refused with the pill shaking while a job runs), and the page goes home with `history.go(+-1)`.
+- **Installing** at the first trusted `pointerdown` or `keydown` (not Escape or a lone modifier): browsers
+  skip entries made without user activation. `replaceState(back)`, `pushState(centre)`,
+  `pushState(forward)`, `go(-1)`. A page reloaded on a `centre` adopts the entries it finds.
+- **Forward survives** because nothing pushes after installing: not in `popstate` (restoring is `go`), not
+  for the app's own address changes (`model::update_window_url_path` -> `history_trap::url_changed`:
+  `replaceState` that keeps the state and puts the marker on the centre; the sentinels get the new URL
+  as they are landed on) and not for links to a fragment (the modals use `href="#about"`/`"#"`, and `help()`
+  sets `#help`, which push an entry): a capturing click handler and `history_trap::fragment` use
+  `location.replace` and put the state back. Any new code that pushes history entries must not (use
+  `fragment`/`url_changed`), or the machine finds an unmarked entry and installs again from there.
+- **Dedupe**: key/button navigation and the DOM path of `mouse_buttons.rs` both go through the machine
+  (`history_trap::mouse`); a press seen by the *other* source in the same direction within 300 ms is
+  dropped, two quick presses of one source are two undos. Alt+Left/Right and `BrowserBack/Forward` have no
+  keydown handler on purpose: the `popstate` that follows is the only thing that acts (also in text fields:
+  the history is global; the browser decides whether the key navigates).
+- **Off**: from the centre `go(-1)` once onto the first sentinel and clear its marker, so one more back
+  leaves the page; on again installs at once (a gesture has been seen). Setting changes in the middle of a
+  move are applied when it lands. Every move has a 1 s timeout that looks where the page is and starts
+  again if it is not home (`Wait`/`TimedOut`, with an epoch so that stale ones do nothing).
+- **Inherent**: the toolbar's back/forward buttons undo/redo as well while it is on, and the first back from
+  the first entry never leaves the page; the setting's note says so. `beforeunload` still guards unsaved work.
+- Not tested: Firefox (not available in the sandbox); Chromium with Playwright is.
 
 ## Firebase may not be there, and crashes must not lose work
 
