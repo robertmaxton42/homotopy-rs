@@ -114,3 +114,353 @@ fn sheets_are_the_singular_heights_of_the_fibre() {
     assert!(checked > 0, "some positions have sheets");
     assert!(several > 0, "some positions have several sheets");
 }
+
+// ---------------------------------------------------------------------------------------------
+// The identity of sheets, and where they end.
+
+use homotopy_core::{
+    projection::{thickness_steps, SheetBoundaryKind},
+    scaffold::{Explodable, Scaffold, ScaffoldNode},
+    Rewrite,
+};
+use petgraph::visit::EdgeRef;
+
+/// The 3D examples (and the 4D ones, which have more to follow), seen in 2D.
+fn examples_in_2d() -> Vec<(&'static str, DiagramN)> {
+    vec![
+        ("associator", examples::associator().1),
+        ("crossing", examples::crossing().1),
+        ("touching", examples::touching().1),
+        ("half_braid", examples::half_braid().1),
+        ("algebraic_snake", examples::algebraic_snake().1),
+        ("lips", examples::lips().1),
+        ("pants_unit", examples::pants_unit().1),
+    ]
+}
+
+/// The scaffold with every edge, as `Depths` makes it but without leaving out the regular slices
+/// of the later coordinates: each edge says whether `Depths` keeps it.
+fn full_scaffold<const N: usize>(diagram: &Diagram) -> Scaffold<[SliceIndex; N], bool> {
+    let mut graph = Scaffold::default();
+    graph.add_node(ScaffoldNode::new(
+        [Boundary::Source.into(); N],
+        diagram.clone(),
+    ));
+    for i in 0..N {
+        graph = graph
+            .explode_graph(
+                |_, key, si| {
+                    let mut key = *key;
+                    key[i] = si;
+                    Some(key)
+                },
+                |_, _, _| Some(true),
+                |_, kept, r| Some(*kept && r.is_atomic()),
+            )
+            .unwrap();
+    }
+    graph
+}
+
+/// The heights of the source of a rewrite and the heights of the target they go to.
+fn images(size: usize, rewrite: &Rewrite) -> Vec<(usize, usize)> {
+    let Rewrite::RewriteN(r) = rewrite else {
+        return vec![];
+    };
+    (0..size).map(|z| (z, r.singular_image(z))).collect()
+}
+
+fn sheet_ids<const N: usize>(depths: &Depths<N>, position: [SliceIndex; N]) -> Vec<usize> {
+    depths
+        .sheets(position, &[])
+        .iter()
+        .map(|s| s.id.expect("every sheet of a position has an id").0 as usize)
+        .collect()
+}
+
+/// Along every edge of the scaffold that `Depths` keeps, a height goes to the height of the same
+/// sheet if the cell is the same there, and to another if it is not. (Along those it leaves out,
+/// the diagonals, it does too unless the way round through the edges that are kept passes a
+/// height where the cell changes, which cuts the sheet: so they are not checked here, only for
+/// their cones, below.)
+fn check_identity<const N: usize>(name: &str, diagram: &DiagramN) -> usize {
+    let diagram: Diagram = diagram.clone().into();
+    let depths = Depths::<N>::new(&diagram).unwrap();
+    let graph = full_scaffold::<N>(&diagram);
+    let mut edges_checked = 0;
+    for edge in graph.edge_references() {
+        let (from, to) = (&graph[edge.source()], &graph[edge.target()]);
+        let (Diagram::DiagramN(_), Diagram::DiagramN(target)) = (&from.diagram, &to.diagram) else {
+            continue;
+        };
+        if !edge.weight().key {
+            continue;
+        }
+        let size = match &from.diagram {
+            Diagram::DiagramN(f) => f.size(),
+            Diagram::Diagram0(_) => unreachable!(),
+        };
+        let (ids_from, ids_to) = (sheet_ids(&depths, from.key), sheet_ids(&depths, to.key));
+        assert_eq!(ids_to.len(), target.size(), "{name} {:?}", to.key);
+        let (sheets_from, sheets_to) = (depths.sheets(from.key, &[]), depths.sheets(to.key, &[]));
+        for (z, image) in images(size, &edge.weight().rewrite) {
+            edges_checked += 1;
+            let same_cell =
+                sheets_from[z].generator.generator == sheets_to[image].generator.generator;
+            // The same cell is the same sheet; a different one never is.
+            assert_eq!(
+                ids_from[z] == ids_to[image],
+                same_cell,
+                "{name}: height {z} of {:?} and height {image} of {:?}",
+                from.key,
+                to.key,
+            );
+        }
+    }
+    edges_checked
+}
+
+#[test]
+fn sheets_have_the_same_identity_along_every_edge() {
+    let mut checked = 0;
+    for (name, diagram) in examples_in_2d() {
+        checked += check_identity::<2>(name, &diagram);
+        checked += check_identity::<1>(name, &diagram);
+    }
+    for (name, diagram) in [
+        ("monoid_unit", examples::monoid_unit().1),
+        ("matchsticks", examples::matchsticks().1),
+        ("stacks", examples::stacks().1),
+        ("bubble", examples::bubble().1),
+        ("two_cups", examples::two_cups().1),
+    ] {
+        checked += check_identity::<1>(name, &diagram);
+    }
+    assert!(checked > 100, "{checked} heights checked");
+}
+
+#[test]
+fn every_sheet_has_an_id_and_the_sheets_inside_one_have_none() {
+    fn check<const N: usize>(diagram: &DiagramN) -> usize {
+        let diagram: Diagram = diagram.clone().into();
+        let depths = Depths::<N>::new(&diagram).unwrap();
+        let mut seen = vec![false; depths.sheet_count()];
+        for (coord, _) in positions(&diagram, N) {
+            let coord: [SliceIndex; N] = coord.try_into().unwrap();
+            let sheets = depths.sheets(coord, &[]);
+            assert_eq!(depths.thickness(coord), sheets.len());
+            for sheet in &sheets {
+                let id = sheet.id.expect("a sheet has an id");
+                assert!((id.0 as usize) < depths.sheet_count());
+                seen[id.0 as usize] = true;
+                assert_eq!(id.label(), format!("S{}", id.0 + 1));
+            }
+            for z in 0..sheets.len() {
+                assert!(depths
+                    .sheets(coord, &[z])
+                    .iter()
+                    .all(|s| s.id.is_none() && !s.foremost));
+            }
+        }
+        // Every id is of a sheet somewhere.
+        assert!(seen.iter().all(|&s| s));
+        depths.sheet_count()
+    }
+    for (name, diagram) in examples_in_2d() {
+        let count = check::<2>(&diagram);
+        assert!(count >= 1, "{name}");
+        check::<1>(&diagram);
+    }
+}
+
+#[test]
+fn the_number_of_sheets_is_what_the_examples_have() {
+    let count = |diagram: &DiagramN| {
+        let diagram: Diagram = diagram.clone().into();
+        Depths::<2>::new(&diagram).unwrap().sheet_count()
+    };
+    // Two strands that cross, or touch, or half cross, are two sheets, however long they are.
+    assert_eq!(count(&examples::crossing().1), 2);
+    assert_eq!(count(&examples::touching().1), 2);
+    assert_eq!(count(&examples::half_braid().1), 2);
+    // A diagram of the dimensions of the view has none.
+    let flat: Diagram = examples::two_monoid().1.into();
+    let depths = Depths::<2>::new(&flat).unwrap();
+    assert_eq!(depths.sheet_count(), 0);
+    assert!(depths.sheet_boundaries().is_empty());
+    // More sheets where more is going on than there are positions with several.
+    assert!(count(&examples::associator().1) > 2);
+}
+
+/// Two strands at different depths that overlap on only a part of their length (a crossing): the
+/// one that is in front where they overlap is in front along the whole of its length, and the
+/// other is behind along the whole of its, though it is the front-most at the positions where it
+/// is alone, which is what the depth of a position says.
+#[test]
+fn of_two_strands_that_overlap_in_part_one_is_in_front_throughout() {
+    for diagram in [examples::crossing().1, examples::half_braid().1] {
+        let diagram: Diagram = diagram.into();
+        let depths = Depths::<2>::new(&diagram).unwrap();
+        let mut foremost = std::collections::BTreeMap::new();
+        let (mut together, mut alone_but_not_foremost) = (0, 0);
+        for (coord, _) in positions(&diagram, 2) {
+            let coord: [SliceIndex; 2] = coord.try_into().unwrap();
+            let sheets = depths.sheets(coord, &[]);
+            for sheet in &sheets {
+                let id = sheet.id.unwrap();
+                // One answer for the whole sheet.
+                assert_eq!(
+                    *foremost.entry(id).or_insert(sheet.foremost),
+                    sheet.foremost
+                );
+            }
+            if sheets.len() > 1 {
+                together += 1;
+                // Where they overlap, the one that is drawn is the foremost.
+                let drawn: Vec<_> = sheets.iter().filter(|s| s.front).collect();
+                assert_eq!(drawn.len(), 1);
+                assert!(drawn[0].foremost, "{coord:?}");
+            } else if let [only] = sheets.as_slice() {
+                // Alone, it is what is drawn, whether or not it is the sheet that is in front.
+                assert!(only.front);
+                alone_but_not_foremost += usize::from(!only.foremost);
+            }
+        }
+        assert!(together > 0, "the strands overlap somewhere");
+        assert_eq!(foremost.len(), 2);
+        assert_eq!(foremost.values().filter(|&&f| f).count(), 1, "{foremost:?}");
+        // The old notion flips along the sheet that is behind; the new one does not.
+        assert!(alone_but_not_foremost > 0);
+    }
+}
+
+#[test]
+fn boundaries_are_ends_and_junctions_with_a_sheet_and_a_neighbour() {
+    fn check<const N: usize>(diagram: &DiagramN) -> (usize, usize) {
+        let diagram: Diagram = diagram.clone().into();
+        let depths = Depths::<N>::new(&diagram).unwrap();
+        let (mut ends, mut junctions) = (0, 0);
+        for b in depths.sheet_boundaries() {
+            let at = depths.sheets(b.to, &[]);
+            assert_eq!(at[b.z].id, Some(b.sheet));
+            assert!(depths.sheet_boundaries_at(b.to).contains(&b));
+            assert_ne!(b.from, b.to);
+            match b.kind {
+                SheetBoundaryKind::BeginsOrEnds => {
+                    ends += 1;
+                    assert_eq!(b.branches, 1);
+                    // It comes from a neighbour that has sheets.
+                    assert!(!sheet_ids(&depths, b.from).is_empty());
+                }
+                SheetBoundaryKind::MergesOrSplits => {
+                    junctions += 1;
+                    assert!(b.branches >= 3);
+                }
+            }
+        }
+        // Nothing is made of positions that are not there.
+        assert!(depths
+            .sheet_boundaries_at([SliceIndex::Boundary(Boundary::Source); N])
+            .iter()
+            .all(|b| b.to == [SliceIndex::Boundary(Boundary::Source); N]));
+        (ends, junctions)
+    }
+    let (mut ends, mut junctions) = (0, 0);
+    for diagram in [
+        examples::matchsticks().1,
+        examples::stacks().1,
+        examples::monoid_unit().1,
+        examples::two_monoid().1,
+        examples::bubble().1,
+    ] {
+        let (e, j) = check::<1>(&diagram);
+        ends += e;
+        junctions += j;
+    }
+    for (_, diagram) in examples_in_2d() {
+        let (e, j) = check::<2>(&diagram);
+        ends += e;
+        junctions += j;
+    }
+    assert!(ends > 0, "some sheet ends");
+    assert!(junctions > 0, "some sheets meet");
+    // Strands that only cross do not end or meet, and a wire has no ends along its sides.
+    for diagram in [
+        examples::crossing().1,
+        examples::touching().1,
+        examples::half_braid().1,
+    ] {
+        assert_eq!(check::<2>(&diagram), (0, 0));
+    }
+    // A wire that is cut off at a vertex ends there, not along its length.
+    let stacks: Diagram = examples::stacks().1.into();
+    let depths = Depths::<1>::new(&stacks).unwrap();
+    assert!(depths
+        .sheet_boundaries()
+        .iter()
+        .all(|b| matches!(b.to[0], SliceIndex::Interior(Height::Singular(_)))));
+}
+
+/// The regular slices that `Depths` leaves out of the scaffold have the cones of the edges that
+/// it keeps: where one has a height with nothing to come from, so does one that is kept.
+#[test]
+fn leaving_out_regular_slices_loses_no_unit_cone() {
+    fn check<const N: usize>(diagram: &DiagramN) -> usize {
+        let diagram: Diagram = diagram.clone().into();
+        let graph = full_scaffold::<N>(&diagram);
+        // The heights that nothing is carried to, by an edge that is kept.
+        let mut unit_kept = std::collections::HashSet::new();
+        let mut unit_dropped = vec![];
+        for edge in graph.edge_references() {
+            let Rewrite::RewriteN(r) = &edge.weight().rewrite else {
+                continue;
+            };
+            for cone in r.cone_views() {
+                if cone.source_len() == 0 {
+                    let id = (edge.target(), cone.target());
+                    if edge.weight().key {
+                        unit_kept.insert(id);
+                    } else {
+                        unit_dropped.push(id);
+                    }
+                }
+            }
+        }
+        for id in &unit_dropped {
+            assert!(
+                unit_kept.contains(id),
+                "a unit cone at height {} of {:?} is only on edges that are left out",
+                id.1,
+                graph[id.0].key
+            );
+        }
+        unit_dropped.len()
+    }
+    let mut dropped = 0;
+    for (_, diagram) in examples_in_2d() {
+        dropped += check::<2>(&diagram);
+        dropped += check::<1>(&diagram);
+    }
+    assert!(dropped > 0, "some edges that are left out have unit cones");
+}
+
+#[test]
+fn thickness_is_stepped_from_the_thinnest() {
+    assert!(thickness_steps(&[], 4).is_empty());
+    // All as thick as each other: nothing is shaded.
+    assert_eq!(thickness_steps(&[3, 3, 3], 4), vec![0, 0, 0]);
+    // Within the steps: the difference from the thinnest.
+    assert_eq!(thickness_steps(&[1, 2, 4, 1], 4), vec![0, 1, 3, 0]);
+    assert_eq!(thickness_steps(&[2, 3], 4), vec![0, 1]);
+    // Wider than the steps: scaled so that the thickest is the last, and anything thicker than
+    // the thinnest is at least the first.
+    let wide: Vec<usize> = (0..=40).collect();
+    let steps = thickness_steps(&wide, 4);
+    assert_eq!((steps[0], steps[40]), (0, 3));
+    assert!(steps[1..].iter().all(|&s| s >= 1));
+    assert!(steps.windows(2).all(|w| w[0] <= w[1]));
+    assert_eq!(thickness_steps(&[1, 100], 4), vec![0, 3]);
+    assert_eq!(thickness_steps(&[1, 2, 100], 4), vec![0, 1, 3]);
+    // One step is no shading at all.
+    assert_eq!(thickness_steps(&[1, 5, 9], 1), vec![0, 0, 0]);
+}

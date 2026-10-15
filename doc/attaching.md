@@ -39,8 +39,13 @@ sheet you mean, and the search looks at everything that reaches the position. If
 sheet you mean, say so, and the search only looks at attachments that reach that sheet.
 
 Hold the pointer over a position that has several sheets and the tooltip lists them, with the
-cell at each (`z₃=0 c`, `z₃=1 𝒞`, ...) and which one the picture shows (*front*). Nothing changes
-unless you choose one:
+cell at each (`z₃=0 c`, `z₃=1 𝒞`, ...). Each also has a short name (`S1`, `S2`, ...) that is the
+same wherever that sheet is: a path that you follow along the diagram, over a vertex, a wire or a
+region, keeps its name, so you can see that two positions are the same sheet. The one marked
+*front* is the sheet that is in front along the whole of its length: it is not hidden by another
+sheet anywhere it overlaps one. (Where it is alone the picture shows it whether it is in front or
+not; the sheet that is behind elsewhere is then marked *drawn here*.) Sheets that meet at a point
+are not the same sheet. Nothing changes unless you choose one:
 
 - **Shift + wheel**, or **`]`** and **`[`**, move down and up the list (round the ends). The
   chosen sheet is highlighted, and the wires that are not on it are drawn dim.
@@ -60,6 +65,23 @@ covers the one you chose: choosing a sheet leaves out what cannot be at it, and 
 what can. This is often much quicker, as the search does not look at the rest. (While a generator is being dragged the browser passes on neither keys nor the wheel, so there
 is no choosing during a drag. Pick the generator with the pointing hand instead, choose the sheet,
 and click. A drop uses the sheet that was chosen for the position it lands on, if there is one.)
+
+Dragging a wire sideways to expand it (a horizontal drag) acts on the sheet you chose at the
+place the drag starts from, if you chose one there before pressing the button, and else on the
+front one, as before. Contractions act on all the sheets and are the same whatever you chose.
+
+Where a sheet **ends**, or several sheets **meet**, the 2D view marks the place (Settings: *Outline
+where sheets end or meet*, on by default): a dashed ring, with the last stretch of the sheet dashed
+up to it, where a sheet ends at a cell, and a double ring where three or more meet at one (the cell
+where lines are joined), and the tooltip there says so. Only cells (points of the picture) are
+marked: a line that simply runs along a wire, two strands that cross, or surfaces that are joined
+along a line, are not, as the wire is drawn.
+
+The 2D view also shades each **surface** by the number of sheets that pass through it
+(Settings: *Shade surfaces by the sheets behind them*, on by default): the surface that has the
+fewest in the diagram is drawn as it always was, and the others a little darker (in up to three
+steps) the more they have, so that you can see where a lot is hidden behind a region. Hatched
+(placeholder) surfaces keep their stripes.
 
 Choose no sheet (leave the position and come back, or Shift + Tab all the way) and a click is
 what it has always been. The 3D view has no sheets.

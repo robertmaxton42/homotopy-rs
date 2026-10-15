@@ -173,18 +173,38 @@ impl<const N: usize> GraphicElement<N> {
         projection: &Projection<N>,
         depths: &Depths<N>,
     ) -> Vec<Self> {
+        Self::build_shaded(complex, layout, projection, depths, |_| 0)
+            .into_iter()
+            .map(|(element, _)| element)
+            .collect()
+    }
+
+    /// Like [`build`](Self::build), but surfaces with a different `step` (given the corners of
+    /// the surface) are kept apart, so that the drawing can shade them differently: the elements
+    /// come with the step of their surfaces (0 for wires and points, and for all surfaces if
+    /// `step` is always 0, in which case this is `build`). Surfaces of the same generator and
+    /// step are merged as they are in `build`.
+    #[must_use]
+    pub fn build_shaded(
+        complex: &[(Simplex<N>, bool)],
+        layout: &Layout<N>,
+        projection: &Projection<N>,
+        depths: &Depths<N>,
+        step: impl Fn(&[Coordinate<N>; 3]) -> usize,
+    ) -> Vec<(Self, usize)> {
         let mut wire_elements = Vec::new();
         let mut surface_elements = Vec::new();
         let mut point_elements = Vec::new();
 
-        let mut grouped_surfaces = FastHashMap::<Diagram0, Vec<[Coordinate<N>; 3]>>::default();
+        let mut grouped_surfaces =
+            FastHashMap::<(Diagram0, usize), Vec<[Coordinate<N>; 3]>>::default();
 
         for (simplex, _) in complex.iter().filter(|(_, visible)| *visible) {
             match simplex {
                 Simplex::Surface(ps) => {
                     let generator = projection.generator(ps[0]);
                     grouped_surfaces
-                        .entry(generator)
+                        .entry((generator, step(ps)))
                         .or_default()
                         .push(orient_surface(ps));
                 }
@@ -218,7 +238,7 @@ impl<const N: usize> GraphicElement<N> {
             }
         }
 
-        for (generator, surfaces) in grouped_surfaces {
+        for ((generator, step), surfaces) in grouped_surfaces {
             let mut path_builder = NoAttributes::new().with_svg();
 
             for points in merge_simplices(surfaces) {
@@ -228,12 +248,12 @@ impl<const N: usize> GraphicElement<N> {
             // Quick enough to do it every time
             let path = simplify_path(&path_builder.build());
 
-            surface_elements.push(Self::Surface(generator, path));
+            surface_elements.push((Self::Surface(generator, path), step));
         }
 
         let mut elements = surface_elements;
-        elements.extend(wire_elements);
-        elements.extend(point_elements);
+        elements.extend(wire_elements.into_iter().map(|e| (e, 0)));
+        elements.extend(point_elements.into_iter().map(|e| (e, 0)));
         elements
     }
 

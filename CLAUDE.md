@@ -398,7 +398,7 @@ indicator: see "Laying out diagrams" below.
     `DiagramSvg` (`accepts_drops`, `on_attach`) accepts a drag (`preventDefault` on `dragover`) only if
     it carries that type, the verdict is yes and the diagram is not waiting for its layout (the handlers
     are not there while `pending`: drops are ignored as clicks are); it outlines the simplex under the
-    pointer (`diagram-svg__drop-highlight`, from the shape that `simplex_at` finds, no search) and on drop
+    pointer (`diagram-svg__drop-highlight`, from the first shape of `hits_at`, no search) and on drop
     emits `(generator, simplex[0])`, which the workspace turns into `AttachGenerator(generator, point, weak
     units, limits)`. While a job runs a drop is refused like a click (the pill shakes; dragover is
     still accepted, so that there is something to refuse). Folder drop zones and the signature are as
@@ -466,8 +466,8 @@ indicator: see "Laying out diagrams" below.
     part of the point; `step` goes to the next, round; `drill` first fixes the default and then pushes the
     first sheet inside the chosen one (never silently: it is a key press), `undrilled` pops. A choice that is
     not of a position under the pointer is no choice. `DiagramSvg` (`sheets` property, set by the workspace)
-    keeps `choice`, `hits` (`hits_at`: all shapes under the pointer, top first, which `simplex_at` is the
-    first of; only the first is looked for when `sheets` is off), and a `keydown` listener on the window
+    keeps `choice`, `hits` (`hits_at`: all shapes under the pointer, top first; the first is the one on top;
+    only the first is looked for when `sheets` is off), and a `keydown` listener on the window
     (`gloo`, non-passive) that only takes `[`, `]`, `Tab` and `Shift+Tab` while the pointer is over a stack
     worth listing (`Keys::wanted`, a shared flag: several diagrams can exist, and Tab is not ours otherwise;
     not from text fields). `Shift+wheel` is an `onwheel` on the svg that stops the event before the pan/zoom
@@ -476,12 +476,77 @@ indicator: see "Laying out diagrams" below.
     `hit_to_act_on`/`point_at` too, with the choice's shape outlined) or a click that comes back to the place
     uses it. During a native drag the browser passes no keys or wheel, so there is no choosing then.
   - **The tooltip** is the stack (`tooltip::SheetStack`: `z₃=k` rows with `describe_cell` names, the current
-    one highlighted, *front*, a breadcrumb `z₃=1 › z₄=0` when chosen, a hint for the keys), shown when there
+    one highlighted, the sheet's name `S2`, *front* (per sheet: `foremost`; *drawn here* if the drawn one is not that), a breadcrumb `z₃=1 › z₄=0` when chosen, a hint for the keys), shown when there
     are several sheets, one is chosen, or the sheet has sheets inside it. Wires whose edge depth (`z + 1` in
     `GraphicElement::Wire`, now on the element as `data-depth`) is not the first chosen `z` are dimmed by
     setting `data-dim` on the elements directly (`apply_dimming`, also after each render): choosing does not
     render the diagram again, which is much of the work of a large one. Surfaces cannot be dimmed per sheet
     (`Projection::generator` is the max over the whole fibre).
+  - **Identity of sheets** (`homotopy-core/src/projection/sheets.rs`; module doc has the definitions). `Sheet`
+    has `id: Option<SheetId>` (`S1`, `S2`, ... via `SheetId::label`; `None` for the sheets *inside* a sheet,
+    `within` not empty: only the first coordinate after the position's is followed), `front` (as before: the
+    one `node_depth` draws *at this position*; it can be another sheet at the next position) and `foremost`
+    (the per-sheet notion, which the tooltip's *front* tag uses). `Depths::sheet_count/sheet_boundaries/
+    sheet_boundaries_at/thickness` and `thickness_steps` (part C) are new. Everything is made lazily, on the
+    first question (`OnceCell` in `Depths`), so a diagram that nobody asks about pays nothing: one pass
+    over the edges of the scaffold (1 to 60 microseconds on the examples).
+    - *Identity*: a union-find over (position, singular height) pairs, joined along every edge of the
+      scaffold `Depths` keeps by the singular image of the rewrite (`cone_views`, `for_each_image`: each height
+      of the source goes to one of the target; a cone with several source heights takes them all to one),
+      **when the cell (`max_generator().generator`) is the same at both ends**. A different cell means
+      something happens there (surfaces end on a line, lines meet at a 3-cell), so the associator's four lines
+      and its 3-cell point are different sheets, and a line is one sheet along all of its length whatever
+      its neighbours do (checked in the browser: the 2-cell `m` has the same `S9` at `[T,S0]` and `[R1,S0]`).
+      Tried first and dropped: joining everything that is carried one to one and cutting only where three or
+      more heights are carried into one: that cut every line that has surfaces ending on it (a line is a
+      junction of the surfaces at every one of its positions) into one sheet per position. A cup is then two
+      sheets (the two arms) and the cell of the cup between them.
+    - *Foremost*: the sheet is not hidden by another anywhere (`hidden == 0`), or is the drawn one at more of
+      the positions it shares with others than it is hidden at. A sheet alone everywhere is foremost; of two
+      strands that overlap on only a part of their length (`crossing`, `half_braid`) one is foremost along
+      the whole of its length and the other behind along the whole of its (it is `front` only where it is
+      alone, which is the old flipping). Positions with the sheets are counted, regions too.
+    - *Unit cones and the atomic filter*: `Depths` leaves out the regular slices of later coordinates
+      (`ExternalRewrite::is_atomic`) and with them the edges that carry unit cones from a regular slice. No
+      sheet information is lost: such an edge is a sparse identity then an edge of the last coordinate, which
+      is kept. Tested against the scaffold with every edge (`leaving_out_regular_slices_loses_no_unit_cone`).
+      Identity is checked on kept edges only: across the diagonals it differs where the way round passes a
+      junction, which cuts the sheet.
+  - **Outlines of sheet boundaries** (`Depths::sheet_boundaries`, `DiagramSvg::view_sheet_outlines`, setting
+    *Outline where sheets end or meet*, `sheet_outlines`, on by default; workspace diagram only, like the rest of
+    the sheet features). Only at *points* of the picture (every coordinate singular: where the cells are): a
+    height there that **one** edge carries a height into is where a sheet *ends* (`BeginsOrEnds`; `matchsticks`,
+    `stacks`, `monoid_unit`), and one that **three or more** carry heights into is where sheets *meet*
+    (`MergesOrSplits`; the 3-cell of the associator: 10, of the snake: 6; `Sheet::arms` is the carried-in count).
+    It is **not** "a cone with `source_len() == 0`" as first specified: every edge goes from a position to one of
+    a dimension less, so a sheet that lies along a wire (a line) has such a cone on every edge from the regions
+    beside it, and where several rows of the grid collapse into one (a crossing) each row's edge lacks the
+    other's sheets: 32 of them for `crossing`, which has none, a boundary along both sides of every wire; and
+    the junction rule applied at every position rang every vertex of the associator's wires (11, against the 1
+    now). Sheets that end or meet along a wire are not marked: the wire is drawn. Drawn as one path per kind
+    in a `g.sheet-boundaries` (counts in `data-ends`/`data-meets`) over the surfaces and under the highlight:
+    for an end the last stretch of the sheet (dashed) from the neighbour that carries it and a dashed ring, for
+    a meeting a double ring; a pale halo under each so they show on any colour; `pointer-events: none`. The
+    tooltip's detail says "a sheet begins or ends here" / "sheets merge or split here". Made on first use;
+    `GraphicElement` is not changed. Gaps: a stretch is drawn along the scaffold edge, not a curve of the
+    layout; sheets that are joined along a wire or end along it are not marked; the 3D view has none.
+  - **Thickness shading** (`thickness_step(s)` in `projection/sheets.rs`, `GraphicElement::build_shaded`,
+    `DiagramSvg`, setting *Shade surfaces by the sheets behind them*, `sheet_shading`, on by default; workspace
+    diagram only). A surface's thickness is the number of sheets through it: `Depths::thickness`, the number
+    of singular heights of the fibre, the fewest of the three corners of the surface (the corners on wires have
+    the wire's sheets too). It is normalised to the thinnest *surface drawn* (0, as it always was), scaled into
+    `SHADING_STEPS` = 4 steps (0 to 3: differences from the minimum when the range fits, else scaled and
+    rounded so that anything thicker than the thinnest is at least 1 and the thickest is 3; tested). Surfaces
+    of the same generator and step are merged as before, so the elements are those of `build` split by
+    step (`build_shaded` returns each with its step; `build` is the same with step 0): no extra DOM. The
+    step is `data-thickness` on the colour path, and `styles.css` has `filter: brightness() saturate()` for
+    steps 1 to 3 (0.92, 0.84, 0.75): darker and a little more saturated. **Placeholders**: the hatching is a
+    separate path over the surface, so the filter does not touch it, and both stripe colours stay visible
+    (the light stripes on black are over a path that is already as dark as it goes). Changing the setting
+    prepares the diagram again (the grouping is made then); a diagram whose surfaces all have as many sheets
+    has no steps. On by default because the steps are subtle (about 8% each); the exports (`GraphicElement::build`)
+    do not shade. Gaps: a CSS filter per shaded path (one per generator and step, not per surface); the 3D
+    view is not shaded; a surface whose sheets are all hidden by a wire is still counted.
   - **The heuristic** (off by default; `InferenceLimits::narrow_to_sheet`, setting *Heuristic: infer instances
     only from cells near the chosen sheet*, kept with the inference settings): with a sheet chosen, the pool of
     cells for the replacements of placeholders (`Pool::new` in `AttachOptionsJob::new`) is the generators in
@@ -514,10 +579,24 @@ indicator: see "Laying out diagrams" below.
     the point chosen, how many wires are dimmed). Real mouse moves, `page.keyboard.press("]")`,
     `Tab`, and `keyboard.down("Shift")` with `mouse.wheel` work in Playwright. The 5.3MB fixture takes ~40 s to
     import in the debug build; set `DecreaseView` once to get the 2D view (it opens in 3D).
-  - Gaps: homotopies by dragging still use the front sheet (`Depths::node_depth`); only the first chosen
+  - **Homotopy drags**: a horizontal drag (an `Expand`, for a 3-dimensional diagram) acts on the chosen sheet. The
+    choice is copied at pointer down (`drag_choice`; the pointer moves before the drag threshold, and moving to
+    another shape clears `choice`), and `pointer_move` picks the shape to start from with `pick_hit` (as a click
+    does) and hands `drag_to_homotopy` the first `z` of the choice (`chosen_sheet`, only if the choice is at that
+    shape's position) instead of `Depths::node_depth`. No choice, or one at another position: the front sheet, as
+    before. Contractions act on all sheets and vertical drags have no depth, so they are unchanged. Test:
+    `a_horizontal_drag_expands_at_the_sheet_chosen_and_else_at_the_front` (`diagram_svg.rs`).
+  - Gaps: only the first chosen
     `z` dims wires; surfaces and vertices are not dimmed; the 3D view has no sheets; the native drag gives no
     keys, so a drop uses a choice made before the drag (only when the pointer comes back to the same shape);
-    `Stack` lists the sheets of the shapes of one kind (the regions behind a wire cannot be chosen).
+    `Stack` lists the sheets of the shapes of one kind (the regions behind a wire cannot be chosen). Identity of
+    sheets (`SheetId`) is only followed for the first coordinate after the position's (the sheets inside a
+    sheet have none and are never `foremost`); sheets of the same cell that are never linked by an edge stay
+    different sheets (two separate wires of one generator), and one that is cut by a different cell on it is two
+    (a line with a bead on it is `S1`, the bead, `S2`); "front" is a count (hidden at more positions than drawn),
+    so two strands that cross over each other in turn are one front and one behind, or neither, by their
+    majority; `Stack`'s default sheet is still the one drawn (`front`), not the foremost one; the outlines mark
+    points only, and shading counts heights (a sheet that comes back to the position counts twice).
 
 New expensive work: write it as a job (or give an existing job another kind of step), label it,
 and check it with the debug hooks below.
@@ -589,6 +668,11 @@ valid (`narrowing_to_a_sheet_only_finds_valid_instances`, for the sheet heuristi
   worker, cached, cancelled, pending) are for testing. `__homotopy.profileLayouts()` times the
   layout and geometry of every diagram of the project and its slices next to their weight, for
   choosing the thresholds.
+- **Temporary input logger** (`app/input_log.rs`, for diagnosing the mouse back/forward buttons and the
+  history-trap redesign; remove when done): with `localStorage["homotopy-log-input"] = "1"` (read once at
+  startup) the console logs `[homotopy input] ...` lines for mouse buttons above 2 (all of `auxclick`),
+  `Browser*` keys and Alt+Left/Right, `popstate` (history length and state), `beforeunload` and `pagehide`.
+  It works in the release build and only logs.
 - `.claude/dev/highs-shim.js` and `flake.nix`'s `post.js` assign `self.Highs_*` rather than
   `window.Highs_*`, so that HiGHS is there in a worker too. The shim was tested here; the `flake.nix`
   edit (a textual replacement of `window.` by `self.` in `post.js`, which goes through the Closure

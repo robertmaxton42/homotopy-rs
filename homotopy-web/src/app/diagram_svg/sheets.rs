@@ -11,7 +11,7 @@ use std::{
 };
 
 use gloo::events::{EventListener, EventListenerOptions};
-use homotopy_core::{complex::Simplex, SliceIndex};
+use homotopy_core::{complex::Simplex, projection::SheetId, SliceIndex};
 use homotopy_model::sheets::{Choice, Stack};
 use serde::Serialize;
 use wasm_bindgen::JsCast;
@@ -282,7 +282,9 @@ impl<const N: usize> DiagramSvg<N> {
                     z: e.sheet.z,
                     label: ctx.props().signature.describe_cell(e.sheet.generator),
                     current: i == stack.current,
-                    front: e.sheet.front,
+                    front: e.sheet.foremost,
+                    drawn: e.sheet.front,
+                    name: e.sheet.id.map(SheetId::label),
                     kind: several_places
                         .then(|| {
                             self.hits
@@ -370,6 +372,8 @@ impl<const N: usize> DiagramSvg<N> {
             position: String,
             z: usize,
             front: bool,
+            foremost: bool,
+            sheet: Option<u32>,
             label: String,
         }
         #[derive(Serialize)]
@@ -407,6 +411,8 @@ impl<const N: usize> DiagramSvg<N> {
                     position: place(&e.position),
                     z: e.sheet.z,
                     front: e.sheet.front,
+                    foremost: e.sheet.foremost,
+                    sheet: e.sheet.id.map(|id| id.0),
                     label: ctx.props().signature.describe_cell(e.sheet.generator),
                 })
                 .collect(),

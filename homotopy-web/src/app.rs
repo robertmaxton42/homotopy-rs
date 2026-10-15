@@ -4,6 +4,7 @@ use futures::future::select;
 use gloo_timers::future::TimeoutFuture;
 use homotopy_core::signature::Signature as _;
 use homotopy_model::{job::Job, remote::Answer};
+use input_log::InputLog;
 use instant::{Duration, Instant};
 use mouse_buttons::MouseButtons;
 use settings::{AppSettings, AppSettingsKey, AppSettingsMsg};
@@ -47,6 +48,7 @@ pub mod diagram_gl;
 mod diagram_svg;
 mod image_export;
 mod info;
+mod input_log;
 mod keybindings;
 mod mouse_buttons;
 mod project;
@@ -163,6 +165,8 @@ pub struct App {
     before_unload: Option<Closure<dyn FnMut(web_sys::BeforeUnloadEvent)>>,
     // Hold onto the listeners so that they are dropped when the app is destroyed
     _mouse_buttons: MouseButtons,
+    // Temporary, for diagnosing the mouse back and forward buttons (see `input_log`).
+    _input_log: InputLog,
     escape: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
     /// Saving the project in the background, in case the tab is lost.
     autosave: Autosave,
@@ -243,6 +247,7 @@ impl Component for App {
             signature_stylesheet,
             before_unload: None,
             _mouse_buttons: MouseButtons::install(ctx.link().callback(Message::Dispatch)),
+            _input_log: InputLog::install(),
             escape: Some(Self::install_escape(ctx)),
         }
     }
