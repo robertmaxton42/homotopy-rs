@@ -21,7 +21,10 @@ use homotopy_core::{
     Boundary, Diagram, DiagramN, Generator, Height,
 };
 
-use super::Signature;
+use super::{
+    completion::{seeds, Seeds},
+    Signature,
+};
 
 /// The most cells in a composite replacing a placeholder.
 pub(super) const MAX_CELLS: usize = 3;
@@ -44,7 +47,18 @@ pub struct InferredInstance {
     pub diagram: DiagramN,
     /// Where to attach it.
     pub embedding: Vec<usize>,
+    /// Whether it is the inverse of the instance that is attached: the schema is invertible and
+    /// it is its target that matches the diagram. `diagram` is then the inverse too.
+    pub inverse: bool,
 }
+
+/// What the key of an instance found for the inverse of its schema starts with, so that they
+/// come after all those found for the schema itself.
+pub(super) const INVERSE_KEY: usize = u32::MAX as usize;
+/// What the key of an instance found by reading the replacements off the diagram (see
+/// [`seeds`]) starts with, followed by the number of the way: after the instances found by
+/// searching for the replacements, and before the inverses.
+pub(super) const SEEDED_KEY: usize = INVERSE_KEY - 1;
 
 /// The cells that the replacements of placeholders are made from.
 pub(super) struct Pool<'a> {
@@ -57,6 +71,13 @@ pub(super) struct Pool<'a> {
 pub(super) struct Cells {
     from: From,
     made: OnceCell<Made>,
+    /// The cells that the instances in the diagram were made with, for the placeholders of a
+    /// dimension higher than [`reach`](Self::reach): the diagram has no cells of that dimension
+    /// to make them of (see [`Pool::reaching`]).
+    beyond: OnceCell<Made>,
+    /// The highest dimension of the cells that the diagram can have, or `usize::MAX` if the
+    /// replacements of all the placeholders are made of the cells it has.
+    reach: usize,
     /// The composites of the cells that start at a diagram, so far (see [`Composites`]): what the
     /// candidates for a placeholder are taken from, which depends on where they start and not on
     /// where they end, so that placeholders (of one schema, or of many) with the same source share
@@ -223,11 +244,28 @@ impl<'a> Pool<'a> {
         signature: &'a Signature,
         generators: impl IntoIterator<Item = Generator>,
     ) -> Self {
+        Self::reaching(signature, generators, usize::MAX)
+    }
+
+    /// The pool of the cells of the given generators, for a diagram whose cells have dimension up
+    /// to `reach`. A placeholder of a higher dimension cannot be replaced with a cell of the
+    /// diagram, as there are none: it is a placeholder that the schema depends on without
+    /// the cells that are attached mentioning it (`σ[η̇]` is about a functor `Ḟ`, and depends on
+    /// the transformation `η̇` of it). Its replacements are made of the cells that the instances
+    /// in the diagram were made with (`p` in `η̇₍₂₎[T/Ḟ, 1/Ġ, p/η̇]`), which are the cells of that
+    /// dimension that the diagram is about, of the type it needs.
+    pub(super) fn reaching(
+        signature: &'a Signature,
+        generators: impl IntoIterator<Item = Generator>,
+        reach: usize,
+    ) -> Self {
         Self {
             signature,
             cells: Rc::new(Cells {
                 from: From::Generators(generators.into_iter().collect()),
                 made: OnceCell::new(),
+                beyond: OnceCell::new(),
+                reach,
                 composites: RefCell::default(),
                 required: RefCell::default(),
                 candidates: RefCell::default(),
@@ -242,6 +280,8 @@ impl<'a> Pool<'a> {
             cells: Rc::new(Cells {
                 from: From::Diagrams(diagrams),
                 made: OnceCell::new(),
+                beyond: OnceCell::new(),
+                reach: usize::MAX,
                 composites: RefCell::default(),
                 required: RefCell::default(),
                 candidates: RefCell::default(),
@@ -268,25 +308,71 @@ impl<'a> Pool<'a> {
                     .flat_map(|d| d.generators().into_keys())
                     .collect(),
             };
-            let mut made = Made::default();
-            for g in generators {
-                match self
-                    .signature
-                    .generator_info(g)
-                    .map(|info| (&info.diagram, info.invertibility))
-                {
-                    Some((Diagram::Diagram0(d), _)) => made.zero_cells.push((*d).into()),
-                    Some((Diagram::DiagramN(d), invertibility)) => {
-                        made.cells.push(d.clone());
-                        if invertibility != Invertibility::Directed {
-                            made.cells.push(d.inverse());
+            self.make(generators)
+        })
+    }
+
+    /// The cells (other than placeholders) that the replacements of the instances in the diagram
+    /// are made of, and those that the instances among them were made with in turn.
+    fn beyond(&self) -> &Made {
+        self.cells.beyond.get_or_init(|| {
+            let mut todo: Vec<Generator> = match &self.cells.from {
+                From::Generators(generators) => generators.clone(),
+                From::Diagrams(diagrams) => diagrams
+                    .iter()
+                    .flat_map(|d| d.generators().into_keys())
+                    .collect(),
+            };
+            let mut seen = FastHashSet::default();
+            let mut mentioned = vec![];
+            while let Some(g) = todo.pop() {
+                if !seen.insert(g) {
+                    continue;
+                }
+                let Some(info) = self.signature.generator_info(g) else {
+                    continue;
+                };
+                if let Some(made) = &info.instance {
+                    for (_, replacement) in &made.substitution {
+                        for h in replacement.generators().into_keys() {
+                            if self
+                                .signature
+                                .generator_info(h)
+                                .is_some_and(|i| !i.placeholder)
+                            {
+                                mentioned.push(h);
+                            }
+                            todo.push(h);
                         }
                     }
-                    None => {}
                 }
             }
-            made
+            mentioned.sort_by_key(|g| (g.dimension, g.id));
+            mentioned.dedup();
+            self.make(mentioned)
         })
+    }
+
+    /// The cells of some generators, and their inverses where they are invertible.
+    fn make(&self, generators: Vec<Generator>) -> Made {
+        let mut made = Made::default();
+        for g in generators {
+            match self
+                .signature
+                .generator_info(g)
+                .map(|info| (&info.diagram, info.invertibility))
+            {
+                Some((Diagram::Diagram0(d), _)) => made.zero_cells.push((*d).into()),
+                Some((Diagram::DiagramN(d), invertibility)) => {
+                    made.cells.push(d.clone());
+                    if invertibility != Invertibility::Directed {
+                        made.cells.push(d.inverse());
+                    }
+                }
+                None => {}
+            }
+        }
+        made
     }
 
     /// The diagram of the instance of a generator that mentions placeholders for a (normalised
@@ -371,6 +457,36 @@ impl<'a> Pool<'a> {
         .ok()
     }
 
+    /// Whether a diagram has the type that a replacement of the placeholder needs, given the
+    /// replacements of the placeholders its type is in terms of: its dimension, and its source and
+    /// target being those of the placeholder with the substitution applied. (The candidates for a
+    /// placeholder are made to fit; this is for a replacement that comes from elsewhere.)
+    pub(super) fn fits(
+        &self,
+        placeholder: Generator,
+        replacement: &Diagram,
+        substitution: &[(Generator, Diagram)],
+    ) -> bool {
+        let Some(own) = self
+            .signature
+            .generator_info(placeholder)
+            .map(|info| info.diagram.clone())
+        else {
+            return false;
+        };
+        match (own, replacement) {
+            (Diagram::Diagram0(_), Diagram::Diagram0(_)) => true,
+            (Diagram::DiagramN(own), Diagram::DiagramN(replacement)) => {
+                own.dimension() == replacement.dimension()
+                    && self.substitute(placeholder, substitution, &own.source(), true)
+                        == Some(replacement.source())
+                    && self.substitute(placeholder, substitution, &own.target(), true)
+                        == Some(replacement.target())
+            }
+            _ => false,
+        }
+    }
+
     /// The candidate replacements for a placeholder, given replacements for the placeholders
     /// its type is in terms of (and others, which make no difference). The same candidates for
     /// the same replacements of those are found once.
@@ -452,8 +568,12 @@ impl<'a> Pool<'a> {
             .signature
             .generator_info(placeholder)
             .map_or(Invertibility::Directed, |info| info.invertibility);
-        let cells: Vec<&DiagramN> = self
-            .made()
+        let made = if k > self.cells.reach {
+            self.beyond()
+        } else {
+            self.made()
+        };
+        let cells: Vec<&DiagramN> = made
             .cells
             .iter()
             .filter(|c| c.dimension() == k)
@@ -497,8 +617,14 @@ impl Signature {
         boundary: Boundary,
         point: &[Height],
     ) -> Vec<InferredInstance> {
-        let cells = Pool::new(self, haystack.generators().into_keys()).cells();
-        let Some(mut search) = InferSearch::new(self, cells, schema, haystack, boundary, point)
+        let cells = Pool::reaching(
+            self,
+            haystack.generators().into_keys(),
+            haystack.dimension(),
+        )
+        .cells();
+        let Some(mut search) =
+            InferSearch::new(self, cells, schema, haystack, boundary, point, true)
         else {
             return vec![];
         };
@@ -559,6 +685,13 @@ pub(super) struct InferSearch {
     point: Vec<Height>,
     started: bool,
     done: bool,
+    /// The searches to make, one after the other (see [`Plan`]), and the one that is going.
+    plans: Vec<Plan>,
+    plan: usize,
+    /// What has been found, so that a way of reading replacements off the diagram that overlaps
+    /// another does not find it twice.
+    #[allow(clippy::type_complexity)]
+    seen: FastHashSet<(Vec<(Generator, Diagram)>, bool, Vec<usize>)>,
     /// The candidates for the placeholder solved at each depth, and how many have been taken.
     stack: Vec<Candidates>,
     /// What was chosen at each depth up to the last frame.
@@ -566,6 +699,17 @@ pub(super) struct InferSearch {
     tried: usize,
     /// Each instance with what it was found for, to sort by.
     results: Vec<(Vec<usize>, InferredInstance)>,
+}
+
+/// A search for the replacements of the placeholders, in one or both directions.
+struct Plan {
+    /// What reading the diagram's instances tells of the replacements (see [`seeds`]), with the
+    /// number of the way: the placeholders that have a replacement here are replaced with just
+    /// that, and the rest are searched for as usual. `None` to search for all of them.
+    seed: Option<(usize, Vec<Option<Diagram>>)>,
+    /// Whether the schema is to be attached, and whether its inverse is.
+    forward: bool,
+    inverse: bool,
 }
 
 struct Candidates {
@@ -601,6 +745,7 @@ impl InferSearch {
         haystack: &Diagram,
         boundary: Boundary,
         point: &[Height],
+        seeding: bool,
     ) -> Option<Self> {
         let parameters = signature.parameters(schema);
         let Some(Diagram::DiagramN(schema_diagram)) = signature
@@ -641,6 +786,52 @@ impl InferSearch {
             order.push(next);
         }
 
+        let present: FastHashSet<Generator> = haystack.generators().into_keys().collect();
+        // The cell is attached along its source on a target boundary and along its target on a
+        // source one, and an invertible schema also as its inverse, which is the other way round.
+        let invertible = signature
+            .generator_info(schema)
+            .is_some_and(|info| info.invertibility.is_invertible());
+        let mut plans = vec![];
+        let mut unread = Plan {
+            seed: None,
+            forward: false,
+            inverse: false,
+        };
+        for inverse in [false, true] {
+            if inverse && !invertible {
+                break;
+            }
+            let along_source = (boundary == Boundary::Target) != inverse;
+            let side: Diagram = if along_source {
+                schema_diagram.source()
+            } else {
+                schema_diagram.target()
+            };
+            let read = if seeding {
+                seeds(signature, &parameters, schema, &side, &present)
+            } else {
+                Seeds::Free
+            };
+            match read {
+                Seeds::Free => {
+                    unread.forward |= !inverse;
+                    unread.inverse |= inverse;
+                }
+                Seeds::Impossible => {}
+                Seeds::Ways(ways) => {
+                    plans.extend(ways.into_iter().enumerate().map(|(number, way)| Plan {
+                        seed: Some((number, way)),
+                        forward: !inverse,
+                        inverse,
+                    }));
+                }
+            }
+        }
+        if unread.forward || unread.inverse {
+            plans.push(unread);
+        }
+
         Some(Self {
             signature: signature.clone(),
             cells,
@@ -649,11 +840,14 @@ impl InferSearch {
             parameters,
             order,
             haystack: haystack.clone(),
-            present: haystack.generators().into_keys().collect(),
+            present,
             boundary,
             point: point.to_vec(),
             started: false,
             done: false,
+            plans,
+            plan: 0,
+            seen: FastHashSet::default(),
             stack: vec![],
             chosen: vec![],
             tried: 0,
@@ -668,21 +862,20 @@ impl InferSearch {
         }
         if !self.started {
             self.started = true;
-            self.descend();
-            return self.done;
+            return self.begin_plan();
         }
         let depth = self.stack.len();
         let Some(frame) = self.stack.last_mut() else {
-            self.done = true;
-            return true;
+            self.plan += 1;
+            return self.begin_plan();
         };
         if frame.next >= frame.list.len() {
             self.stack.pop();
             return false;
         }
         if self.tried >= MAX_SUBSTITUTIONS {
-            self.done = true;
-            return true;
+            self.stack.clear();
+            return false;
         }
         let candidate = frame.next;
         let replacement = frame.list[candidate].clone();
@@ -702,9 +895,24 @@ impl InferSearch {
         false
     }
 
+    /// Starts the search of the plan that is next, if there is one: whether the whole search is
+    /// over.
+    fn begin_plan(&mut self) -> bool {
+        self.stack.clear();
+        self.chosen.clear();
+        self.tried = 0;
+        if self.plan >= self.plans.len() {
+            self.done = true;
+            return true;
+        }
+        self.descend();
+        false
+    }
+
     /// Finds the candidates for the next placeholder, given those chosen.
     fn descend(&mut self) {
-        let placeholder = self.parameters[self.order[self.chosen.len()]];
+        let parameter = self.order[self.chosen.len()];
+        let placeholder = self.parameters[parameter];
         let substitution: Vec<_> = self
             .chosen
             .iter()
@@ -715,8 +923,20 @@ impl InferSearch {
                 )
             })
             .collect();
-        let list = Pool::from_cells(&self.signature, Rc::clone(&self.cells))
-            .candidates(placeholder, &substitution);
+        let pool = Pool::from_cells(&self.signature, Rc::clone(&self.cells));
+        let read = self.plans[self.plan]
+            .seed
+            .as_ref()
+            .and_then(|(_, way)| way[parameter].as_ref());
+        let list = match read {
+            // Read off the diagram: what it is is known, and whether it fits what the others
+            // chosen make of the placeholder's type is not.
+            Some(replacement) if pool.fits(placeholder, replacement, &substitution) => {
+                vec![replacement.clone()]
+            }
+            Some(_) => vec![],
+            None => pool.candidates(placeholder, &substitution),
+        };
         self.stack.push(Candidates { list, next: 0 });
     }
 
@@ -754,42 +974,76 @@ impl InferSearch {
         }
 
         let pool = Pool::from_cells(&self.signature, Rc::clone(&self.cells));
-        // The side attached along must match the diagram, so it can only use existing instances;
-        // instances on the other side may be created when attaching.
-        let strict_source = self.boundary == Boundary::Target;
         let source = self.schema_diagram.source();
         let target = self.schema_diagram.target();
-        let (Some(source), Some(target)) = (
-            pool.substitute(self.schema, &substitution, &source, strict_source),
-            pool.substitute(self.schema, &substitution, &target, !strict_source),
-        ) else {
-            return;
+        // The cell is attached along its source on a target boundary and along its target on a
+        // source one, and an invertible schema also as its inverse, which is the other way round.
+        // (The inverse of an instance is an instance of the inverse: they are the same cell
+        // read backwards.)
+        let (forward, backward, way) = {
+            let plan = &self.plans[self.plan];
+            (
+                plan.forward,
+                plan.inverse,
+                plan.seed.as_ref().map(|(number, _)| *number),
+            )
         };
-        // The side attached along is what is looked for in the haystack, and cells that it does
-        // not have are not in it.
-        let needle_side = if strict_source { &source } else { &target };
-        if !needle_side
-            .generators()
-            .keys()
-            .all(|generator| self.present.contains(generator))
-        {
-            return;
-        }
-        let Ok(diagram) = DiagramN::from_generator(self.schema, source, target) else {
-            return;
-        };
-        let Some(needle) = diagram.slice(self.boundary.flip()) else {
-            return;
-        };
-        for embedding in self.haystack.embeddings_through(&needle, &self.point) {
-            self.results.push((
-                key.clone(),
-                InferredInstance {
-                    substitution: self.signature.normalise(&substitution),
-                    diagram: diagram.clone(),
-                    embedding,
-                },
-            ));
+        let normalised = self.signature.normalise(&substitution);
+        for (inverse, wanted) in [(false, forward), (true, backward)] {
+            if !wanted {
+                continue;
+            }
+            // The side attached along must match the diagram, so it can only use existing
+            // instances; instances on the other side may be created when attaching.
+            let along_source = (self.boundary == Boundary::Target) != inverse;
+            let (Some(source), Some(target)) = (
+                pool.substitute(self.schema, &substitution, &source, along_source),
+                pool.substitute(self.schema, &substitution, &target, !along_source),
+            ) else {
+                continue;
+            };
+            // The side attached along is what is looked for in the haystack, and cells that it
+            // does not have are not in it.
+            let needle_side = if along_source { &source } else { &target };
+            if !needle_side
+                .generators()
+                .keys()
+                .all(|generator| self.present.contains(generator))
+            {
+                continue;
+            }
+            let Ok(diagram) = DiagramN::from_generator(self.schema, source, target) else {
+                continue;
+            };
+            let diagram = if inverse { diagram.inverse() } else { diagram };
+            let Some(needle) = diagram.slice(self.boundary.flip()) else {
+                continue;
+            };
+            let mut key = key.clone();
+            if let Some(number) = way {
+                key.splice(0..0, [SEEDED_KEY, number]);
+            }
+            if inverse {
+                key.insert(0, INVERSE_KEY);
+            }
+            for embedding in self.haystack.embeddings_through(&needle, &self.point) {
+                if way.is_some()
+                    && !self
+                        .seen
+                        .insert((normalised.clone(), inverse, embedding.clone()))
+                {
+                    continue;
+                }
+                self.results.push((
+                    key.clone(),
+                    InferredInstance {
+                        substitution: normalised.clone(),
+                        diagram: diagram.clone(),
+                        embedding,
+                        inverse,
+                    },
+                ));
+            }
         }
     }
 }
@@ -1021,7 +1275,8 @@ mod tests {
         assert_eq!(sig.parameters(s).len(), 4);
         // `e` is solved right after `P` and before `P'`.
         let cells = Pool::new(&sig, haystack.generators().into_keys()).cells();
-        let search = InferSearch::new(&sig, cells, s, &haystack, Boundary::Target, &[]).unwrap();
+        let search =
+            InferSearch::new(&sig, cells, s, &haystack, Boundary::Target, &[], true).unwrap();
         assert_eq!(search.order, vec![0, 2, 1, 3]);
         let mut total = 0;
         for point in [
@@ -1419,8 +1674,16 @@ mod tests {
         let (mut cut_short, mut complete) = (0, 0);
         for checks in (0..24).chain([30, 50, 80, 120, 200, 400, 100_000]) {
             let search = |cells: &Rc<Cells>| {
-                InferSearch::new(&sig, Rc::clone(cells), s, &haystack, Boundary::Target, &[])
-                    .unwrap()
+                InferSearch::new(
+                    &sig,
+                    Rc::clone(cells),
+                    s,
+                    &haystack,
+                    Boundary::Target,
+                    &[],
+                    true,
+                )
+                .unwrap()
             };
             let limit = deadline::after_checks(checks);
             let mut cut = search(&cells);
@@ -1633,5 +1896,174 @@ mod tests {
             .attach(&diagram, Boundary::Target, &inferred.embedding)
             .unwrap();
         assert_eq!(attached.target(), qr.into());
+    }
+
+    /// `x`; placeholder `P : x → x`; `Q, R : x → x`; and the invertible (or not) schema
+    /// `A : P ⇒ R`, which says that `P` is `R` (all that `A` mentions is `P`).
+    fn equivalence(invertibility: Invertibility) -> (Signature, Generator, Generator) {
+        let mut sig = Signature::default();
+        let x: Diagram = sig.create_generator_zero("x").into();
+        let mut cell = |s: Diagram, t: Diagram, invertibility| {
+            sig.create_generator(s, t, "c", invertibility).unwrap()
+        };
+        let p = cell(x.clone(), x.clone(), Invertibility::Directed);
+        let r = cell(x.clone(), x, Invertibility::Directed);
+        let a = cell(p.clone().into(), r.clone().into(), invertibility);
+        let (p, a) = (generator(&p), generator(&a));
+        make_placeholder(&mut sig, p);
+        (sig, p, a)
+    }
+
+    /// An invertible schema is attached as its inverse as well, along its target: an instance
+    /// is found where the diagram has what the instance ends at, as with a plain cell. (The
+    /// instance `T` of "`Ẋ ◁ δ = δ ▷ (Ẋ, Ẋ)`" was only found by dragging the instance made by
+    /// hand, whose inverse is what attaches there.)
+    #[test]
+    fn an_invertible_schema_is_found_by_its_target_too() {
+        let (mut sig, p, a) = equivalence(Invertibility::Invertible);
+        let r = sig.generator_info(a).unwrap().diagram.clone();
+        let Diagram::DiagramN(r) = r else {
+            unreachable!()
+        };
+        // `A : P ⇒ R`: a diagram with `R` in it has no `A` to attach, but `A⁻¹ : R ⇒ P`, for
+        // every replacement of `P`.
+        let haystack: Diagram = r.target().into();
+        let Diagram::DiagramN(haystack_n) = &haystack else {
+            unreachable!()
+        };
+        assert_eq!(haystack_n.dimension(), 1);
+        let found = sig.infer_instances(a, &haystack, Boundary::Target, &[]);
+        let forward: Vec<_> = found.iter().filter(|f| !f.inverse).collect();
+        let backward: Vec<_> = found.iter().filter(|f| f.inverse).collect();
+        // Backwards, every replacement of `P` has `R` to start from, and `P := R` is among them.
+        assert!(!backward.is_empty(), "{found:?}");
+        assert!(backward
+            .iter()
+            .any(|f| f.substitution == vec![(p, haystack.clone())]));
+        assert!(backward.len() >= forward.len());
+        for f in &found {
+            // The cell found is the instance or its inverse, from where it was found.
+            let instance = sig.instantiate(a, &f.substitution).unwrap();
+            let Diagram::DiagramN(instance) = sig.generator_info(instance).unwrap().diagram.clone()
+            else {
+                unreachable!()
+            };
+            let cell = if f.inverse {
+                instance.inverse()
+            } else {
+                instance
+            };
+            let attached = haystack_n
+                .clone()
+                .identity()
+                .attach(&cell, Boundary::Target, &f.embedding)
+                .unwrap();
+            assert_eq!(attached.source(), haystack, "{f:?}");
+            assert_eq!(
+                f.diagram.slice(Boundary::Source),
+                cell.slice(Boundary::Source)
+            );
+            // (Not `P := P`, which is no instance.)
+            assert!(f
+                .substitution
+                .iter()
+                .all(|(g, d)| *g != p || *d != sig.generator_info(p).unwrap().diagram));
+        }
+        // A directed schema has no inverse to find.
+        let (sig, _, a) = equivalence(Invertibility::Directed);
+        let r = sig.generator_info(a).unwrap().diagram.clone();
+        let Diagram::DiagramN(r) = r else {
+            unreachable!()
+        };
+        let haystack: Diagram = r.target().into();
+        let found = sig.infer_instances(a, &haystack, Boundary::Target, &[]);
+        assert!(found.iter().all(|f| !f.inverse));
+    }
+
+    /// `x`; placeholder `P : x → x`; `Q : x → x`; the schema `D : P ⇒ P`; the schema `S : D ⇛ D`
+    /// (which has a cell that depends on `P` to attach along); and the instance `D[Q⁴/P]`, made
+    /// by hand, which is the diagram to attach to.
+    fn read_off() -> (Signature, Generator, Diagram) {
+        let mut sig = Signature::default();
+        let x: Diagram = sig.create_generator_zero("x").into();
+        let mut cell = |s: Diagram, t: Diagram| {
+            sig.create_generator(s, t, "c", Invertibility::Directed)
+                .unwrap()
+        };
+        let p = cell(x.clone(), x.clone());
+        let q = cell(x.clone(), x);
+        let d = cell(p.clone().into(), p.clone().into());
+        let s = cell(d.clone().into(), d.clone().into());
+        let (p, d, s) = (generator(&p), generator(&d), generator(&s));
+        make_placeholder(&mut sig, p);
+        let mut q4 = q.clone();
+        for _ in 0..3 {
+            q4 = q4.attach(&q, Boundary::Target, &[]).unwrap();
+        }
+        let instance = sig.instantiate(d, &[(p, q4.into())]).unwrap();
+        let haystack = sig.generator_info(instance).unwrap().diagram.clone();
+        (sig, s, haystack)
+    }
+
+    /// The replacement for `P` is not made of at most three cells of the diagram (`Q⁴`), but the
+    /// diagram has an instance of `D` that says what `P` was replaced with when it was made, and
+    /// `S` can only attach where its `D[σ]` is. Reading it off finds it; searching does not.
+    #[test]
+    fn a_cell_in_the_diagram_says_what_the_replacement_is() {
+        let (sig, s, haystack) = read_off();
+        let search = |seeding: bool| {
+            let cells = Pool::new(&sig, haystack.generators().into_keys()).cells();
+            let mut search =
+                InferSearch::new(&sig, cells, s, &haystack, Boundary::Target, &[], seeding)
+                    .unwrap();
+            while !search.step() {}
+            search.finish()
+        };
+        let searched = search(false);
+        let read = search(true);
+        assert!(searched.is_empty(), "{searched:?}");
+        assert_eq!(read.len(), 1, "{read:?}");
+        assert_eq!(read[0].substitution.len(), 1);
+        // It is a well typed instance, and it attaches: the instance of `S` made with it has
+        // the instance of `D` in the diagram as its source.
+        let mut sig = sig;
+        let instance = sig.instantiate(s, &read[0].substitution).unwrap();
+        let Diagram::DiagramN(instance) = sig.generator_info(instance).unwrap().diagram.clone()
+        else {
+            unreachable!()
+        };
+        let Diagram::DiagramN(haystack) = haystack else {
+            unreachable!()
+        };
+        let attached = haystack
+            .clone()
+            .identity()
+            .attach(&instance, Boundary::Target, &read[0].embedding)
+            .unwrap();
+        assert_eq!(attached.source(), haystack.into());
+    }
+
+    /// A diagram with no instance of what `S` attaches along has no instance of `S` to find,
+    /// which is known at once: nothing is searched for.
+    #[test]
+    fn no_cell_in_the_diagram_to_read_means_nothing_to_find() {
+        let (sig, s, _) = read_off();
+        let d = sig
+            .iter()
+            .find(|info| {
+                info.instance.is_none() && info.diagram.dimension() == 2 && !info.placeholder
+            })
+            .unwrap()
+            .generator;
+        // `D` itself, with `P` not replaced, is a cell of the diagram: but not an instance.
+        let Diagram::DiagramN(d) = sig.generator_info(d).unwrap().diagram.clone() else {
+            unreachable!()
+        };
+        let haystack: Diagram = d.into();
+        let cells = Pool::new(&sig, haystack.generators().into_keys()).cells();
+        let mut search =
+            InferSearch::new(&sig, cells, s, &haystack, Boundary::Target, &[], true).unwrap();
+        assert!(search.step(), "nothing to search");
+        assert!(search.finish().is_empty());
     }
 }

@@ -120,11 +120,26 @@ attach menu also offers instances of schemas whose placeholders can be filled in
 fit there. These are tagged with the substitution, e.g. `A [Q ; R/P]`. Choosing one creates the
 instance and attaches it in one step, which is undone in one step too.
 
-The search tries replacements made from the cells of the diagram you click on:
+An invertible schema is offered in both directions: as itself where the diagram has what it
+starts from, and as its inverse (tagged `A [σ]⁻¹`) where the diagram has what it ends at.
+(Instances you made by hand attach in both ways too: the inverse of `A[T/Ẋ]` attaches wherever
+`A[T/Ẋ]` ends.)
 
+The search tries replacements made from the cells of the diagram you click on, after reading
+what it can off the diagram itself:
+
+- **Instances in the diagram say what they were made with.** If the cells a schema attaches
+  along include one that depends on placeholders (`η̇₍₂₎`, `ζ[η̇]`), the diagram has to have an
+  instance of it, and the instance records its replacements (`(Tp)₍₂₎` is
+  `η̇₍₂₎[T;T/Ḟ, T/Ġ, T◁p/η̇]`). These replacements are read off it, matched like the types of
+  replacements in the Instantiate panel, and are not searched for: they need not be made of
+  cells of the diagram, or of three cells (`p` is a 5-cell, the diagram may be a 4-diagram).
+  A schema whose cell has no instance in the diagram is done at once: there is nothing to find.
+  The placeholders that are left are searched for as below, with their types known.
 - for a 0-cell placeholder, its 0-cells;
 - for a placeholder of dimension `k`, composites of up to three of its `k`-cells (and the
-  inverses of invertible ones), including identities, with the right source and target.
+  inverses of invertible ones), including identities, with the right source and target; for
+  one of a higher dimension than the diagram, the cells that instances in the diagram were made with.
 
 Placeholders are solved from the lowest dimension up, so a placeholder's type is known when it
 is solved. If a schema depends on another generator that mentions a placeholder, the instance

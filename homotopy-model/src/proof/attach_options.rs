@@ -170,6 +170,15 @@ pub struct InferenceLimits {
     /// it was in effect ([`InferenceReport::narrowed`]).
     #[serde(default)]
     pub narrow_to_sheet: bool,
+    /// Whether to read the replacements of placeholders off the instances that the diagram
+    /// already has before searching for them (see [`Signature::infer_instances`]). On unless
+    /// a test switches it off to compare with the search as it was.
+    #[serde(default = "seeding_by_default")]
+    pub seeding: bool,
+}
+
+const fn seeding_by_default() -> bool {
+    true
 }
 
 /// The time one generator is given unless it is said otherwise: five seconds.
@@ -195,6 +204,7 @@ impl InferenceLimits {
         generator_ms: DEFAULT_GENERATOR_MS,
         max_dimension: 7,
         narrow_to_sheet: false,
+        seeding: true,
     };
 
     /// No limits at all: what the search did before there were any.
@@ -203,6 +213,7 @@ impl InferenceLimits {
         generator_ms: 0,
         max_dimension: u32::MAX,
         narrow_to_sheet: false,
+        seeding: true,
     };
 
     /// How long one generator may take, if there is a limit.
@@ -572,9 +583,14 @@ impl AttachOptionsJob {
                 kept: near.len() as u32,
                 of: all_generators.len() as u32,
             });
-            Pool::new(&proof.signature, near).cells()
+            Pool::reaching(&proof.signature, near, haystack.dimension()).cells()
         } else {
-            Pool::new(&proof.signature, all_generators.keys().copied()).cells()
+            Pool::reaching(
+                &proof.signature,
+                all_generators.keys().copied(),
+                haystack.dimension(),
+            )
+            .cells()
         };
         let dimension = haystack.dimension();
 
@@ -832,6 +848,7 @@ impl AttachOptionsJob {
                 embedding: embedding.into_iter().collect(),
                 substitution: None,
                 reflection: false,
+                inverse: false,
             })
             .collect()
     }
@@ -1049,6 +1066,7 @@ impl AttachOptionsJob {
                 &self.haystack,
                 self.boundary,
                 &self.point,
+                self.limits.seeding,
             )
             .map(|search| Inferring {
                 generator: index,
@@ -1115,17 +1133,22 @@ impl AttachOptionsJob {
                 },
                 option: AttachOption {
                     generator: info.generator,
-                    label: Some(
-                        Structure::Instance(
-                            self.signature.describe_substitution(&inferred.substitution),
-                        )
-                        .label(&info.name),
-                    ),
+                    label: Some({
+                        let description =
+                            self.signature.describe_substitution(&inferred.substitution);
+                        if inferred.inverse {
+                            Structure::InverseInstance(description)
+                        } else {
+                            Structure::Instance(description)
+                        }
+                        .label(&info.name)
+                    }),
                     diagram: inferred.diagram,
                     boundary_path: self.boundary_path,
                     embedding: inferred.embedding.into_iter().collect(),
                     substitution: Some(inferred.substitution),
                     reflection: false,
+                    inverse: inferred.inverse,
                 },
             });
         }
@@ -1452,6 +1475,7 @@ fn reflection_options(
             embedding: embedding.into_iter().collect(),
             substitution: None,
             reflection: true,
+            inverse: false,
         })
         .collect()
 }
