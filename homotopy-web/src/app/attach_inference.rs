@@ -43,6 +43,9 @@ const TIMEOUTS_BEFORE_SUSPENDING: u32 = 2;
 /// The highest dimension limit that the slider offers, which means no limit.
 pub const NO_DIMENSION_LIMIT: u32 = 12;
 
+/// The most seconds that the time for a generator can be set to (an hour).
+pub const MAX_GENERATOR_SECONDS: u32 = 3600;
+
 /// The version of the settings as they are kept in which the time is for one generator.
 const PER_GENERATOR: u32 = 2;
 
@@ -57,6 +60,8 @@ struct Kept {
     max_dimension: u32,
     #[serde(default)]
     narrow_to_sheet: bool,
+    #[serde(default = "yes")]
+    offer_definitions: bool,
     #[serde(default)]
     version: u32,
     #[serde(default)]
@@ -85,6 +90,10 @@ impl Kept {
     }
 }
 
+const fn yes() -> bool {
+    true
+}
+
 /// The default time for one generator, in seconds.
 const DEFAULT_SECONDS: u32 = homotopy_model::proof::DEFAULT_GENERATOR_MS / 1000;
 
@@ -111,6 +120,24 @@ pub fn limits() -> InferenceLimits {
     }
 }
 
+/// The limits for the search for one generator that was asked for by name (dropped on the diagram,
+/// or picked and clicked): the settings, except that the time for a generator is not limited, as
+/// it is not for a click.
+///
+/// Someone who names a generator wants it looked for, can see that the search is going on (the
+/// busy pill, and what it has found listed as it goes along) and can end it at any time (`Esc`,
+/// the pill, *Stop*; the project is as it was), so there is no point in giving up for them: the
+/// limit in the settings is for the searches that look at everything and must not be held up by
+/// one generator that has no end. The rest of the settings (whether to infer instances at all,
+/// the dimension up to which to) are theirs still.
+#[must_use]
+pub fn limits_for_generator() -> InferenceLimits {
+    InferenceLimits {
+        generator_ms: 0,
+        ..limits()
+    }
+}
+
 /// Takes the settings that were kept into the settings, at the start.
 pub fn load() {
     let Some(kept) = read_settings().and_then(|json| serde_json::from_str::<Kept>(&json).ok())
@@ -118,9 +145,10 @@ pub fn load() {
         return;
     };
     AppSettings::set_infer_instances(kept.enabled);
-    AppSettings::set_generator_budget(kept.generator_seconds());
+    AppSettings::set_generator_budget(kept.generator_seconds().min(MAX_GENERATOR_SECONDS));
     AppSettings::set_infer_max_dimension(kept.max_dimension.clamp(1, NO_DIMENSION_LIMIT));
     AppSettings::set_infer_narrow_to_sheet(kept.narrow_to_sheet);
+    AppSettings::set_offer_definitions(kept.offer_definitions);
 }
 
 /// Keeps the settings.
@@ -129,6 +157,7 @@ pub fn store() {
         enabled: AppSettings::get_infer_instances(),
         max_dimension: AppSettings::get_infer_max_dimension(),
         narrow_to_sheet: AppSettings::get_infer_narrow_to_sheet(),
+        offer_definitions: AppSettings::get_offer_definitions(),
         version: PER_GENERATOR,
         generator_seconds: Some(AppSettings::get_generator_budget()),
         budget_seconds: None,
@@ -314,6 +343,7 @@ mod tests {
             enabled: true,
             max_dimension: 7,
             narrow_to_sheet: true,
+            offer_definitions: false,
             version: PER_GENERATOR,
             generator_seconds: Some(0),
             budget_seconds: Some(20),
@@ -324,6 +354,9 @@ mod tests {
         let read = kept(&written);
         assert_eq!(read.generator_seconds(), 0);
         assert!(read.narrow_to_sheet);
+        // Definitions first is on unless it was turned off.
+        assert!(!read.offer_definitions);
+        assert!(kept(r#"{"enabled":true,"max_dimension":7}"#).offer_definitions);
         let seven = kept(r#"{"enabled":true,"max_dimension":7,"version":2,"generator_seconds":7}"#);
         assert_eq!(seven.generator_seconds(), 7);
     }

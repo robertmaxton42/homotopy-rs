@@ -2,14 +2,17 @@ use std::convert::{Into, TryFrom};
 
 pub use actions_job::{ActionsJob, ActionsOutcome, REPLAYING};
 pub use attach_options::{
-    can_attach, AttachOptionsJob, AttachOutcome, CannotAttach, InferenceLimits, InferenceReport,
-    Narrowed, NoAttachment, PlainReport, DEFAULT_GENERATOR_MS, SHEET_REACH,
+    can_attach, AttachOptionsJob, AttachOutcome, CannotAttach, Found, InferenceLimits,
+    InferenceReport, Narrowed, NoAttachment, PlainReport, Slot, Streamed, DEFAULT_GENERATOR_MS,
+    SHEET_REACH,
 };
 pub use completion::{
     Ambiguity, InferJob, Inference, Mismatch, Part, ReplacementError, Status, Uncuttable,
 };
+pub use definitions::{cell_at, definitions_of, DefinitionsJob, DefinitionsOutcome};
 pub use drafts::{Draft, DraftEdit, Drafts};
 use homotopy::Homotopy;
+use homotopy_common::hash::FastHashSet;
 use homotopy_core::{
     common::{Boundary, BoundaryPath, Direction, Generator, Height, SliceIndex},
     contraction::{self, ContractionError},
@@ -35,6 +38,7 @@ mod signature;
 mod actions_job;
 mod attach_options;
 mod completion;
+mod definitions;
 mod describe;
 mod drafts;
 pub mod generators;
@@ -349,6 +353,12 @@ impl Action {
     }
 }
 
+/// Whether a diagram has a cell of any of the generators.
+fn mentions_any(diagram: &Diagram, generators: &FastHashSet<Generator>) -> bool {
+    let mentioned = diagram.generators();
+    generators.iter().any(|g| mentioned.contains_key(g))
+}
+
 #[derive(Debug, Error)]
 pub enum ProofError {
     #[error(transparent)]
@@ -448,10 +458,11 @@ impl ProofState {
     #[must_use]
     pub fn resets_panzoom(&self, action: &Action) -> bool {
         match *action {
-            Action::EditSignature(SignatureEdit::Remove(node)) => self
-                .workspace
-                .as_ref()
-                .is_some_and(|ws| self.signature.has_descendents_in(node, &ws.diagram)),
+            Action::EditSignature(SignatureEdit::Remove(node)) => {
+                self.workspace.as_ref().is_some_and(|ws| {
+                    mentions_any(&ws.diagram, &self.signature.removal_generators(node))
+                })
+            }
             Action::AscendSlice(i) => i > 0,
             Action::SelectGenerator(_)
             | Action::ClearWorkspace
@@ -1115,22 +1126,24 @@ impl ProofState {
     fn edit_signature(&mut self, edit: &SignatureEdit) -> Result<bool, ProofError> {
         // intercept remove events in order to clean-up workspace and boundaries
         if let SignatureEdit::Remove(node) = edit {
+            // (Everything the removal removes, not only what mentions the node: a generator
+            // that depends on a placeholder it does not mention goes with it.)
+            let removed = self.signature.removal_generators(*node);
             // remove from the workspace
             if let Some(ws) = &self.workspace {
-                if self.signature.has_descendents_in(*node, &ws.diagram) {
+                if mentions_any(&ws.diagram, &removed) {
                     self.workspace = None;
                 }
             }
             // remove from the boundary
             if let Some(selected) = &self.boundary {
-                if self.signature.has_descendents_in(*node, &selected.diagram) {
+                if mentions_any(&selected.diagram, &removed) {
                     self.boundary = None;
                 }
             }
 
             // remove from stashed workspaces
-            self.stash
-                .retain(|ws| !self.signature.has_descendents_in(*node, &ws.diagram));
+            self.stash.retain(|ws| !mentions_any(&ws.diagram, &removed));
         }
 
         if let SignatureEdit::Edit(node, SignatureItemEdit::MakeOriented(true)) = edit {
@@ -1288,6 +1301,12 @@ pub struct AttachOption {
     /// instance attached in place of `diagram` (which has the same shape).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub substitution: Option<Vec<(Generator, Diagram)>>,
+    /// Whether the cell is a reflection of `generator` (a dual, a mate, a rotation, its image by
+    /// a symmetry: see [`Structure::Reflection`] and [`Structure::Symmetry`]) and not the
+    /// generator itself, its inverse or a cell raised from it. Only for showing: the list of
+    /// options puts those of one generator in a group of their own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reflection: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]

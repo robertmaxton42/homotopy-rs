@@ -18,7 +18,10 @@
 //!   (`limit_ms`: the most that the step about to be done may take if the job keeps its limits,
 //!   `0` for no limit: the page ends a worker that is silent for longer than that and a grace), for some jobs
 //!   `{kind: "partial", job, bytes}` (an answer that will do if the job has to be ended: see
-//!   [`homotopy_model::job::Job::checkpoint`]), and finally `{kind: "done", job, bytes}`, or
+//!   [`homotopy_model::job::Job::checkpoint`]), for a search for attachments
+//!   `{kind: "options", job, bytes}` (the options found since the last such message, for the page
+//!   to show as they come: see [`homotopy_model::remote::Remote::options`]; the answer does not
+//!   repeat them), and finally `{kind: "done", job, bytes}`, or
 //!   `{kind: "panic", job, message}` if the worker crashed (after which it is of no use, and the
 //!   page ends it).
 //!
@@ -71,6 +74,12 @@ pub enum Event {
     /// What the job would come to if it were ended now: the answer for the page to use if it has
     /// to end the job because it takes too long.
     Partial {
+        job: u64,
+        bytes: Vec<u8>,
+    },
+    /// Options that the search for attachments has found since it last said (see
+    /// [`Remote::options`](homotopy_model::remote::Remote::options)).
+    Options {
         job: u64,
         bytes: Vec<u8>,
     },
@@ -204,7 +213,7 @@ impl Client {
             Event::Crashed { .. } => {
                 self.failures += 1;
             }
-            Event::Progress { .. } | Event::Partial { .. } => {}
+            Event::Progress { .. } | Event::Partial { .. } | Event::Options { .. } => {}
         }
         true
     }
@@ -322,6 +331,10 @@ fn parse_event(data: &JsValue) -> Option<Event> {
             job: job()?,
             bytes: get(data, "bytes").dyn_into::<Uint8Array>().ok()?.to_vec(),
         },
+        "options" => Event::Options {
+            job: job()?,
+            bytes: get(data, "bytes").dyn_into::<Uint8Array>().ok()?.to_vec(),
+        },
         "done" => Event::Done {
             job: job()?,
             bytes: get(data, "bytes").dyn_into::<Uint8Array>().ok()?.to_vec(),
@@ -415,7 +428,7 @@ pub fn worker_message(data: &JsValue) {
         let mut last_label: Option<&'static str> = None;
         let mut last_limit: u32 = 0;
         EXECUTOR.with(|executor| {
-            executor.borrow_mut().run_with_checkpoints(
+            executor.borrow_mut().run_streaming(
                 &bytes.to_vec(),
                 &mut |step: Step| {
                     // A change of what the job is doing, or of how long a step may take, is
@@ -438,6 +451,13 @@ pub fn worker_message(data: &JsValue) {
                     Reflect::set(&reply, &"bytes".into(), &buffer).unwrap();
                     post(&reply, Some(&buffer.buffer()));
                 },
+                Some(&mut |found: Vec<u8>| {
+                    let buffer = Uint8Array::from(found.as_slice());
+                    let reply = message("options");
+                    Reflect::set(&reply, &"job".into(), &(job as f64).into()).unwrap();
+                    Reflect::set(&reply, &"bytes".into(), &buffer).unwrap();
+                    post(&reply, Some(&buffer.buffer()));
+                }),
             )
         })
     };

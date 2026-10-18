@@ -28,7 +28,7 @@ pub struct Info {
     pub progress: Option<Progress>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Event {
     Show(Info),
     Hide,
@@ -36,31 +36,63 @@ pub enum Event {
 }
 
 thread_local! {
-    static INDICATOR: RefCell<Option<Callback<Event>>> = const { RefCell::new(None) };
+    /// Whoever is told what is going on: the indicator, and whatever else shows how far a job is
+    /// (see [`watch`]).
+    static LISTENERS: RefCell<Vec<(u64, Callback<Event>)>> = const { RefCell::new(Vec::new()) };
+    static NEXT_LISTENER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// What was last shown, until it is hidden.
+    static CURRENT: RefCell<Option<Info>> = const { RefCell::new(None) };
 }
 
-fn emit(event: Event) {
-    // Not while the indicator is being updated, as it is when it calls out to cancel.
-    let callback = INDICATOR.with(|indicator| indicator.try_borrow().ok().and_then(|i| i.clone()));
-    if let Some(callback) = callback {
-        callback.emit(event);
+fn emit(event: &Event) {
+    match event {
+        Event::Show(info) => CURRENT.with(|current| *current.borrow_mut() = Some(info.clone())),
+        Event::Hide => CURRENT.with(|current| *current.borrow_mut() = None),
+        Event::Refused => {}
     }
+    // Not while a listener is being added or taken away, as it is when it calls out to cancel.
+    let callbacks: Vec<_> = LISTENERS.with(|listeners| {
+        listeners.try_borrow().map_or_else(
+            |_| vec![],
+            |listeners| listeners.iter().map(|(_, c)| c.clone()).collect(),
+        )
+    });
+    for callback in callbacks {
+        callback.emit(event.clone());
+    }
+}
+
+/// Listens to what is going on, for things other than the indicator that show how far a job is
+/// (the line of a list that is still being filled in). Returns what to give to [`unwatch`] and
+/// what is going on now, if anything.
+pub fn watch(callback: Callback<Event>) -> (u64, Option<Info>) {
+    let id = NEXT_LISTENER.with(|next| {
+        next.set(next.get() + 1);
+        next.get()
+    });
+    LISTENERS.with(|listeners| listeners.borrow_mut().push((id, callback)));
+    (id, CURRENT.with(|current| current.borrow().clone()))
+}
+
+/// Stops listening.
+pub fn unwatch(id: u64) {
+    LISTENERS.with(|listeners| listeners.borrow_mut().retain(|(other, _)| *other != id));
 }
 
 /// Shows what a job is doing, or updates what is shown about it.
 pub fn show(info: Info) {
-    emit(Event::Show(info));
+    emit(&Event::Show(info));
 }
 
 /// Takes the indicator down.
 pub fn hide() {
-    emit(Event::Hide);
+    emit(&Event::Hide);
 }
 
 /// Acknowledges input that was refused because of the job: the indicator, which may not have
 /// faded in yet, is shown right away, and shakes.
 pub fn refused() {
-    emit(Event::Refused);
+    emit(&Event::Refused);
 }
 
 fn now() -> f64 {
@@ -80,6 +112,7 @@ pub enum Msg {
 }
 
 pub struct BusyIndicator {
+    listener: u64,
     info: Option<Info>,
     /// When the job started.
     started: f64,
@@ -93,9 +126,10 @@ impl Component for BusyIndicator {
 
     fn create(ctx: &Context<Self>) -> Self {
         let callback = ctx.link().callback(Msg::Event);
-        INDICATOR.with(|indicator| *indicator.borrow_mut() = Some(callback));
+        let (listener, info) = watch(callback);
         Self {
-            info: None,
+            listener,
+            info,
             started: 0.0,
             refusals: 0,
         }
@@ -163,6 +197,6 @@ impl Component for BusyIndicator {
     }
 
     fn destroy(&mut self, _ctx: &Context<Self>) {
-        INDICATOR.with(|indicator| *indicator.borrow_mut() = None);
+        unwatch(self.listener);
     }
 }

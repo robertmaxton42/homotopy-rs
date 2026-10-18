@@ -95,9 +95,11 @@ pub trait Notation: Sync {
         format!(r"{cell} \triangleright {whisker}")
     }
 
-    /// The exchange of two cells, the first being the lowest in the source: `\mathrm{ex}_{f,g}`.
+    /// The exchange of two cells, the first being the lowest in the source, when it is not known
+    /// on which side of each other they pass (they are attached to something that does not say):
+    /// `\beta_{f,g}`, the same symbol as the [braid](Self::braid) with the sides given.
     fn exchange(&self, first: &str, second: &str) -> String {
-        format!(r"\mathrm{{ex}}_{{{first},{second}}}")
+        format!(r"\beta_{{{first},{second}}}")
     }
 
     /// The braid of two cells that are attached to nothing: `\beta_{f,g}`, or the one that

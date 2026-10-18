@@ -24,11 +24,16 @@ that case, say so:
 Either way only that generator is searched for, at that point: the generator itself, its
 inverse, the cells raised from it, its reflections, and, if it is a schema, its instances.
 (Other generators are not looked at, so this is a good deal quicker than a click, which looks
-at all of them, and a schema gets all of the time that inferring instances is allowed rather
-than a share of it.) What happens next is as for a click: if there is nothing to attach you are
+at all of them.) **This search has no time limit**: you have asked for that generator, you can
+see that it is searching and what it has found so far (see *The list fills in as the search
+goes* below, which holds for the instances of a schema as well), and `Esc` (or the pill, or
+*Stop*) ends it and leaves the project as it was, so it is better to let it search than to have it
+give up. (The time that a generator is given when a click looks at everything,
+*Give up on a generator after N s* in Settings, does not apply to it; the other settings, whether
+to infer instances at all and up to which dimension, do.) What happens next is as for a click: if there is nothing to attach you are
 told so, if there is one way to do it it is done, and if there are several you choose from a
-list. While the search runs the busy pill is up, as for a click, and `Esc` cancels it. The
-project is unchanged if you cancel.
+list. While the search runs the busy pill is up, as for a click (see *The list fills in as the
+search goes* below for what `Esc` does).
 
 A generator that cannot be attached anywhere in the diagram at all (it has more than one
 dimension more than the diagram has, the cells that it starts and ends at are not in the
@@ -36,6 +41,64 @@ diagram, or it is a 0-cell and weak units are off) is not accepted by the diagra
 it there, and the button tells you why. This is worked out when you pick the generator, from
 dimensions and which cells there are; it never searches, so it cannot say that there is a way
 to attach it at a particular point, only that there is no way at all.
+
+## The list fills in as the search goes
+
+A search can take many seconds, and what you want is often found early. So the list of options
+does not wait for the end: it opens when the **first option is found** and the rest are put into
+it as the search finds them. A line at the top says **Still searching…** (what it is doing, and
+how far along it is) with a **Stop** button.
+
+- **The order is the final order.** The generators are searched cheapest first, but the options are
+  listed in the order of the generators, as they always were in a finished list. A new option is
+  put into its place, so the list grows in the middle as well as at the end, and an option that is
+  there never moves. The keys `1` to `9` stand for places in the finished list, which is not known
+  yet, so they do nothing while the search runs (the busy pill shakes); they work on the list
+  once the search is over. (Nothing in the list is numbered on screen.)
+- **Instances are listed as they are found**, one at a time, and not when the search for their
+  schema is over (which for some schemas is never): each goes in the place it has in the finished
+  list, among the instances found before it. The list is drawn at most five times a second, so
+  that a search that finds many options at once does not leave the page no time to respond (to a
+  click on an option, say); what comes between is drawn with the next.
+- **Clicking an option while the search runs** means "this is the one": the search is stopped at
+  once (a search in the background is ended, not waited for; a search on the page stops at the end
+  of the step it is in) and that option is attached, as it would have been had the search
+  finished. The busy pill stays up and says what is being done for the pick (attaching an
+  instance, *Instantiating…*, takes a moment), so there is never a gap in which nothing says what
+  is going on. The search had not changed the project, so nothing else is affected.
+- **`Esc`, the **Stop** button, or clicking the busy pill** stops the search and **keeps the
+  options found so far**. The list says it was stopped and the notice says that there may be
+  others; the project is unchanged (listing options does not change it). `Esc` again, or the
+  close button, puts the list away. If nothing had been found, the list is as it was before.
+  Closing the list while it is filling in stops the search and puts the list away.
+- **One option is attached at once only if the search ends with exactly one.** The first option
+  found is listed, not attached, since more may follow.
+- With **definitions first**, *Search everything* fills in the list below the definitions in the
+  same way, and a stopped search keeps both, with *Search everything again* to start over.
+
+## Definitions first
+
+When you click on **one cell** of the diagram, what you want next is nearly always that cell's
+*definition*: a generator one dimension up that has the cell as its source or its target, such
+as the unfolding that was made right after it. So the list does not wait for the search of
+everything: it first offers the definitions, at the top, under "Definitions of X". They are found
+by comparing boundaries (no search), checked by matching them where you clicked, so they all
+attach; and a button, **Search everything for more options**, runs the full search, which keeps
+the definitions at the top and lists the rest below them.
+
+"One cell" means: you clicked on a vertex of the picture (not a wire or a region), and the cells
+of the dimension of the diagram there are all of one generator. A vertex with several different
+cells behind each other (see *Sheets*), a vertex where only lower cells are (a crossing), a wire,
+a region and a click with a sheet chosen that is not a vertex are searched for as always, as are
+clicks where the cell has no definition, or none of its definitions attaches there. The
+generator after the cell in the signature is looked at first, then the others.
+
+This is a shortcut and can miss. Instances of schemas are only offered if they already exist as
+generators (they are not inferred or made), and the duals and other reflections of a definition
+are not looked for: use *Search everything*. It never offers something that does not attach.
+Settings: *Offer definitions first when clicking a cell* (on by default); turn it off to have
+every click search everything. Picking a generator and clicking, or dropping one, always search
+for that generator only, as before.
 
 ## Sheets: what is behind a position
 
@@ -120,20 +183,34 @@ on a generator after N s*, 5 s unless you change it, 0 for no limit) for all of 
 the search gives up on that generator, keeps what it had found for it, and goes on to the next.
 There is no limit on the search as a whole, only on each generator: a diagram where more generators
 could attach takes longer, but a generator that takes long does not make the others wait. (`Esc`
-ends the search, and the project is as it was.)
+ends the search and the project is as it was; the options found so far stay listed.)
 
 What is offered is always valid, but may be missing some of what a generator would have had, and
 a notice says which generators were given up on ("Gave up on 2 generators after 5 s each: ...";
 "Instance inference gave up on a schema after 5 s: ..."). To look for just those, drag the
-generator onto the diagram or pick it with the pointing hand (the search for one generator has
-the same time, so raise the limit if you want to wait longer for it), or choose a sheet, which
-narrows the search to the cells that reach it. The cheapest generators are looked at first.
+generator onto the diagram or pick it with the pointing hand (that search has no time limit, so it
+looks for as long as it takes, and `Esc` ends it), or choose a sheet, which narrows the search to
+the cells that reach it. The cheapest generators are looked at first.
 
 If a step of the search does not look at the clock and runs on past the time (this should not
 happen, but the page does not rely on it), the page ends the background worker after the time for
 a generator and a short grace and offers what the worker had found before the generator it was in
 the middle of; that generator is given up on, the ones after it are listed as not tried, and
 the notice says the search was ended.
+
+## Instances and reflections are in folders
+
+Plain options (the generator itself, its inverse, the cells raised from it) are listed one by one,
+at the top. The **instances** of a schema that were inferred are not: there can be very many, so
+there is one folder for each schema, with its name and "N instances". The **reflections** of a
+generator (its dual, mates and rotations, its image by a symmetry) are in a folder too, one for
+each generator: "N reflections". Each folder starts closed, and a closed folder draws nothing
+under its name, which is what keeps a long list quick (typesetting the names is the slow part).
+Click it to open it; the ones you open stay open for the rest of the session, so the next click
+that has some of the same does not close them. A folder has the **colour of its generator** at
+its edge, as the generator's row in the signature does (hatched for a placeholder, in light
+stripes if its colour is dark), to find your way about a long list. The keys `1` to `9` still
+count the options in the order of the finished list, folders or not.
 
 ## Instances of schemas are a heuristic
 

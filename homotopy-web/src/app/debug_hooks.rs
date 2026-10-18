@@ -5,6 +5,7 @@
 //!   `{"AttachGenerator": [{"id": 48, "dimension": 6}, [{"Regular": 1}], false]}` for dropping a
 //!   generator on a point of the diagram; `importActions(bytes)`
 //!   and `importProof(bytes)` do the same with a file's contents.
+//! - `setUrl(path)` changes the page's address as the app does when a project is opened.
 //! - `state()` is a JSON summary of the project and the job in progress (see [`Summary`]).
 //! - `sheet(json)` and `sheets()` choose a sheet over the diagram, as the keys do, and say what
 //!   the choices are (see `diagram_svg::sheets`).
@@ -49,10 +50,14 @@ enum Command {
     Proof(proof::Action),
     /// With the limits from the settings.
     SelectPoint(Vec<SliceIndex>, bool),
+    /// A click with definitions first, with the limits from the settings.
+    SelectCell(Vec<SliceIndex>, bool),
+    /// Searches for everything where the definitions were offered.
+    SearchEverything,
     /// With these limits on inferring instances.
     SelectPointWith(Vec<SliceIndex>, bool, proof::InferenceLimits),
     /// Attaches one generator (`{"id": .., "dimension": ..}`) at a point, as dropping it there does,
-    /// with the limits from the settings.
+    /// with the limits from the settings except that a generator has no time limit.
     AttachGenerator(homotopy_core::Generator, Vec<SliceIndex>, bool),
     /// The same with these limits on inferring instances.
     AttachGeneratorWith(
@@ -64,6 +69,11 @@ enum Command {
     /// Picks a generator for the next click on the diagram to attach (`null` puts it down).
     Arm(Option<homotopy_core::Generator>),
     Select(usize),
+    /// Picks the option at this place in the list as it is now, while the search is still going
+    /// on (see `Action::PickStreamed`).
+    PickStreamed(usize),
+    /// Stops the search that is going on, keeping what it has found.
+    StopSearch,
     ClearSelections,
     Undo,
     Redo,
@@ -84,6 +94,10 @@ impl From<Command> for model::Action {
             Command::SelectPoint(point, weak_units) => {
                 Self::SelectPoint(point, weak_units, super::attach_inference::limits())
             }
+            Command::SelectCell(point, weak_units) => {
+                Self::SelectCell(point, weak_units, super::attach_inference::limits())
+            }
+            Command::SearchEverything => Self::SearchEverything,
             Command::SelectPointWith(point, weak_units, limits) => {
                 Self::SelectPoint(point, weak_units, limits)
             }
@@ -91,13 +105,16 @@ impl From<Command> for model::Action {
                 generator,
                 point,
                 weak_units,
-                super::attach_inference::limits(),
+                super::attach_inference::limits_for_generator(),
             ),
             Command::AttachGeneratorWith(generator, point, weak_units, limits) => {
                 Self::AttachGenerator(generator, point, weak_units, limits)
             }
             Command::Arm(generator) => Self::Arm(generator),
             Command::Select(index) => Self::Select(index),
+            // (The place in the list is looked up where the state is: see `install`.)
+            Command::PickStreamed(_) => unreachable!("looked up where the state is"),
+            Command::StopSearch => Self::StopSearch,
             Command::ClearSelections => Self::ClearSelections,
             Command::Undo => linear(Backward),
             Command::Redo => linear(Forward),
@@ -129,6 +146,11 @@ struct Summary {
     project_bytes: usize,
     generators: usize,
     options: Option<usize>,
+    /// How the options are listed: `Complete`, `Searching` or `Stopped`.
+    listing: String,
+    /// If the first options are definitions: how many, and whether the search for everything
+    /// else is still to do.
+    definitions: Option<(usize, bool)>,
     /// The generator picked to be attached by the next click, as `[id, dimension]`.
     armed: Option<(usize, usize)>,
     /// The crash dump's action log: its number of actions, and the size of the import it starts
@@ -169,6 +191,11 @@ fn summary() -> String {
             model::Selectables::Merge(_, tos) => tos.len(),
             model::Selectables::Attach(options) => options.len(),
         }),
+        listing: format!("{:?}", state.listing),
+        definitions: state
+            .definitions
+            .as_ref()
+            .map(|definitions| (definitions.count, definitions.more.is_some())),
         armed: state
             .armed
             .map(|generator| (generator.id, generator.dimension)),
@@ -464,6 +491,15 @@ pub fn install(link: &Scope<App>) {
         Closure::<dyn Fn(String) -> Result<(), JsValue>>::new(move |json: String| {
             let command: Command =
                 serde_json::from_str(&json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            if let Command::PickStreamed(index) = command {
+                let option = STATE.with(|state| match &state.borrow().0.options {
+                    Some(model::Selectables::Attach(options)) => options.get(index).cloned(),
+                    _ => None,
+                });
+                let option = option.ok_or_else(|| JsValue::from_str("no such option"))?;
+                dispatch.send_message(Message::Dispatch(model::Action::PickStreamed(option)));
+                return Ok(());
+            }
             dispatch.send_message(Message::Dispatch(command.into()));
             Ok(())
         })
@@ -495,6 +531,14 @@ pub fn install(link: &Scope<App>) {
             )));
         })
         .into_js_value(),
+    );
+
+    // `setUrl(path)`: the app changes the address of the page as opening a project does (to test
+    // that the history trap survives it).
+    set(
+        "setUrl",
+        Closure::<dyn Fn(String)>::new(|path: String| model::update_window_url_path(&path))
+            .into_js_value(),
     );
 
     let import = link.clone();

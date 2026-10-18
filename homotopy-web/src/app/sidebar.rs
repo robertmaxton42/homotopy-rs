@@ -264,6 +264,11 @@ impl Component for SidebarDrawer {
 pub struct SidebarProps {
     pub proof: Proof,
     pub options: Option<model::Selectables>,
+    /// If the first of the options are the definitions of the cell that was clicked.
+    pub definitions: Option<model::Definitions>,
+    /// Whether the options are complete, still coming in, or what a search had found when it was
+    /// stopped.
+    pub listing: model::Listing,
     /// The instantiations in progress, which the app owns: what they infer is a job.
     pub drafts: Drafts,
     /// The generator picked to be attached by the next click on the diagram.
@@ -406,6 +411,8 @@ impl Sidebar {
                     <AttachView
                         dispatch={model_dispatch.clone()}
                         options={options.clone()}
+                        definitions={ctx.props().definitions.clone()}
+                        listing={ctx.props().listing}
                         signature={ctx.props().proof.signature.clone()}
                     />
                 </SidebarDrawer>
