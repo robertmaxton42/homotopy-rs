@@ -1053,17 +1053,47 @@ and check it with the debug hooks below.
   generators: 8ms per cold preview in the release build, 44ms in the debug build, then microseconds).
   Tests: `homotopy-model/tests/removal.rs` (the cascade, transitivity, no cascade from an instance, undo,
   workspace, preview = deletion on the examples and, with `HOMOTOPY_TANGENT_FIXTURE=<.hom>`, the fixture).
+  **Reasons** (`RemovalReason`, `removal_reasons`, `removal_preview_reasons`, `removal_cascade_reasons`; the node
+  versions are these with the reasons dropped, so there is still one definition of the cascade): each node
+  that goes says why, the first reason the breadth first search finds: `Itself`, `Within(root)` (under a
+  node that goes: folder contents, instances), `Mentions(g)` (diagram), `Substitutes(g)` (an instance whose
+  substitution mentions `g`, as the placeholder or in a replacement) or `DependsOn(g)` (lists a removed
+  placeholder). `dependents_index` keeps a `Link` for each (node, generator). `check_reasons` in
+  `removal.rs` checks that every reason is true (the generator it names goes earlier) for every generator of
+  the examples and the fixture.
   **Preview in the signature** (`app/signature/removal_preview.rs`): while the pointer is on the delete button
-  of a row being edited, or the button has the focus (it is a focusable `role=button` with `aria-describedby`
-  the note), `show` computes `removal_preview(node, 16)`, a few diagrams per step and yielding between
-  (`TimeoutFuture(0)`), saying "Checking..." until it is done, then writes to the DOM directly like the
-  tooltip: rows have `data-node`; those that go get `data-removal` (tint and strike-through in
-  `styles.css`), the nearest row on show that holds some out of sight (a closed folder, a schema with its
-  instances closed) gets `data-removal-inside="N"` (a "-N inside" badge), and `.signature__removal-note`
-  under the row says "Deletes N more (M out of sight)" (for a folder: "N generators inside and M more
-  outside it"), with the names in its `title`. `hide` clears it all (mouse leave, blur, click, and the
-  row's `destroy`: a row that goes never sees the pointer leave). `plan` is the pure part (tested natively).
-  There is no confirm step, so nothing else lists the names. Nothing re-renders the signature.
+  of a row being edited, or the button has the focus (a focusable `role=button`), `show` computes
+  `removal_preview_reasons(node, 16)`, a few diagrams per step and yielding between (`TimeoutFuture(0)`),
+  saying "Checking..." until it is done. Rows are written to directly like the tooltip: they have
+  `data-node`; those that go get `data-removal` (tint and strike-through in `styles.css`), the nearest row on
+  show that holds some out of sight (a closed folder, a schema with its instances closed) gets
+  `data-removal-inside="N"` (a "-N inside" badge). The note under the row is **`RemovalBox`**, a small
+  component of its own (registered by node in a thread-local, told what to show by `tell`, so only it
+  renders): "Deletes N more (M out of sight)" (for a folder: "N generators inside and M more outside it"),
+  which, when there is something to list, is a button with a triangle (`aria-expanded`). Expanded, it lists
+  the generators that go in groups (`Group`: *In this folder*; *Mentioning or depending on it*, for a folder
+  *Outside it ...*; *Instances*), each name with KaTeX (`TexSpan`, as `inference_notice`), the reason ("mentions X",
+  "depends on placeholder X", "instance of X", "in the folder") and nothing rendered until it is expanded, at most
+  `MOST_LISTED` = 50, then "and N more". `plan` is the pure part (tested natively, with the reasons).
+  Clicking a name (`go_to`) opens the closed folders and instances above it (`closed_above`: the view-only
+  `ToggleFolder`/`ToggleInstances`, no history), waits for the row to be drawn (up to 1s), refreshes the
+  marks, scrolls it into view (`nearest`) and flashes it (`data-removal-flash`, 1.4s). Expanding scrolls the
+  box into view.
+  **Staying open.** The box has to be reachable: it is *held* (`Hold`) while the pointer is within `GRACE_PX` = 40
+  of the rectangle that holds the button and the box (so the way between them counts: window `pointermove`, the
+  only listener work while it is on show; `Session` keeps the listeners, dropped a tick after `hide`) or the
+  keyboard focus is in either (`focusin`/`focusout`, only `:focus-visible` counts: a box clicked with the mouse is
+  held by the pointer), and closes `CLOSE_AFTER_MS` = 300 after neither holds (an epoch on `Hold` changes
+  makes a timer that is out of date do nothing), at once on `Esc` (focus inside goes back to the button without
+  showing it again: `QUIET_FOCUS`) or a `pointerdown` outside both. Going to a name *pins* it until the pointer
+  next moves (the signature may have moved the box from under it; a `pointermove` at the position of the last
+  press is the browser saying where the pointer is again and is ignored). Keyboard: Tab from the button goes
+  into the box (it is not next in the tab order), Shift+Tab from its first control goes back. `hide` clears the
+  marks (mouse leave is no longer a hide), and the box's `destroy` (a row that goes never sees the pointer
+  leave) calls `forget`. Nothing re-renders the signature (tested: no DOM change outside the box and the row
+  marks while hovering). There is no confirm step, so the list is the only place the names are. Gaps: the 40px
+  is of the union rectangle, so a tall expanded box makes a large area; touch has no hover (the button
+  deletes at once, as before); the list is not virtualised (50 names).
 
 - **Settings drawer** (`app/settings.rs`, `components/help_tip.rs`). The drawer shows titles, controls and a
   line of *status* only (`settings__note`: when the last backup was, why backups do not work, inference

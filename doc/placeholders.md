@@ -281,7 +281,13 @@ what mentions anything that goes. Undoing brings everything back.
 To see what a deletion would delete before doing it, open the settings of a generator or folder
 and hover over (or focus) its delete button: the rows that would go are tinted and struck out,
 a closed folder, or a schema whose instances are closed, that holds some says how many
-("−2 inside"), and a line under the row says "Deletes 4 more".
+("−2 inside"), and a box under the row says "Deletes 4 more". Click the box (or press Tab from
+the button, then Enter) to see *which* generators: they are listed in groups (in the folder,
+mentioning or depending on it, instances), each with the reason ("mentions X", "depends on
+placeholder X", "instance of X"), up to 50. Click a name to go to its row in the signature (closed
+folders are opened). The box stays while the pointer is near the button or the box (within about
+40 pixels, for a third of a second after it has left) or the focus is in it; `Esc`, or a click
+elsewhere, closes it.
 
 ## Not yet
 

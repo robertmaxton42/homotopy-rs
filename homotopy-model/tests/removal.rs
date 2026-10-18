@@ -8,7 +8,10 @@ use homotopy_core::{
 };
 use homotopy_model::{
     history::{proof_from_state, History, Proof},
-    proof::{Action, ProofState, Signature, SignatureEdit, SignatureItem, SignatureItemEdit},
+    proof::{
+        Action, ProofState, RemovalReason, Signature, SignatureEdit, SignatureItem,
+        SignatureItemEdit,
+    },
     serialize,
 };
 
@@ -239,7 +242,88 @@ fn check_preview(sig: &Signature) {
                 .collect(),
         );
         assert_eq!(from_nodes, gone, "{g:?}");
+        check_reasons(sig, node);
     }
+}
+
+/// The reasons are the nodes of the deletion, in its order, and each reason is true: a node
+/// that goes with another is under it, or its diagram mentions a generator that goes before it,
+/// or it is an instance whose substitution does, or it lists a placeholder that goes before it.
+fn check_reasons(sig: &Signature, node: homotopy_common::tree::Node) {
+    let reasons = sig.removal_reasons(node);
+    let nodes = sig.removal_nodes(node);
+    assert_eq!(reasons.iter().map(|r| r.0).collect::<Vec<_>>(), nodes);
+    assert_eq!(reasons.first(), Some(&(node, RemovalReason::Itself)));
+    let mut before: Vec<homotopy_common::tree::Node> = vec![];
+    let mut generators_before: Vec<Generator> = vec![];
+    for &(n, why) in &reasons {
+        let info = sig.find_generator(n).and_then(|g| sig.generator_info(g));
+        match why {
+            RemovalReason::Itself => assert_eq!(n, node),
+            RemovalReason::Within(root) => {
+                assert!(before.contains(&root) && root != n);
+                assert!(sig.as_tree().descendents_of(root).any(|d| d == n));
+            }
+            RemovalReason::Mentions(g) => {
+                assert!(generators_before.contains(&g));
+                assert!(info.unwrap().diagram.generators().contains_key(&g));
+            }
+            RemovalReason::Substitutes(g) => {
+                assert!(generators_before.contains(&g));
+                let made = info.unwrap().instance.as_ref().unwrap();
+                assert!(made
+                    .substitution
+                    .iter()
+                    .any(|(p, d)| *p == g || d.generators().contains_key(&g)));
+            }
+            RemovalReason::DependsOn(g) => {
+                assert!(generators_before.contains(&g));
+                assert!(info.unwrap().depends_on.contains(&g));
+                assert!(sig.generator_info(g).unwrap().placeholder);
+            }
+        }
+        before.push(n);
+        generators_before.extend(sig.find_generator(n));
+    }
+    // The preview with reasons is the same, in pieces or not.
+    assert_eq!(sig.removal_preview_reasons(node, usize::MAX), Some(reasons));
+}
+
+#[test]
+fn every_generator_that_goes_says_why() {
+    let s = setup();
+    let why = |g: Generator, of: Generator| {
+        s.sig
+            .removal_cascade_reasons(of)
+            .into_iter()
+            .find(|r| r.0 == g)
+            .map(|r| r.1)
+    };
+    let node = |g| s.sig.find_node(g).unwrap();
+    // `u` lists `P` and does not mention it; `v` mentions `u`; the schema mentions `P`.
+    assert_eq!(why(s.u, s.p), Some(RemovalReason::DependsOn(s.p)));
+    assert_eq!(why(s.v, s.p), Some(RemovalReason::Mentions(s.u)));
+    assert_eq!(why(s.e, s.p), Some(RemovalReason::Mentions(s.p)));
+    // `P3` mentions `u`; `t` lists `P3`.
+    assert_eq!(why(s.p3, s.p), Some(RemovalReason::Mentions(s.u)));
+    assert_eq!(why(s.t, s.p), Some(RemovalReason::DependsOn(s.p3)));
+    // The instance `e[Q/P]` is under `e`, and `A[Q/P]` is under `A`.
+    assert_eq!(
+        why(s.e_instance, s.p),
+        Some(RemovalReason::Within(node(s.e)))
+    );
+    assert_eq!(
+        why(s.a_instance, s.p),
+        Some(RemovalReason::Within(node(s.a)))
+    );
+    // Deleting the instance takes what mentions it, and says so.
+    assert_eq!(
+        why(s.a_instance, s.e_instance),
+        Some(RemovalReason::Mentions(s.e_instance))
+    );
+    // What the deletion does not take has no reason.
+    assert_eq!(why(s.z, s.p), None);
+    assert!(s.sig.removal_cascade_reasons(s.z).is_empty());
 }
 
 #[test]
