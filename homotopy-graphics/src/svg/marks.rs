@@ -1,7 +1,8 @@
 //! The geometry of the marks that show where sheets meet in the 2D view.
 //!
-//! See `Depths::echoes` and `Depths::sheets_meeting_at`: the stack of pages at a point where
-//! sheets meet, and the echoes of the wires behind, which run along the wire and fade out.
+//! See `Depths::meeting_pages` and `Depths::echo_sheet`: the stack of pages at a point where
+//! sheets meet (one for each sheet), and the echoes of the wires that go into the sheets behind,
+//! which begin at the page of their sheet, run along the wire and fade out.
 //!
 //! All of it is in the coordinates of the picture (y down), and is a few pixels in size whatever
 //! the diagram is.
@@ -95,36 +96,137 @@ pub struct Fan {
     pub undersides: String,
 }
 
+/// One page of a fan, as path data.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PageMarks {
+    /// The upper edge: an arc from one end of the page's width over the top to the other.
+    pub rim: String,
+    /// The lower edge, which nearly coincides with those of the other pages.
+    pub underside: String,
+    /// The whole outline, closed: what the page covers.
+    pub outline: String,
+}
+
+/// The ellipse of the page of this `rank` (0 is the bottom one, the first and smallest) of a fan
+/// at `centre`, a vertex of radius `radius`: its centre and radii.
+fn ellipse(centre: Point, rank: usize, radius: f32) -> (Point, f32, f32) {
+    let (width, height) = (PAGE_WIDTH * radius, PAGE_HEIGHT * radius);
+    let grow = PAGE_RISE * radius;
+    let ratio = width / height;
+    let ry = height + grow * rank as f32;
+    let rx = width + grow * ratio.sqrt() * rank as f32;
+    // Tangent at the bottom, which is the same for every page.
+    (Point::new(centre.x, centre.y + height - ry), rx, ry)
+}
+
+/// The page of this `rank` of a fan at `centre`: see [`fan`].
+#[must_use]
+pub fn page(centre: Point, rank: usize, radius: f32) -> PageMarks {
+    let (middle, rx, ry) = ellipse(centre, rank, radius);
+    let (left, right, cy) = (middle.x - rx, middle.x + rx, middle.y);
+    PageMarks {
+        rim: format!("M{left:.2} {cy:.2}A{rx:.2} {ry:.2} 0 0 1 {right:.2} {cy:.2}"),
+        underside: format!("M{left:.2} {cy:.2}A{rx:.2} {ry:.2} 0 0 0 {right:.2} {cy:.2}"),
+        outline: format!(
+            "M{left:.2} {cy:.2}A{rx:.2} {ry:.2} 0 0 1 {right:.2} {cy:.2}A{rx:.2} {ry:.2} 0 0 1 {left:.2} {cy:.2}Z"
+        ),
+    }
+}
+
+/// The stretch of a wire from where it leaves a page of a fan, as points.
+///
+/// The page is the one of this `rank`, and the stretch goes `distance` further on (the first point
+/// is where it leaves, the last where it has gone as far). `None` if it does not leave the page, or
+/// has no length.
+///
+/// The wire is its polyline (see [`polyline`]), followed from the end that is nearer to the
+/// vertex at `centre`, which is inside every page. If the wire ends before `distance` the stretch
+/// goes to its end.
+#[must_use]
+pub fn leave_page(
+    points: &[Point],
+    centre: Point,
+    rank: usize,
+    radius: f32,
+    distance: f32,
+) -> Option<Vec<Point>> {
+    let (first, last) = (*points.first()?, *points.last()?);
+    let mut points = points.to_vec();
+    if (first - centre).square_length() > (last - centre).square_length() {
+        points.reverse();
+    }
+    let (middle, rx, ry) = ellipse(centre, rank, radius);
+    let outside = |p: Point| {
+        let (dx, dy) = ((p.x - middle.x) / rx, (p.y - middle.y) / ry);
+        dx * dx + dy * dy > 1.0
+    };
+    // The first segment that ends outside the page, and where it crosses.
+    let mut at = *points.first()?;
+    let mut crossing = None;
+    for (i, &next) in points.iter().enumerate().skip(1) {
+        if outside(next) {
+            if outside(at) {
+                // It started outside: from here.
+                crossing = Some((i - 1, at));
+            } else {
+                let (mut inside_end, mut outside_end) = (at, next);
+                for _ in 0..24 {
+                    let mid = inside_end.lerp(outside_end, 0.5);
+                    if outside(mid) {
+                        outside_end = mid;
+                    } else {
+                        inside_end = mid;
+                    }
+                }
+                crossing = Some((i - 1, outside_end));
+            }
+            break;
+        }
+        at = next;
+    }
+    let (index, from) = crossing?;
+    let mut stretch = vec![from];
+    let mut left = distance;
+    let mut at = from;
+    for &next in &points[index + 1..] {
+        let length = (next - at).length();
+        if length >= left && length > 0.0 {
+            stretch.push(at.lerp(next, left / length));
+            return Some(stretch);
+        }
+        left -= length;
+        at = next;
+        stretch.push(at);
+    }
+    (stretch.len() > 1).then_some(stretch)
+}
+
+/// Path data for a polyline: `M x y L x y ...` (empty for no points).
+#[must_use]
+pub fn polyline_path(points: &[Point]) -> String {
+    let mut d = String::new();
+    for (i, p) in points.iter().enumerate() {
+        let command = if i == 0 { 'M' } else { 'L' };
+        write!(d, "{command}{:.2} {:.2}", p.x, p.y).ok();
+    }
+    d
+}
+
 /// A fan of `pages` pages (at most [`MAX_PAGES`]) at `centre`, a vertex of radius `radius`.
 ///
 /// It is a stack of discs seen from a little above, one for each sheet that meets there: flat
 /// ellipses that are each taller and wider than the one before and are all tangent at the bottom,
 /// so that their centres rise from the vertex and their lower edges are one curve, and the
 /// thickness of the stack shows only on its upper side, as the rims of the pages. A still picture
-/// about the vertex, with no backing (the vertex is drawn over its middle).
+/// about the vertex, with no backing (the vertex is drawn over its middle). The first page, the
+/// smallest, is the one at the back; each next one is in front of the one before.
 #[must_use]
 pub fn fan(centre: Point, pages: usize, radius: f32) -> Fan {
-    let pages = pages.min(MAX_PAGES);
     let mut fan = Fan::default();
-    let (width, height) = (PAGE_WIDTH * radius, PAGE_HEIGHT * radius);
-    let grow = PAGE_RISE * radius;
-    let ratio = width / height;
-    for page in 0..pages {
-        let ry = height + grow * page as f32;
-        let rx = width + grow * ratio.sqrt() * page as f32;
-        // Tangent at the bottom, which is the same for every page.
-        let cy = centre.y + height - ry;
-        let (left, right) = (centre.x - rx, centre.x + rx);
-        write!(
-            fan.rims,
-            "M{left:.2} {cy:.2}A{rx:.2} {ry:.2} 0 0 1 {right:.2} {cy:.2}"
-        )
-        .ok();
-        write!(
-            fan.undersides,
-            "M{left:.2} {cy:.2}A{rx:.2} {ry:.2} 0 0 0 {right:.2} {cy:.2}"
-        )
-        .ok();
+    for rank in 0..pages.min(MAX_PAGES) {
+        let page = page(centre, rank, radius);
+        fan.rims.push_str(&page.rim);
+        fan.undersides.push_str(&page.underside);
     }
     fan
 }
@@ -245,5 +347,69 @@ mod tests {
         // The underside is the same ellipses, the other way round.
         assert_eq!(fan.undersides.matches("0 0 0").count(), 4);
         assert_eq!(fan.rims.matches("0 0 1").count(), 4);
+    }
+
+    #[test]
+    fn a_fan_is_its_pages() {
+        let (centre, radius) = (Point::new(20.0, 30.0), 6.0);
+        let whole = fan(centre, 3, radius);
+        let rims: String = (0..3).map(|rank| page(centre, rank, radius).rim).collect();
+        let unders: String = (0..3)
+            .map(|rank| page(centre, rank, radius).underside)
+            .collect();
+        assert_eq!((whole.rims, whole.undersides), (rims, unders));
+        // The outline is closed, and is the rim and its other half.
+        let one = page(centre, 2, radius);
+        assert!(one.outline.ends_with('Z'));
+        assert_eq!(one.outline.matches('A').count(), 2);
+    }
+
+    /// A wire that goes straight down from the vertex leaves every page at its bottom, which is
+    /// the same for all of them; one that goes straight up leaves each at its top, and the top of
+    /// each next is higher. The reach is as far again along the wire. One that stays inside does not
+    /// leave.
+    #[test]
+    fn a_wire_leaves_a_page_at_its_outline() {
+        let (centre, radius) = (Point::new(50.0, 50.0), 7.0);
+        let down = [centre, Point::new(50.0, 250.0)];
+        let up = [centre, Point::new(50.0, -150.0)];
+        let mut tops = vec![];
+        for rank in 0..4 {
+            let stretch = leave_page(&down, centre, rank, radius, 36.0).unwrap();
+            let (from, to) = (stretch[0], *stretch.last().unwrap());
+            assert!(
+                (from.y - (50.0 + PAGE_HEIGHT * radius)).abs() < 0.05,
+                "{from:?}"
+            );
+            assert!((to.y - from.y - 36.0).abs() < 0.05);
+            let stretch = leave_page(&up, centre, rank, radius, 36.0).unwrap();
+            let (from, to) = (stretch[0], *stretch.last().unwrap());
+            assert!((from.y - to.y - 36.0).abs() < 0.05);
+            tops.push(from.y);
+        }
+        assert!(tops.windows(2).all(|w| w[1] < w[0] - 1.0), "{tops:?}");
+        // A wire given from its far end is followed from the end by the vertex.
+        let backwards = [Point::new(50.0, 250.0), centre];
+        let stretch = leave_page(&backwards, centre, 1, radius, 36.0).unwrap();
+        assert!((stretch[0].y - (50.0 + PAGE_HEIGHT * radius)).abs() < 0.05);
+        // The stretch follows the bends, and is cut where the distance runs out.
+        let bent = [
+            centre,
+            Point::new(50.0, 60.0),
+            Point::new(90.0, 60.0),
+            Point::new(90.0, 160.0),
+        ];
+        let stretch = leave_page(&bent, centre, 0, radius, 20.0).unwrap();
+        let length: f32 = stretch.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+        assert!((length - 20.0).abs() < 0.05, "{length}");
+        assert_eq!(
+            polyline_path(&stretch).matches('L').count(),
+            stretch.len() - 1
+        );
+        assert!(polyline_path(&[]).is_empty());
+        // Inside the page throughout.
+        let short = [centre, Point::new(51.0, 51.0)];
+        assert!(leave_page(&short, centre, 3, radius, 36.0).is_none());
+        assert!(leave_page(&[], centre, 0, radius, 36.0).is_none());
     }
 }

@@ -30,6 +30,13 @@ pub trait SignatureStyleData: Signature {
 /// the palette other than black stay as they were (the next darkest has 0.13).
 pub const LIGHT_STRIPES_BELOW: f32 = 0.05;
 
+/// How bright a surface is drawn at each step of shading by the sheets behind it.
+///
+/// As the CSS `brightness()` filter has it (step 0 is as it is). The stylesheet's rules for
+/// `data-thickness` say the same; this is for what has to know how dark the surface is, such as
+/// the stripes of a placeholder.
+pub const SHADE_BRIGHTNESS: [f32; 4] = [1.0, 0.84, 0.70, 0.56];
+
 /// What the stripes of a placeholder are drawn in, which is what its colour does not hide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stripes {
@@ -113,6 +120,14 @@ impl Color {
             + 0.01;
         let srgb: Srgb<f32> = FromColor::from_color(hsl);
         Self(srgb.into_format())
+    }
+
+    /// The colour as the CSS `brightness(factor)` filter draws it: each channel times `factor`.
+    #[must_use]
+    pub fn dimmed(&self, factor: f32) -> Self {
+        let rgb = self.0.into_format::<f32>();
+        let scale = |c: f32| (c * factor).clamp(0.0, 1.0);
+        Self(Srgb::new(scale(rgb.red), scale(rgb.green), scale(rgb.blue)).into_format())
     }
 
     /// The WCAG relative luminance of the colour: 0 for black, 1 for white.
@@ -208,6 +223,24 @@ mod tests {
         // Pure green is the brightest primary: 0.7152.
         assert!((color("#00ff00").relative_luminance() - 0.7152).abs() < 1e-4);
         assert!((color("#808080").relative_luminance() - 0.2159).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_dimmed_colour_is_darker_and_gets_light_stripes_when_it_is_dark_enough() {
+        let blue = color("#2980b9");
+        assert_eq!(blue.dimmed(1.0), blue);
+        assert_eq!(blue.stripes(), Stripes::Dark);
+        let mut last = blue.relative_luminance();
+        for step in 1..SHADE_BRIGHTNESS.len() {
+            let now = blue.dimmed(SHADE_BRIGHTNESS[step]).relative_luminance();
+            assert!(now < last, "each step is darker");
+            last = now;
+        }
+        // The stripes follow the colour as it is drawn.
+        assert_eq!(color("#404040").stripes(), Stripes::Dark);
+        assert_eq!(color("#404040").dimmed(0.7).stripes(), Stripes::Light);
+        // The steps go down by enough to see.
+        assert!(SHADE_BRIGHTNESS.windows(2).all(|w| w[0] - w[1] >= 0.12));
     }
 
     #[test]

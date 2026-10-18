@@ -22,6 +22,8 @@ declare_settings! {
         sheet_outlines: bool = true,
         // In the same view: shade the surfaces that have more sheets behind them.
         sheet_shading: bool = true,
+        // In the same view: veil what is drawn on a sheet that is not foremost.
+        sheet_veil: bool = true,
         autosave: bool = true,
         // A heuristic: a click on one cell offers the cell's definitions first.
         offer_definitions: bool = true,
@@ -136,6 +138,14 @@ impl Component for SettingsView {
                             SHEET_SHADING_HELP,
                             AppSettings::get_sheet_shading(),
                             AppSettings::set_sheet_shading,
+                        )
+                    }
+                    {
+                        Self::view_checkbox_with_help(
+                            "Veil what is on a back sheet",
+                            SHEET_VEIL_HELP,
+                            AppSettings::get_sheet_veil(),
+                            AppSettings::set_sheet_veil,
                         )
                     }
                     {
@@ -349,8 +359,9 @@ impl Component for SettingsView {
 /// The explanations of the settings, which are shown in a popover after the title (see
 /// [`HelpTip`]): one or two short sentences each.
 const MOUSE_UNDO_HELP: &str = "Mouse back and forward buttons, and Alt+Left and Alt+Right, undo and redo instead of leaving the page. The browser's own back button undoes too while this is on; turn it off to leave with it.";
-const SHEET_OUTLINES_HELP: &str = "In 2D views of higher-dimensional diagrams, draws a fan where sheets meet (a page for each) and an arc where one ends, with faint echoes of wires on layers behind. Computed from the diagram, not guessed.";
+const SHEET_OUTLINES_HELP: &str = "In 2D views of higher-dimensional diagrams, draws a fan where sheets meet (a page for each sheet, the one in front on top) with faint echoes of wires that go into sheets behind. Choosing a sheet over the diagram takes away the pages in front of it. Computed from the diagram, not guessed.";
 const SHEET_SHADING_HELP: &str = "A surface is drawn darker (up to three steps) the more sheets pass through it, compared with the thinnest surface in view. Changing it redraws the diagram.";
+const SHEET_VEIL_HELP: &str = "In 2D views of higher-dimensional diagrams, covers with a pale frosted veil what is drawn on a sheet that something else is in front of elsewhere (a back sheet), so that things that look level but are not can be told apart. Where nothing is veiled, everything is on a front sheet. Changing it redraws the diagram.";
 const AUTOSAVE_HELP: &str = "A backup is made a few seconds after you stop changing the project, and offered back after a crash or a closed tab. Turning it off deletes the backups.";
 const DEFINITIONS_HELP: &str = "A heuristic. Clicking a cell first offers its definitions (generators one dimension up with that cell as source or target), with a button to search for everything else. It can miss, but never offers what does not attach.";
 const INFER_HELP: &str = "Searching for attachments also looks for replacements of placeholders that make a schema attach, which can take long in high dimensions. Off: only cells that need no replacements are offered.";

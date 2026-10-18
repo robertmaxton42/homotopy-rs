@@ -634,15 +634,16 @@ indicator: see "Laying out diagrams" below.
       is kept. Tested against the scaffold with every edge (`leaving_out_regular_slices_loses_no_unit_cone`).
       Identity is checked on kept edges only: across the diagonals it differs where the way round passes a
       junction, which cuts the sheet.
-  - **Where sheets meet: stacks of pages and echoes** (`Depths::sheet_boundaries`, `sheets_meeting_at`, `echoes`;
+  - **Where sheets meet: stacks of pages and echoes** (`Depths::sheet_boundaries`, `sheets_meeting_at`, `meeting_pages`,
+    `echo_sheet`;
     `homotopy-graphics/src/svg/marks.rs` for the geometry; `diagram_svg/marks.rs`; setting *Show where sheets meet
     (fans and echoes)*, still `sheet_outlines`, on by default; workspace diagram only). Only at *points* of the
     picture (every coordinate singular: where the cells are). **A meeting is where several distinct sheets of
     a neighbouring position become one**: a height `z` at a point that an edge into it takes two or more
     heights of one neighbour's fibre to (a cone with `source_len() >= 2`), whose source heights are at least two
     distinct `SheetId`s, **and** whose own sheet is at this position alone (`places(id)`: no other position has
-    the cell). `SheetBoundary { from, to, z, sheet, branches }`, `branches` the distinct sheets merged (the 3-cell
-    of the associator: 5, the vertex of `start`: 9); `Sheet::merges` is the same per height; there is no
+    the cell). `SheetBoundary { from, to, z, sheet, branches, pages }`, `branches` the distinct sheets merged (the 3-cell
+    of the associator: 5, the vertex of `start`: 9) and `pages` which, see below; `Sheet::merges` is the same per height; there is no
     `SheetBoundaryKind` any more.
     - **Why it was wrong before** (user, on the workspace and on `p`/`ε`: "every vertex on overlapping sheets is
       marked", "that screenshot is of p, which has only one sheet"). The rule was "three or more edges carry a
@@ -681,21 +682,49 @@ indicator: see "Laying out diagrams" below.
       vertices** (`view_sheet_marks` is called after the surfaces and the highlight under them), so that wires
       pass over it, and the vertex dot over its middle; in a `g.sheet-marks`
       (`data-fans`/`data-echoes`), made once for the prepared diagram (`OnceCell`).
-    - **Echoes** (`Depths::echoes(wire)`, at most `MAX_ECHOES` = 3), only on the wires that leave a meeting (so,
-      now, only those of the dots that are meetings): a wire (a segment between a meeting and the
-      position beside it) gets one echo for each *step* it is behind the front-most of the wires at that point.
-      A wire's layer is the height `z` that the hover marks as drawn at the position beside the point
-      (`node_depth`), and a step is a different `z` among the wires there, so the wires of the first layer have
-      none and the echoes say which wires go into which layer. (Tried first: the edge depth at the vertex, which is
-      0 for every wire at `start`'s vertex and so said nothing.) Wires with no drawn sheet have none. On the
-      associator one wire has one; at `start`'s vertex the three from the top, which are on the second layer. Each
-      echo is the wire's own path (the layout's curve) again, translated by a few pixels to the up and right side
-      of the wire (`echo_side`), in the wire's colour, stroked with a gradient (`reach_from`: 36px from the
-      vertex) that fades out, over a paler wider one for contrast. The gradient element is made with `VTag`
-      because `html!` lowercases `linearGradient`. **They are under the wires too** (user: the echo "is
-      visible over the top wire" where a wire braids in front): the layer is under every wire and vertex, so a
-      wire that crosses an echo hides it, whichever of the two is in front (wires hide each other by masks, not by
-      the order they are drawn in, so no echo can be put "just under its wire").
+    - **A page is a sheet** (user after PR #15: "since the ellipses of the fan are supposed to each represent a
+      sheet, some of them should vanish when scrolling through sheets"). `SheetBoundary::pages` is a
+      `Vec<Page { sheet, depth }>`, one for each distinct sheet merged into the height, **from the farthest back
+      to the nearest**: `depth` is the sheet's height `z` in the fibre of the neighbour that carries it in (the
+      nearest, if several neighbours or heights do: a fold), ordered deepest first, ties (different sheets at the
+      same height of different neighbours, which have no order between them) by `SheetId`. So page 0, the smallest
+      ellipse, is the one at the back, and the last, the highest, is the one in front: plates, the one on top the
+      nearest. `Depths::meeting_pages(coord)` is the pages of all of a position's meetings, once each. **Choosing a
+      sheet** (Shift+wheel, `[`, `]`, Tab: an *explicit* choice only, `chosen_sheet`, not the default) over the
+      diagram takes away the pages of the sheets *in front of* the chosen one when it is one of the pages of the
+      fan (`SheetMarks::fan_look`): what is drawn is the pages from the back up to and including its page, which is
+      then the top of the stack (its rim is stronger, `sheet-mark--chosen`). A choice that is not a page of the fan
+      changes nothing there, and with none all pages show. With more than `MAX_PAGES` the pages drawn are the last
+      four of those left, so that the geometry of a page is by its *rank among the pages drawn* (and `start`'s
+      nine, with nothing chosen, show the four nearest: S5, S11, S13, S15; choosing S5 shows S16, S18, S20, S5;
+      choosing S10 shows S6, S10). **Like the dimming and the highlight, it is done to the elements that are
+      there** (`DiagramSvg::apply_marks`, from `rendered`, `refresh` and `leave`: `d` and attributes written
+      directly, only when they changed; the diagram does not render again). `SheetMarks::{fan_look, echo_look}` are
+      pure (unit-tested natively); the fans have `data-fan`/`data-sheets` ("S5 S11 S13 S15", for tests) and the
+      echoes `data-echo`/`data-sheet`.
+    - **Echoes** (`Depths::echo_sheet(wire)`), only on the wires that leave a meeting: the wire (a segment between a
+      meeting and the position beside it) is on the sheet that is drawn at the position beside the point
+      (`node_depth`, as the hover marks it), and gets an echo **of that sheet** if it is one of the pages there and not
+      the last (nothing is in front of the front page, so there is nothing to show; wires with no drawn sheet, or on
+      a sheet that is not a page, have none). The echo (user after PR #15: "the echo for a wire should be 'at' a
+      particular sheet, start at the ellipse at that sheet and go 'under' all ellipses above that sheet") *begins at
+      the rim of its sheet's page* (`marks::leave_page`: the stretch of the wire's polyline from where it leaves that
+      page's ellipse, 36px on, the wire followed from the end by the vertex, which is inside every page) and runs
+      **under the pages of the sheets in front of it**: each echo has a mask (`mask` with a white rect and a black
+      path, `sheet-echo-veil`, at 0.62) of the closed outlines of those pages, so that where it passes under them it
+      is dimmed (not hidden: the pages have no backing of their own) and outside the stack it is as it was. It is the
+      wire's own path (the polyline, now, not the layout's curve: it starts mid-wire) translated a few pixels to the up
+      and right side of the wire (`echo_side`), in the wire's colour, stroked with a gradient (36px, fading out) over
+      a paler wider one for contrast; the gradient is made with `VTag` because `html!` lowercases `linearGradient`.
+      One echo for each wire (it used to be one copy for each step behind: `MAX_ECHOES` and `Depths::echoes` are
+      gone, the depth is now the page). With a choice (above) the echoes of the sheets whose pages vanished are hidden
+      (`display="none"`), the others begin at the page they have *now* and run under the pages left in front. On the
+      associator one wire has one; at `start`'s vertex five (S11, S13 on the pages drawn, S16, S18, S20 behind them:
+      the page of S15, the front, has none), of which with nothing chosen the last three are hidden for want of a
+      page. **They are under the wires too** (user: the echo "is visible over the top wire" where a wire braids in
+      front): the layer is under every wire and vertex, so a wire that crosses an echo hides it, whichever of the two
+      is in front (wires hide each other by masks, not by the order they are drawn in, so no echo can be put "just
+      under its wire").
     The tooltip says "sheets merge or split here" at a meeting. Gaps: where several wires leave in nearly one
     direction (the three at `start`) their echoes overlap; an echo of a front wire is also hidden by a wire behind
     it that crosses it (rare: within 36px of the vertex); the 3D view has none; a meeting where an `N`-fold
@@ -739,13 +768,57 @@ indicator: see "Laying out diagrams" below.
     of the same generator and step are merged as before, so the elements are those of `build` split by
     step (`build_shaded` returns each with its step; `build` is the same with step 0): no extra DOM. The
     step is `data-thickness` on the colour path, and `styles.css` has `filter: brightness() saturate()` for
-    steps 1 to 3 (0.92, 0.84, 0.75): darker and a little more saturated. **Placeholders**: the hatching is a
-    separate path over the surface, so the filter does not touch it, and both stripe colours stay visible
-    (the light stripes on black are over a path that is already as dark as it goes). Changing the setting
-    prepares the diagram again (the grouping is made then); a diagram whose surfaces all have as many sheets
-    has no steps. On by default because the steps are subtle (about 8% each); the exports (`GraphicElement::build`)
-    do not shade. Gaps: a CSS filter per shaded path (one per generator and step, not per surface); the 3D
+    steps 1 to 3 (**0.84, 0.70, 0.56** and 1.25, 1.5, 1.75: darker and more saturated; they were 0.92, 0.84, 0.75
+    and 1.1 to 1.3, which the user found "a bit too subtle; exacerbated by the fact that there must always be a wire
+    at which a sheet begins and ends, so you're never directly comparing two adjacent shades, you're only ever
+    comparing them across a wire": a step is now about 15% of the brightness;
+    a CSS filter, not an overlay, so as to keep one element per generator and step and the hatching untouched).
+    **Placeholders**: the hatching is a separate path over the surface, so the filter does not touch it, but the
+    colour under it gets darker, so `stripes_of` chooses the stripes for the colour *as shaded*
+    (`Color::dimmed(SHADE_BRIGHTNESS[step])`, then `stripes()`: light stripes below luminance 0.05 as before);
+    `SHADE_BRIGHTNESS` (`homotopy-graphics/src/style.rs`) and the stylesheet say the same, which a test in
+    `diagram_svg.rs` checks. Changing the setting prepares the diagram again (the grouping is made then); a diagram
+    whose surfaces all have as many sheets has no steps. On by default; the exports (`GraphicElement::build`) do
+    not shade. Gaps: a CSS filter per shaded path (one per generator and step, not per surface); the 3D
     view is not shaded; a surface whose sheets are all hidden by a wire is still counted.
+  - **The veil: what is on a back sheet** (`Depths::drawn_sheet`, `on_back_sheet`, `GraphicElement::merged_surfaces`,
+    `build_placed`, `DiagramSvg::view_sheet_veil`, `data-veiled`; its own setting *Veil what is on a back sheet*,
+    `sheet_veil`, on by default, workspace diagram only; user after PR #15: "in `start`, the entire right side of
+    the diagram is actually on a back sheet. It'd be good to indicate that somehow; a translucent overlay,
+    perhaps"). A position is *on a back sheet* when the sheet drawn there is not foremost (`Sheet::foremost`, see
+    above). **The sheet drawn at a position** is `node_depth`'s height of its fibre for wires and vertices, and for
+    the positions that have no depth, the regions (their surface is one colour for the whole fibre, the max
+    generator, so nothing is drawn at a height), the *nearest* sheet, `z = 0`: the one the hover lists first and
+    calls current. (That is why the right of `start` is veiled: its regions have the large passive layer S5 at
+    `z₃=0`, which something else is in front of at the wires beside it, so it is never foremost; on the left the
+    first is the foremost patch S14. The wires drawn on the right are on the foremost sheets S16, S18, S20, so
+    they are not veiled: the picture is a veiled background with crisp wires in front of it.) **One overlay path for
+    the surfaces**: the visible triangles on a back sheet, merged as the surfaces of the drawing are (outlines, so no
+    seams: `merged_surfaces`, with `orient_surface`), made once when the diagram is prepared (`PreparedDiagram::veil`,
+    with the shading: `Overlays { shade, veil }`, a change of either prepares again), a white fill at 0.3
+    (`.sheet-veil`, frosted) drawn **between the surfaces and the wires** so that what is in front of a back region
+    (a wire of another sheet, any vertex) is not veiled. Wires and vertices that are on a back sheet are not covered
+    by an overlay but faded (`data-veiled="1"`, `opacity: 0.55`): an overlay over them would also cover the front
+    wire that crosses them (wires hide each other by masks, and an overlay has none). Braids show it: the strand that
+    is behind along its whole length (`triple_braid`: 8 wires, `double_braid`: 12) is faded. Cost: one pass over the
+    visible simplices, with the sheet data (made once). Nothing is veiled in a diagram with one sheet everywhere
+    (`on_back_sheet` is false for a sheet that is alone wherever it is). Gaps: the 3D view has none; a region's
+    "drawn sheet" is a convention (the nearest), not something the projection draws; the surfaces of a placeholder
+    are veiled over their hatching.
+  - **Why hovering at the right of `start` highlights a whole sheet** (user: "hovering over a 2-cell on the top
+    sheet/on the left gets me exactly that 2-cell, but on the bottom sheet/on the right gets me the entire bottom
+    sheet"; the project's `start`, `@ T,R3` lists `z₃=0 S14 FRONT` and `z₃=1 S10`, `@ T,R5` lists `z₃=0 S5` and
+    `z₃=1 S17 FRONT`). Not a bug in the identity or the highlight. A sheet is a connected surface of one cell in 3D,
+    and in each of those regions there are two, a small patch of the cell (S14 on the left, S17 on the right: two
+    regions each) and a large layer that the patch lies against (S10 on the left,
+    14 positions, S5 on the right, 22 positions, the whole right side). The tooltip's current row, and so the
+    highlight, is the one that is *drawn* (`front`) where there is a drawn depth, and where there is none (every
+    region) the first, `z = 0`. In the left region the first is the patch; in the right region the first is the large
+    layer, because there the patch is at `z₃=1`. So the highlight is right in both and the asymmetry is which of the
+    two is nearest, which is what the veil now shows (the right side is veiled: the nearest layer there is a back sheet).
+    The foremost (FRONT) patch is one step of Shift+wheel away. Making the default the foremost one is a one line change
+    in `Stack::new` if the hover should show the small patch on both sides; it was not done, so that the current row and
+    the veil agree.
   - **The heuristic** (off by default; `InferenceLimits::narrow_to_sheet`, setting *Heuristic: infer instances
     only from cells near the chosen sheet*, kept with the inference settings): with a sheet chosen, the pool of
     cells for the replacements of placeholders (`Pool::new` in `AttachOptionsJob::new`) is the generators in
@@ -795,7 +868,8 @@ indicator: see "Laying out diagrams" below.
     different sheets (two separate wires of one generator), and one that is cut by a different cell on it is two
     (a line with a bead on it is `S1`, the bead, `S2`); "front" is a count (hidden at more positions than drawn),
     so two strands that cross over each other in turn are one front and one behind, or neither, by their
-    majority; `Stack`'s default sheet is still the one drawn (`front`), not the foremost one; the fans and echoes mark
+    majority; `Stack`'s default sheet is still the one drawn (`front`, else the nearest: see "Why hovering at the right of
+    `start`"), not the foremost one; the fans and echoes mark
     points only, and shading counts heights (a sheet that comes back to the position counts twice).
 
 New expensive work: write it as a job (or give an existing job another kind of step), label it,

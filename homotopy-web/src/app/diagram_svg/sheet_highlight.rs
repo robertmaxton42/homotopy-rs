@@ -150,23 +150,35 @@ impl<const N: usize> DiagramSvg<N> {
     /// lists the stack (there are several sheets to choose between, or one was chosen). Inside a
     /// sheet that is fixed, it is that sheet that is highlighted.
     pub(super) fn highlighted_sheet(&self, ctx: &Context<Self>) -> Option<SheetId> {
+        let (stack, sheet) = self.current_sheet(ctx)?;
+        (stack.entries.len() >= 2 || stack.explicit).then_some(sheet)?
+    }
+
+    /// The sheet that has been chosen under the pointer (Shift+wheel, `[`, `]`, Tab), if one has:
+    /// not the one that is only the default.
+    pub(super) fn chosen_sheet(&self, ctx: &Context<Self>) -> Option<SheetId> {
+        let (stack, sheet) = self.current_sheet(ctx)?;
+        stack.explicit.then_some(sheet)?
+    }
+
+    /// The stack of sheets under the pointer and the sheet that is current in it (see
+    /// [`highlighted_sheet`](Self::highlighted_sheet)), if the pointer is over the diagram.
+    fn current_sheet(&self, ctx: &Context<Self>) -> Option<(Stack<N>, Option<SheetId>)> {
         if !ctx.props().sheets || !self.hovering {
             return None;
         }
         let prepared = self.current()?;
         let stack = Stack::new(&prepared.depths, &self.positions(), self.choice.as_ref())?;
-        if stack.entries.len() < 2 && !stack.explicit {
-            return None;
-        }
         let entry = stack.entry();
-        match stack.fixed.first() {
+        let sheet = match stack.fixed.first() {
             Some(&outer) => prepared
                 .depths
                 .sheet_ids_at(entry.position)
                 .get(outer)
                 .copied(),
             None => entry.sheet.id,
-        }
+        };
+        Some((stack, sheet))
     }
 
     /// Puts the highlight of the sheet that is current (if any) on the diagram.

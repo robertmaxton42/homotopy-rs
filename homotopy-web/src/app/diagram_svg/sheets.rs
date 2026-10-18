@@ -363,6 +363,7 @@ impl<const N: usize> DiagramSvg<N> {
         self.keys.set_wanted(false);
         self.apply_dimming(ctx);
         self.apply_highlight(ctx);
+        self.apply_marks(ctx);
         self.publish_summary(ctx);
     }
 

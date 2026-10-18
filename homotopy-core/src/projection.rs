@@ -30,12 +30,9 @@ use crate::{
 mod sheets;
 
 use self::sheets::SheetData;
-pub use self::sheets::{thickness_step, thickness_steps, Shading, SheetBoundary, SheetId};
+pub use self::sheets::{thickness_step, thickness_steps, Page, Shading, SheetBoundary, SheetId};
 
 type Coordinate<const N: usize> = [SliceIndex; N];
-
-/// The most echoes that a wire has (see [`Depths::echoes`]).
-pub const MAX_ECHOES: usize = 3;
 
 #[derive(Copy, Clone, Debug)]
 pub enum Homotopy {
@@ -460,47 +457,83 @@ impl<const N: usize> Depths<N> {
             .unwrap_or(0)
     }
 
-    /// How many echoes to draw along a wire, which is a segment of the picture between a point
-    /// where sheets meet (see [`sheets_meeting_at`](Self::sheets_meeting_at)) and the position
-    /// beside it: 0 for a wire that is not at such a point, or that is on no sheet, or on the
-    /// front-most of the sheets that the wires at the point are on, and else one for each step
-    /// that it is behind, at most [`MAX_ECHOES`].
+    /// The pages of the stack drawn at the position `coord`, if sheets meet there: the distinct
+    /// sheets merged into any of its heights (see [`SheetBoundary::pages`]), once each, from the
+    /// farthest back to the nearest. Empty if no sheets meet there.
+    #[must_use]
+    pub fn meeting_pages(&self, coord: Coordinate<N>) -> Vec<Page> {
+        let mut pages: Vec<Page> = vec![];
+        for boundary in self.sheet_boundaries_at(coord) {
+            for &page in &boundary.pages {
+                match pages.iter_mut().find(|p| p.sheet == page.sheet) {
+                    Some(seen) => seen.depth = seen.depth.min(page.depth),
+                    None => pages.push(page),
+                }
+            }
+        }
+        pages.sort_unstable_by_key(|page| (std::cmp::Reverse(page.depth), page.sheet));
+        pages
+    }
+
+    /// The sheet that an echo along a wire is of, which is a segment of the picture between a
+    /// point where sheets meet (see [`sheets_meeting_at`](Self::sheets_meeting_at)) and the
+    /// position beside it. `None` for a wire that is not at such a point, or that is on no sheet,
+    /// or on one of the sheets that are not among the pages there, or on the nearest of the
+    /// pages (nothing is in front of it, so there is nothing to show about where it goes).
     ///
     /// The sheet that a wire is on is the one that is drawn at the position beside the point
     /// ([`node_depth`](Self::node_depth): the height `z` that hovering over the wire marks as
-    /// drawn). A step is a different `z` among the wires at the point: the wires of the first
-    /// have none, those of the next have one, and so on, so that the echoes say which wires go
-    /// into which layer.
+    /// drawn). The echo is *at* that sheet: it begins at the page of the stack that is the
+    /// sheet's, and runs under the pages of the sheets in front of it.
     #[must_use]
-    pub fn echoes(&self, wire: [Coordinate<N>; 2]) -> usize {
-        let [first, second] = wire;
-        let (Some(&first), Some(&second)) = (
-            self.coord_to_node.get(&first),
-            self.coord_to_node.get(&second),
-        ) else {
-            return 0;
-        };
+    pub fn echo_sheet(&self, wire: [Coordinate<N>; 2]) -> Option<SheetId> {
+        let first_node = *self.coord_to_node.get(&wire[0])?;
+        let second_node = *self.coord_to_node.get(&wire[1])?;
         let meets = |n: NodeIndex| self.sheet_data().boundaries_to(n).next().is_some();
-        let vertex = if meets(second) {
-            second
-        } else if meets(first) {
-            first
+        let at_second = if meets(second_node) {
+            true
+        } else if meets(first_node) {
+            false
         } else {
-            return 0;
+            return None;
         };
-        let beside = if vertex == second { first } else { second };
-        let Some(layer) = self.node_depths[beside] else {
-            return 0;
-        };
-        let mut layers: Vec<usize> = self
-            .graph
-            .edges_directed(vertex, EdgeDirection::Incoming)
-            .filter_map(|e| self.node_depths[e.source()])
-            .collect();
-        layers.sort_unstable();
-        layers.dedup();
-        let behind = layers.iter().take_while(|&&other| other < layer).count();
-        behind.min(MAX_ECHOES)
+        let vertex = wire[usize::from(at_second)];
+        let beside = wire[usize::from(!at_second)];
+        // (Only a depth that is drawn, not the nearest sheet of a region.)
+        let beside_node = *self.coord_to_node.get(&beside)?;
+        let z = self.node_depths[beside_node]?;
+        let sheet = self.sheet_data().ids_at(beside_node).get(z).copied()?;
+        let pages = self.meeting_pages(vertex);
+        let (last, _) = pages.split_last()?;
+        (pages.iter().any(|p| p.sheet == sheet) && last.sheet != sheet).then_some(sheet)
+    }
+
+    /// The sheet that is drawn at the position `coord` ([`node_depth`](Self::node_depth)), or, at a
+    /// position where nothing is drawn at a depth (the regions: their surface is one colour for
+    /// the whole fibre), the nearest of its sheets, the first. `None` if it has no sheets.
+    ///
+    /// This is the sheet that the position is *on*, as far as the picture says: it is the one that
+    /// hovering lists first, and the one that a veil is for (see
+    /// [`on_back_sheet`](Self::on_back_sheet)).
+    #[must_use]
+    pub fn drawn_sheet(&self, coord: Coordinate<N>) -> Option<SheetId> {
+        self.drawn_sheet_at(coord)
+    }
+
+    fn drawn_sheet_at(&self, coord: Coordinate<N>) -> Option<SheetId> {
+        let &n = self.coord_to_node.get(&coord)?;
+        let ids = self.sheet_data().ids_at(n);
+        let z = self.node_depths[n].unwrap_or(0);
+        ids.get(z).copied()
+    }
+
+    /// Whether the position `coord` is drawn on a sheet that is not foremost (see
+    /// [`Sheet::foremost`]): what is seen there is a layer that something else is in front of
+    /// elsewhere. `false` for a position with no sheets.
+    #[must_use]
+    pub fn on_back_sheet(&self, coord: Coordinate<N>) -> bool {
+        self.drawn_sheet_at(coord)
+            .is_some_and(|id| !self.sheet_data().foremost(id))
     }
 
     /// How many sheets pass through the position `coord`, counted by their heights (a sheet

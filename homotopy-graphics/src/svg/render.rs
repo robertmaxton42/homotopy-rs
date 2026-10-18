@@ -109,6 +109,15 @@ impl<const N: usize> From<&ActionRegion<N>> for Simplex<N> {
     }
 }
 
+/// A graphic element with the step that its surface is shaded to (see
+/// [`GraphicElement::build_shaded`]) and, for a wire or point, its position.
+#[derive(Debug, Clone)]
+pub struct Placed<const N: usize> {
+    pub element: GraphicElement<N>,
+    pub step: usize,
+    pub position: Option<Coordinate<N>>,
+}
+
 /// An element to draw in the 2-dimensional graphic of a diagram.
 ///
 /// Connected components of surfaces and wires for the same generator are merged for efficiency
@@ -192,6 +201,22 @@ impl<const N: usize> GraphicElement<N> {
         depths: &Depths<N>,
         step: impl Fn(&[Coordinate<N>; 3]) -> usize,
     ) -> Vec<(Self, usize)> {
+        Self::build_placed(complex, layout, projection, depths, step)
+            .into_iter()
+            .map(|placed| (placed.element, placed.step))
+            .collect()
+    }
+
+    /// Like [`build_shaded`](Self::build_shaded), with the position of each wire and point (its
+    /// first corner: the position of the diagram that it is drawn for).
+    #[must_use]
+    pub fn build_placed(
+        complex: &[(Simplex<N>, bool)],
+        layout: &Layout<N>,
+        projection: &Projection<N>,
+        depths: &Depths<N>,
+        step: impl Fn(&[Coordinate<N>; 3]) -> usize,
+    ) -> Vec<Placed<N>> {
         let mut wire_elements = Vec::new();
         let mut surface_elements = Vec::new();
         let mut point_elements = Vec::new();
@@ -222,17 +247,21 @@ impl<const N: usize> GraphicElement<N> {
                         ),
                         None => (0, vec![]),
                     };
-                    wire_elements.push(Self::Wire(
-                        generator,
-                        depth,
-                        build_path(&orient_wire(ps), false, layout, projection),
-                        mask,
+                    wire_elements.push((
+                        Self::Wire(
+                            generator,
+                            depth,
+                            build_path(&orient_wire(ps), false, layout, projection),
+                            mask,
+                        ),
+                        ps[0],
                     ));
                 }
                 Simplex::Point([p]) => {
                     let (generator, is_identity) = projection.front_generator(*p);
                     if !is_identity {
-                        point_elements.push(Self::Point(generator, project_2d(layout[p]).into()));
+                        point_elements
+                            .push((Self::Point(generator, project_2d(layout[p]).into()), *p));
                     }
                 }
             }
@@ -248,13 +277,50 @@ impl<const N: usize> GraphicElement<N> {
             // Quick enough to do it every time
             let path = simplify_path(&path_builder.build());
 
-            surface_elements.push((Self::Surface(generator, path), step));
+            surface_elements.push(Placed {
+                element: Self::Surface(generator, path),
+                step,
+                position: None,
+            });
         }
 
         let mut elements = surface_elements;
-        elements.extend(wire_elements.into_iter().map(|e| (e, 0)));
-        elements.extend(point_elements.into_iter().map(|e| (e, 0)));
+        elements.extend(wire_elements.into_iter().chain(point_elements).map(
+            |(element, position)| Placed {
+                element,
+                step: 0,
+                position: Some(position),
+            },
+        ));
         elements
+    }
+
+    /// The outline of the visible surfaces for which `wanted` (given their corners) is true, as
+    /// one path, merged as the surfaces of [`build`](Self::build) are (so that it has no seams): to
+    /// be drawn over them, as a veil, for instance. `None` if there are none.
+    #[must_use]
+    pub fn merged_surfaces(
+        complex: &[(Simplex<N>, bool)],
+        layout: &Layout<N>,
+        projection: &Projection<N>,
+        wanted: impl Fn(&[Coordinate<N>; 3]) -> bool,
+    ) -> Option<Path> {
+        let surfaces: Vec<_> = complex
+            .iter()
+            .filter(|(_, visible)| *visible)
+            .filter_map(|(simplex, _)| match simplex {
+                Simplex::Surface(ps) if wanted(ps) => Some(orient_surface(ps)),
+                _ => None,
+            })
+            .collect();
+        if surfaces.is_empty() {
+            return None;
+        }
+        let mut path_builder = NoAttributes::new().with_svg();
+        for points in merge_simplices(surfaces) {
+            make_path(&points, true, layout, projection, &mut path_builder);
+        }
+        Some(simplify_path(&path_builder.build()))
     }
 
     #[must_use]

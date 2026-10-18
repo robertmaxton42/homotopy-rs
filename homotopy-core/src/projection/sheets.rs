@@ -78,11 +78,21 @@ impl SheetId {
     }
 }
 
+/// One of the sheets that meet at a point: a page of the stack drawn there.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Page {
+    /// The sheet.
+    pub sheet: SheetId,
+    /// Its height in the fibre of the neighbour that carries it into the point (the nearest, if
+    /// several neighbours or heights do). Smaller is nearer, as for [`Sheet::z`](super::Sheet::z).
+    pub depth: usize,
+}
+
 /// A place where sheets meet, at a point of the picture.
 ///
 /// It is a height whose neighbours carry two or more distinct sheets into it (see the
 /// [module](self)). Several merge into one or, seen from the other side, one splits.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SheetBoundary<const N: usize> {
     /// The neighbour that carries sheets in (the first that does, if several): the sheets run
     /// along the edge from here to `to`.
@@ -95,6 +105,10 @@ pub struct SheetBoundary<const N: usize> {
     pub sheet: SheetId,
     /// How many distinct sheets are merged into it, over all the edges into `to`: at least 2.
     pub branches: usize,
+    /// The sheets that are merged into it, one for each (so `branches` of them), from the
+    /// farthest back to the nearest (by their depth, then by sheet): the order of a stack of pages
+    /// from the bottom up, so that the last is the one in front.
+    pub pages: Vec<Page>,
 }
 
 #[derive(Clone, Debug)]
@@ -253,7 +267,7 @@ impl<const N: usize> SheetData<N> {
 
         // Where sheets meet: the distinct sheets that the cones merging several heights of a
         // neighbour take to a height of a point of the picture (and the first neighbour to).
-        let mut merging: FastHashMap<usize, (NodeIndex, Vec<SheetId>)> = FastHashMap::default();
+        let mut merging: FastHashMap<usize, (NodeIndex, Vec<Page>)> = FastHashMap::default();
         for (from, to, rewrite) in edges(depths) {
             if stratum_dimension(&graph[to].key) != 0 {
                 continue;
@@ -266,7 +280,10 @@ impl<const N: usize> SheetData<N> {
                     .entry(offsets[to.index()] + cone.target())
                     .or_insert_with(|| (from, vec![]));
                 let start = offsets[from.index()] + cone.source_start();
-                sheets.extend_from_slice(&ids[start..start + cone.source_len()]);
+                sheets.extend((0..cone.source_len()).map(|i| Page {
+                    sheet: ids[start + i],
+                    depth: cone.source_start() + i,
+                }));
             }
         }
         let mut merged = vec![0_usize; total];
@@ -278,12 +295,14 @@ impl<const N: usize> SheetData<N> {
                 let Some((from, sheets)) = merging.get_mut(&at) else {
                     continue;
                 };
-                sheets.sort_unstable();
-                sheets.dedup();
-                // The same sheet at two heights (a fold) is not several sheets.
+                // The same sheet at two heights (a fold) is not several sheets: its nearest height
+                // is its depth.
+                sheets.sort_unstable_by_key(|page| (page.sheet, page.depth));
+                sheets.dedup_by_key(|page| page.sheet);
                 if sheets.len() < 2 {
                     continue;
                 }
+                sheets.sort_unstable_by_key(|page| (std::cmp::Reverse(page.depth), page.sheet));
                 // Where the cell is the same as at the neighbours' it is a point of a wire that the
                 // sheet continues along, where the sheets beside the wire end on it, and nothing
                 // happens at the point: the sheet that they meet in is only at this one.
@@ -301,6 +320,7 @@ impl<const N: usize> SheetData<N> {
                     z,
                     sheet: ids[at],
                     branches: sheets.len(),
+                    pages: std::mem::take(sheets),
                 });
             }
         }
