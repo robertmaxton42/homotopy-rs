@@ -33,7 +33,7 @@ use crate::{
 mod preference;
 use preference::GeneratorPreferenceCheckbox;
 
-use super::removal_preview::{self, DeleteButton};
+use super::removal_preview::{self, DeleteButton, RemovalBox};
 
 // FIXME(@doctorn)
 //
@@ -230,9 +230,6 @@ pub struct ItemView {
     name: String,
     preview_cache: Option<Preview>,
     callback_idx: CallbackIdx,
-    /// Says what deleting this would delete, while the delete button is hovered or focused (see
-    /// [`removal_preview`]).
-    removal_note: NodeRef,
 }
 
 impl Component for ItemView {
@@ -256,7 +253,6 @@ impl Component for ItemView {
             name,
             preview_cache: Default::default(),
             callback_idx,
-            removal_note: NodeRef::default(),
         }
     }
 
@@ -340,11 +336,11 @@ impl Component for ItemView {
         false
     }
 
-    fn destroy(&mut self, _ctx: &Context<Self>) {
+    fn destroy(&mut self, ctx: &Context<Self>) {
         const ITEM_SUBSCRIPTIONS: &[AppSettingsKey] = &[AppSettingsKey::show_previews];
         // (A row that goes while its delete button is hovered never sees the pointer leave.)
         if self.mode == ItemViewMode::Editing {
-            removal_preview::hide();
+            removal_preview::forget(ctx.props().node);
         }
         AppSettings::unsubscribe(ITEM_SUBSCRIPTIONS, &[self.callback_idx]);
     }
@@ -756,37 +752,29 @@ impl ItemView {
 
     /// The delete button, which shows what the deletion would delete while it is hovered or has
     /// the focus.
-    fn view_delete_button(&self, ctx: &Context<Self>, light: bool) -> Html {
+    fn view_delete_button(ctx: &Context<Self>, light: bool) -> Html {
         html! {
             <DeleteButton
                 dispatch={ctx.props().dispatch.clone()}
                 signature={ctx.props().signature.clone()}
                 node={ctx.props().node}
-                note={self.removal_note.clone()}
-                note_id={Self::removal_note_id(ctx)}
                 {light}
             />
         }
     }
 
-    fn removal_note_id(ctx: &Context<Self>) -> String {
-        format!("removal-note-{}", ctx.props().node.index())
-    }
-
-    /// The line under a row being edited that says what deleting it would delete. Empty (and
-    /// not shown) until the delete button is hovered or focused; written to directly by
-    /// [`removal_preview`].
+    /// The box under a row being edited that says what deleting it would delete and, expanded,
+    /// which. Empty (and not shown) until the delete button is hovered or focused; told what to
+    /// show by [`removal_preview`], and the only thing that renders when it changes.
     fn view_removal_note(&self, ctx: &Context<Self>) -> Html {
         if self.mode != ItemViewMode::Editing {
             return html! {};
         }
         html! {
-            <div
-                class="signature__removal-note"
-                id={Self::removal_note_id(ctx)}
-                ref={self.removal_note.clone()}
-                role="status"
-                aria-live="polite"
+            <RemovalBox
+                node={ctx.props().node}
+                signature={ctx.props().signature.clone()}
+                dispatch={ctx.props().dispatch.clone()}
             />
         }
     }
@@ -846,7 +834,7 @@ impl ItemView {
                                     ItemViewMessage::SwitchTo(Hovering)
                                 })
                             } />
-                        {self.view_delete_button(ctx, icon_light)}
+                        {Self::view_delete_button(ctx, icon_light)}
                         </>
                     }
                 }
@@ -904,7 +892,7 @@ impl ItemView {
                 }
                 ItemViewMode::Editing => html! {
                     <>
-                        {self.view_delete_button(ctx, false)}
+                        {Self::view_delete_button(ctx, false)}
                         <ItemViewButton icon={"done"} on_click={
                             ctx.link().callback(move |_| {
                                 ItemViewMessage::SwitchTo(ItemViewMode::Hovering)
