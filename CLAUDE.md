@@ -358,6 +358,58 @@ indicator: see "Laying out diagrams" below.
     diagram first, then by `layout::weight` of their diagram, which costs the same whatever the size), for the plain
     pass and for the reflections. The options are put back in the order of the generators by `outcome`, so the list is
     as before (tested: no limit and a far one give the same options, and the whole-vs-`only` equivalence tests).
+  - **Instance synthesis: the inverse of an invertible schema, and replacements read off the diagram**
+    (`InferSearch` plans, `completion::seeds`, `Pool::reaching`; user reports in the tangent categories project,
+    tests `homotopy-model/tests/instance_synth.rs`, `instance_sweep.rs` and `inference::tests`).
+    - **Root cause of "the instance for T is not found, only `Ẋ := 1_𝒞`"** (δ-on-objects `Ẋ◁δ = δ▷(Ẋ,Ẋ)`, at the top row
+      of the workspace: `[Boundary(Target), x]`, `x` from the left; the 2D view of a 5-diagram shows `[h5, h4]` of the
+      whole diagram, so a click on the picture is at a 5-dimensional haystack, where 6-cells are the ones that attach, and
+      the target row is the 4-dimensional boundary where a 5-cell schema does). The instance made by hand for `T` attaches
+      *as its inverse*: the schema is invertible, the diagram has `δ▷(T,T)`, which is the cell's target. The plain pass offers
+      `g` and `g⁻¹` of every invertible generator, but `InferSearch` only looked for the schema's source (on a target boundary),
+      so of all the instances only the trivial one, whose source `1◁δ = δ` is there, was found. Not the pool (`T` is a 1-cell
+      of the haystack), not the 3-cell limit, not `MAX_SUBSTITUTIONS` (21 ms, 1 option), not invertibility checks.
+      Now an invertible schema is also looked for by its target (`inverse` on `InferredInstance` and `AttachOption`,
+      `serde(default)`, also on the wire; `Proof::attach` attaches the instance's `inverse()`; label `A [σ]⁻¹`,
+      `Structure::InverseInstance`). Both directions are checked for each substitution in one walk (so a schema that has no
+      end spends its time on both, and the notice is the same). 1 option → 3 at the top-left: `id`, `id⁻¹`, `T⁻¹`; attaching
+      `T⁻¹` gives the same workspace as the instance made by hand.
+    - **Reading replacements off the diagram** (the "giveaway" nodes; `completion::seeds`, `Seeds`). For the side of the schema
+      that is attached along, a cell `g` that depends on placeholders (`η̇₍₂₎[Ḟ, Ġ, η̇]`, `ζ[η̇]`…) is replaced by its instance
+      `g[σ]`, which has to exist (strict `Pool::substitute`), so *the diagram has a generator that is that instance*, and the
+      instance records what it was made with (`Instance::substitution`). `seeds` matches `g` against every such instance in the
+      diagram with the Instantiate panel's matcher (`Matcher::unify`, `match_instance`: the same structural matching, down the types,
+      binding placeholders, forced bindings only) and keeps what is forced of `σ` as a "way". Ways are necessary conditions, one
+      for each instance a cell can become and (up to `MAX_SEEDS` = 64) for all the cells at once, in `(dimension, id)` order,
+      so a `σ` is in at most one (they are disjoint; a `seen` set also keeps overlaps from finding it twice). No instance for a cell
+      is `Seeds::Impossible`: **nothing is searched** (a schema whose cell has no instance in the diagram is done in 0 steps).
+      Placeholders a way binds have that one replacement (checked to fit the type: `Pool::fits`, which `Machine::well_typed` now
+      uses too), the others are searched as before, with the types known. A replacement need not be made of cells of the diagram
+      or of at most three cells: `p` of `η̇₍₂₎[T/Ḟ, 1/Ġ, p/η̇]` is a 5-cell in a 4-dimensional diagram.
+    - **Plans.** `InferSearch` is a list of `Plan`s run one after another: a plan per way (with its direction), then one plan
+      for the directions that have no cell to read (the old search; `Seeds::Free`). A direction that has ways is *not*
+      also searched blind: ways cover every `σ` the blind search can find (it is a necessary condition), which is what
+      the comparison test checks. `MAX_SUBSTITUTIONS` is per plan. `InferenceLimits::seeding` (default on, `serde(default)`) switches
+      it off, for the comparison tests and for anyone who suspects it of a miss (no UI setting yet).
+    - **Order keys** (`Slot.key`): unchanged for the old search (the candidate numbers, forward); a way's instances are
+      `[SEEDED_KEY, way, candidate numbers…]` and the inverse's have `INVERSE_KEY` in front (`u32::MAX`, `SEEDED_KEY` is one less),
+      so the final order is: found by searching, found by reading, then the same for the inverse. An instance found both ways (a
+      direction with ways is not searched blind, so only if two ways overlap) is where the first way put it. Deterministic:
+      ways are in the order of the haystack's generators `(dimension, id)`. Streaming is as before (`take_results`).
+    - **Placeholders above the diagram** (`Pool::reaching(…, haystack.dimension())`, `Cells::beyond`): a placeholder of a higher
+      dimension than the haystack's has no cell of the diagram to be made of; its candidates are the cells (not placeholders) that
+      the records of the instances in the diagram are made of, transitively (`p` is "in play" if `(Tp)₍₂₎` is there). Before, none.
+    - **Measured** (release, native, the fixture; the limit is 3 s a generator, "(cut)" is a search that ran out of it;
+      `reading_replacements_off_the_diagram_finds_what_searching_finds`, 612 searches at the boundaries and every 5th point of
+      the workspace: 606 the same, 6 instances more, 0 lost; all of it 261 s → 113 s, searches cut 84 → 33): `π_η̇ def` (37) at
+      `[R5,S3]` ≥ 3 s (cut) → 92 ms, `σ[η̇→η̇′]` (50) ≥ 3 s (cut) → 6 ms, `π_η̇,1η̇ = π_η̇,2η̇` (72) ≥ 3 s (cut) → 3 ms, the
+      `ς` spec (119) → 6 ms, 115 → 5 ms, 68 → 53 ms. Still cut: `∀η̇, ζ[η̇]η̇ = 1_G` (31) in the direction whose side (`1_G`) has no cell
+      to read, 48, 77, 78, 82 (no instance of a cell they depend on is needed or there are many unbound placeholders).
+    - **Known gaps**: instances made by hand for `ζ[η̇]`, `σ[η̇]` (`ζ[p]`, `ζ[Tp]`, `σ[T/Ḟ, 1/Ġ, p/η̇]`) are not inferred
+      (`KNOWN_GAPS` in `instance_sweep.rs`): they depend on a transformation `η̇` that the cells they attach along do not mention,
+      so nothing in the diagram says which one is meant (offering every 5-cell of the signature of the right type gave 272 options
+      and never finished in 20 s), and `−₍₂₎ congr` (97), which has `ι₁, ι₂, ḣ` that only the hand-made instance says anything
+      about. The direction of a schema whose side has no cell that depends on placeholders is searched blind, as before.
   - Debug hooks: `__homotopy.dispatch` takes `{"SelectPoint": [point, weak_units]}` (limits from the
     settings) and `{"SelectPointWith": [point, weak_units, {"enabled":..,"generator_ms":..,"max_dimension":..}]}`;
     a point is a list of `{"Singular": n}`, `{"Regular": n}` or `{"Boundary": "Source"}`.
