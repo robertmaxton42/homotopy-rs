@@ -38,7 +38,10 @@
 
 use std::rc::Rc;
 
-use homotopy_common::{hash::FastHashMap, tex::seal};
+use homotopy_common::{
+    hash::{FastHashMap, FastHashSet},
+    tex::seal,
+};
 use homotopy_core::{
     signature::{Invertibility, Signature as _},
     Diagram, DiagramN, Generator, Orientation,
@@ -749,6 +752,150 @@ impl Matcher<'_> {
     }
 }
 
+/// What the cells of one side of a schema that depend on placeholders say about their
+/// replacements, given the generators there are in the diagram to attach to (see [`seeds`]).
+#[derive(Debug)]
+pub(super) enum Seeds {
+    /// The side has no such cell: it says nothing.
+    Free,
+    /// There is no way to make the side that has all its cells in the diagram.
+    Impossible,
+    /// The replacements are among these, which leave out what they do not determine: each is
+    /// what is forced by one instance in the diagram being what a cell of the side is made into.
+    /// Two replacements make a cell into one instance each, so that no replacement is among two
+    /// of them unless they overlap in what they leave out.
+    Ways(Vec<Vec<Option<Diagram>>>),
+}
+
+/// The most ways [`seeds`] refines before it stops (each is a search of its own).
+const MAX_SEEDS: usize = 64;
+
+/// Reads placeholders off the diagram that a schema is to be attached to.
+///
+/// To attach a schema `S[σ]` along one of its sides, the cells of that side are in the diagram.
+/// A cell `g` of the side that depends on placeholders is replaced by the instance of it that `σ`
+/// gives (`g[σ]`, which has to exist already: see [`Pool::substitute`]), so the diagram has a
+/// generator that is an instance of `g`'s schema, made with the replacements that `σ` gives. That
+/// instance records the replacements it was made with, which tells what `σ` is at the
+/// placeholders `g` depends on. It is *matching* `g` against it, with the same matching as for
+/// the types of replacements in the Instantiate panel (see the [module](self)), and what it forces
+/// is a part of `σ`.
+///
+/// This is a necessary condition of an instance, found without searching for the replacements:
+/// any `σ` that makes the side from cells in the diagram is among the ways, one way for each
+/// instance in the diagram that `g` can become, and for each of the cells that depend on
+/// placeholders at once, as far as the ways go ([`MAX_SEEDS`]). Replacements that come from the
+/// ways need not be made of the cells of the diagram: `p` in `η̇₍₂₎[T/Ḟ, id/Ġ, p/η̇]`, which is
+/// in a diagram of a dimension below `p`'s.
+pub(super) fn seeds(
+    signature: &Signature,
+    parameters: &[Generator],
+    schema: Generator,
+    side: &Diagram,
+    present: &FastHashSet<Generator>,
+) -> Seeds {
+    let matcher = Matcher {
+        signature,
+        parameters,
+    };
+    let sorted = |generators: Vec<Generator>| {
+        let mut generators = generators;
+        generators.sort_by_key(|g| (g.dimension, g.id));
+        generators
+    };
+
+    // The cells of the side that depend on placeholders, and the schema they are instances of.
+    let mut anchors: Vec<(Generator, DiagramN, Generator)> = vec![];
+    for g in sorted(side.generators().into_keys().collect()) {
+        let Some(info) = signature.generator_info(g) else {
+            continue;
+        };
+        if g == schema || info.placeholder || signature.parameters(g).is_empty() {
+            continue;
+        }
+        let Diagram::DiagramN(own) = &info.diagram else {
+            continue;
+        };
+        let root = info.instance.as_ref().map_or(g, |made| made.schema);
+        anchors.push((g, own.clone(), root));
+    }
+    if anchors.is_empty() {
+        return Seeds::Free;
+    }
+
+    // The instances in the diagram, by the schema they are of.
+    let instances: Vec<(Generator, DiagramN)> = sorted(present.iter().copied().collect())
+        .into_iter()
+        .filter_map(|g| {
+            let info = signature.generator_info(g)?;
+            let Diagram::DiagramN(d) = &info.diagram else {
+                return None;
+            };
+            Some((info.instance.as_ref()?.schema, d.clone()))
+        })
+        .collect();
+
+    // What the states that have already bound some of the placeholders become when a cell of
+    // the side is made into each of the instances in the diagram, for those it can be.
+    let unified = |states: &[State], anchor: &(Generator, DiagramN, Generator)| -> Vec<State> {
+        let (g, own, root) = anchor;
+        let mut ways = vec![];
+        for state in states {
+            for (of, instance) in &instances {
+                if of != root || instance.dimension() != own.dimension() {
+                    continue;
+                }
+                let mut state = state.clone();
+                state.pending.push(Constraint {
+                    pattern: own.clone().into(),
+                    value: instance.clone().into(),
+                    root: *g,
+                    owner: *g,
+                    path: vec![],
+                });
+                if matcher.propagate(&mut state).is_ok() {
+                    ways.push(state);
+                }
+            }
+        }
+        ways
+    };
+
+    let start = State {
+        bound: vec![None; parameters.len()],
+        ..State::default()
+    };
+    // The cells with the fewest ways first, so that the others are refinements of few.
+    let mut counted: Vec<(usize, &(Generator, DiagramN, Generator))> = anchors
+        .iter()
+        .map(|anchor| (unified(std::slice::from_ref(&start), anchor).len(), anchor))
+        .collect();
+    counted.sort_by_key(|(count, _)| *count);
+    let mut states = vec![start];
+    for (count, anchor) in counted {
+        if count == 0 {
+            return Seeds::Impossible;
+        }
+        let refined = unified(&states, anchor);
+        if refined.is_empty() {
+            return Seeds::Impossible;
+        }
+        if refined.len() > MAX_SEEDS {
+            break;
+        }
+        states = refined;
+    }
+
+    let mut ways: Vec<Vec<Option<Diagram>>> = vec![];
+    for state in states {
+        let way = state.bound.into_iter().map(|b| b.map(|(d, _)| d)).collect();
+        if !ways.contains(&way) {
+            ways.push(way);
+        }
+    }
+    Seeds::Ways(ways)
+}
+
 /// What is known about the placeholders of a schema after matching and searching.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Inference {
@@ -1119,39 +1266,8 @@ impl Machine {
             let Some((replacement, _)) = &prepared.state.bound[i] else {
                 return false;
             };
-            Self::well_typed(ctx, placeholder, replacement, &self.substitution)
+            ctx.pool.fits(placeholder, replacement, &self.substitution)
         })
-    }
-
-    fn well_typed(
-        ctx: &Context,
-        placeholder: Generator,
-        replacement: &Diagram,
-        substitution: &[(Generator, Diagram)],
-    ) -> bool {
-        let Some(own) = ctx
-            .pool
-            .signature
-            .generator_info(placeholder)
-            .map(|info| info.diagram.clone())
-        else {
-            return false;
-        };
-        match (own, replacement) {
-            (Diagram::Diagram0(_), Diagram::Diagram0(_)) => true,
-            (Diagram::DiagramN(own), Diagram::DiagramN(replacement)) => {
-                own.dimension() == replacement.dimension()
-                    && ctx
-                        .pool
-                        .substitute(placeholder, substitution, &own.source(), true)
-                        == Some(replacement.source())
-                    && ctx
-                        .pool
-                        .substitute(placeholder, substitution, &own.target(), true)
-                        == Some(replacement.target())
-            }
-            _ => false,
-        }
     }
 
     /// What the search came to.

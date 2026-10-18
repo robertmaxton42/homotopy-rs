@@ -672,6 +672,7 @@ impl ProofState {
             Some(substitution) => {
                 let instance = self.signature.instantiate(option.generator, substitution)?;
                 match &self.signature.generator_info(instance).unwrap().diagram {
+                    Diagram::DiagramN(diagram) if option.inverse => diagram.inverse(),
                     Diagram::DiagramN(diagram) => diagram.clone(),
                     Diagram::Diagram0(_) => return Ok(false),
                 }
@@ -1307,6 +1308,11 @@ pub struct AttachOption {
     /// options puts those of one generator in a group of their own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reflection: bool,
+    /// For an instance of a schema (`substitution` is set): whether what is attached is the
+    /// inverse of the instance, which is so when the schema is invertible and it is its target
+    /// that the diagram has (the instance's source being what is made).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inverse: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]

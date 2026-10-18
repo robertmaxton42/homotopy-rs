@@ -20,7 +20,7 @@ use homotopy_core::{
     Boundary, Diagram, DiagramN, Generator, Height, SliceIndex,
 };
 use homotopy_graphics::{
-    style::{GeneratorStyle, SignatureStyleData, Stripes, VertexShape},
+    style::{GeneratorStyle, SignatureStyleData, Stripes, VertexShape, SHADE_BRIGHTNESS},
     svg::{
         color_index, generator_class_from_diagram_dim,
         render::{ActionRegion, GraphicElement},
@@ -98,7 +98,18 @@ pub struct DiagramSvg<const N: usize> {
 const DRAWING_SETTINGS: &[AppSettingsKey] = &[
     AppSettingsKey::sheet_outlines,
     AppSettingsKey::sheet_shading,
+    AppSettingsKey::sheet_veil,
 ];
+
+/// Which of the cues about sheets that are put on the surfaces and elements of the diagram, when it
+/// is prepared, are on. Changing one prepares the diagram again.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct Overlays {
+    /// Surfaces are shaded by the sheets behind them.
+    shade: bool,
+    /// What is drawn on a sheet that is not foremost is veiled.
+    veil: bool,
+}
 
 /// How many steps of shading there are for the number of sheets behind a surface (0 is none).
 const SHADING_STEPS: usize = 4;
@@ -169,8 +180,14 @@ struct PreparedDiagram<const N: usize> {
     /// For each of `graphic`, how many steps its surface is shaded (0: not at all). All 0 if the
     /// surfaces are not shaded (`shaded`).
     steps: Vec<usize>,
-    /// Whether it was prepared for the surfaces to be shaded by the sheets behind them.
-    shaded: bool,
+    /// Which cues about the sheets it was prepared with.
+    overlays: Overlays,
+    /// The outline of the surfaces that are drawn on a sheet that is not foremost (see
+    /// `view_sheet_veil`), as path data, if the veil is on and there are any.
+    veil: Option<String>,
+    /// For each of `graphic`, whether it is a wire or a vertex drawn on a sheet that is not
+    /// foremost, which is veiled (the surfaces are veiled by `veil`). All false if there is no veil.
+    veiled: Vec<bool>,
     actions: Vec<(Simplex<N>, Shape)>,
     depths: Depths<N>,
     projection: Projection<N>,
@@ -197,7 +214,12 @@ struct PreparedDiagram<const N: usize> {
 impl<const N: usize> PreparedDiagram<N> {
     /// Prepares the diagram for rendering, given its layout, which is the part that can take
     /// long (see [`layout`]).
-    fn new(diagram: &Diagram, layout: Rc<Layout<N>>, style: RenderStyle, shade: bool) -> Self {
+    fn new(
+        diagram: &Diagram,
+        layout: Rc<Layout<N>>,
+        style: RenderStyle,
+        overlays: Overlays,
+    ) -> Self {
         assert!(diagram.dimension() >= N);
 
         let performance = web_sys::window().unwrap().performance().unwrap();
@@ -208,7 +230,7 @@ impl<const N: usize> PreparedDiagram<N> {
         let projection = Projection::new(diagram, &layout, &depths).unwrap();
         // How many sheets pass through a surface: those of the region it belongs to, which is
         // the position that hovering over it lists the sheets of (see `Shading`).
-        let shading = shade.then(|| {
+        let shading = overlays.shade.then(|| {
             Shading::new(
                 &depths,
                 complex
@@ -220,13 +242,34 @@ impl<const N: usize> PreparedDiagram<N> {
                 SHADING_STEPS,
             )
         });
-        let (graphic, steps): (Vec<_>, Vec<_>) =
-            GraphicElement::build_shaded(&complex, &layout, &projection, &depths, |corners| {
+        let placed =
+            GraphicElement::build_placed(&complex, &layout, &projection, &depths, |corners| {
                 shading
                     .as_ref()
                     .map_or(0, |shading| shading.step(&depths, corners))
+            });
+        // What is drawn on a sheet that is not foremost: the surfaces as one path (below), the
+        // wires and vertices one by one.
+        let veiled: Vec<bool> = placed
+            .iter()
+            .map(|placed| {
+                overlays.veil
+                    && placed
+                        .position
+                        .is_some_and(|position| depths.on_back_sheet(position))
             })
+            .collect();
+        let veil_path = overlays
+            .veil
+            .then(|| {
+                GraphicElement::merged_surfaces(&complex, &layout, &projection, |corners| {
+                    depths.on_back_sheet(Depths::<N>::surface_position(corners))
+                })
+            })
+            .flatten();
+        let (graphic, steps): (Vec<_>, Vec<_>) = placed
             .into_iter()
+            .map(|placed| (placed.element, placed.step))
             .unzip();
         let actions = ActionRegion::build(&complex, &layout, &projection);
 
@@ -239,6 +282,7 @@ impl<const N: usize> PreparedDiagram<N> {
         let transform = Transform2D::scale(style.scale, -style.scale)
             .then_translate((0.0, dimensions.height).into());
 
+        let veil = veil_path.map(|path| path_to_svg(&path.transformed(&transform)));
         let actions = actions
             .into_iter()
             .map(|action| {
@@ -277,7 +321,9 @@ impl<const N: usize> PreparedDiagram<N> {
             diagram: diagram.clone(),
             graphic,
             steps,
-            shaded: shade,
+            overlays,
+            veil,
+            veiled,
             actions,
             depths,
             projection,
@@ -352,7 +398,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
                 // The surfaces are kept apart by their shading when the diagram is prepared.
                 if self
                     .current()
-                    .is_some_and(|p| p.shaded != Self::shading(ctx))
+                    .is_some_and(|p| p.overlays != Self::overlays(ctx))
                 {
                     self.hide_tooltip();
                     self.prepare(ctx);
@@ -419,7 +465,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
                     &ctx.props().diagram,
                     layout,
                     ctx.props().style,
-                    Self::shading(ctx),
+                    Self::overlays(ctx),
                 ));
                 return true;
             }
@@ -447,7 +493,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
                     &ctx.props().diagram,
                     layout,
                     ctx.props().style,
-                    Self::shading(ctx),
+                    Self::overlays(ctx),
                 ));
             }
         }
@@ -458,6 +504,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
         // (What the view drew again is not dimmed, whatever is chosen.)
         self.apply_dimming(ctx);
         self.apply_highlight(ctx);
+        self.apply_marks(ctx);
         if let Some(sink) = self.drag_sink {
             attach_drag::set_element(sink, &ctx.props().diagram_ref);
         }
@@ -682,6 +729,7 @@ impl<const N: usize> Component for DiagramSvg<N> {
             >
                 {Self::view_placeholder_hatch(ctx, prepared)}
                 {prepared.graphic.iter().enumerate().take(surfaces).map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
+                {Self::view_sheet_veil(prepared)}
                 {Self::view_sheet_highlight_under(ctx)}
                 {Self::view_sheet_marks(ctx, prepared)}
                 {prepared.graphic.iter().enumerate().skip(surfaces).map(|(i, e)| Self::view_element(ctx, prepared, i, e)).collect::<Html>()}
@@ -711,7 +759,7 @@ impl<const N: usize> DiagramSvg<N> {
                     &props.diagram,
                     layout,
                     props.style,
-                    Self::shading(ctx),
+                    Self::overlays(ctx),
                 ));
             }
             Asked::Pending(ticket) => self.pending = Some(ticket),
@@ -763,14 +811,24 @@ impl<const N: usize> DiagramSvg<N> {
 
     /// The colour of the stripes of a placeholder surface: the one that its colour, as it is drawn
     /// in this diagram, does not hide.
-    fn stripes_of(ctx: &Context<Self>, element: &GraphicElement<N>, dimension: usize) -> Stripes {
+    fn stripes_of(
+        ctx: &Context<Self>,
+        element: &GraphicElement<N>,
+        dimension: usize,
+        step: usize,
+    ) -> Stripes {
         let generator = element.generator();
         let c = color_index(generator, dimension, element.clone().into());
         ctx.props()
             .signature
             .generator_style(generator)
             .map_or(Stripes::Dark, |style| {
-                style.color().lighten(c, element.orientation()).stripes()
+                // As darkened by the shading of its step, which the stripes must still show on.
+                style
+                    .color()
+                    .lighten(c, element.orientation())
+                    .dimmed(SHADE_BRIGHTNESS[step.min(SHADE_BRIGHTNESS.len() - 1)])
+                    .stripes()
             })
     }
 
@@ -831,6 +889,8 @@ impl<const N: usize> DiagramSvg<N> {
             element.clone().into(),
         );
 
+        // Drawn on a sheet that is not foremost: faded by the stylesheet (see `view_sheet_veil`).
+        let veiled = prepared.veiled[index].then_some("1");
         match element {
             GraphicElement::Surface(d, path) => {
                 let path = path_to_svg(&path.clone().transformed(&prepared.transform));
@@ -842,7 +902,12 @@ impl<const N: usize> DiagramSvg<N> {
                 if Self::is_placeholder(ctx, d.generator) {
                     // Placeholders are translucent (by their stylesheet) and also hatched, in
                     // stripes that show on their colour.
-                    let stripes = Self::stripes_of(ctx, element, prepared.diagram.dimension());
+                    let stripes = Self::stripes_of(
+                        ctx,
+                        element,
+                        prepared.diagram.dimension(),
+                        prepared.steps[index],
+                    );
                     html! {
                         <>
                             <path d={path.clone()} class={class} data-thickness={thickness} />
@@ -870,6 +935,7 @@ impl<const N: usize> DiagramSvg<N> {
                             d={path}
                             class={class}
                             data-depth={depth}
+                            data-veiled={veiled}
                             stroke-width={ctx.props().style.wire_thickness.to_string()}
                         />
                     }
@@ -903,6 +969,7 @@ impl<const N: usize> DiagramSvg<N> {
                                 d={path}
                                 class={class}
                                 data-depth={depth}
+                                data-veiled={veiled}
                                 stroke-width={ctx.props().style.wire_thickness.to_string()}
                                 mask={format!("url(#{mask_id})")}
                             />
@@ -925,6 +992,7 @@ impl<const N: usize> DiagramSvg<N> {
                             r={radius.to_string()}
                             cx={point.x.to_string()}
                             cy={point.y.to_string()}
+                            data-veiled={veiled}
                             class={class} />
                     },
                     Square => html! {
@@ -933,6 +1001,7 @@ impl<const N: usize> DiagramSvg<N> {
                             y={(point.y - radius).to_string()}
                             width={(radius * 2.0).to_string()}
                             height={(radius * 2.0).to_string()}
+                            data-veiled={veiled}
                             class={class} />
                     },
                 }
@@ -940,9 +1009,25 @@ impl<const N: usize> DiagramSvg<N> {
         }
     }
 
-    /// Whether the surfaces are to be shaded by the sheets behind them.
-    fn shading(ctx: &Context<Self>) -> bool {
-        ctx.props().sheets && AppSettings::get_sheet_shading()
+    /// Which cues about the sheets are on (the diagram has to have sheets to choose between).
+    fn overlays(ctx: &Context<Self>) -> Overlays {
+        Overlays {
+            shade: ctx.props().sheets && AppSettings::get_sheet_shading(),
+            veil: ctx.props().sheets && AppSettings::get_sheet_veil(),
+        }
+    }
+
+    /// The veil over what is drawn on a sheet that is not foremost: a frosted layer over the
+    /// surfaces that are (one path, made when the diagram was prepared), between the surfaces and
+    /// the wires (so that what is in front of them is not veiled). Wires and vertices that are
+    /// drawn on such a sheet are faded by their own `data-veiled`.
+    fn view_sheet_veil(prepared: &PreparedDiagram<N>) -> Html {
+        match &prepared.veil {
+            Some(d) => html! {
+                <path class="sheet-veil" d={d.clone()} pointer-events="none" />
+            },
+            None => html! {},
+        }
     }
 
     fn view_highlight(&self, ctx: &Context<Self>) -> Html {
@@ -1173,6 +1258,7 @@ impl<const N: usize> DiagramSvg<N> {
         }
         self.apply_dimming(ctx);
         self.apply_highlight(ctx);
+        self.apply_marks(ctx);
         self.publish_summary(ctx);
     }
 
@@ -1422,6 +1508,22 @@ mod tests {
             position: [Height::Singular(1).into(), Height::Singular(0).into()],
             path: z.to_vec(),
         }
+    }
+
+    /// The stripes of a placeholder are chosen for the brightness that each step of shading has,
+    /// which the stylesheet sets: the two must say the same.
+    #[test]
+    fn the_stylesheet_shades_as_the_stripes_assume() {
+        let css = include_str!("../../static/styles.css");
+        for (step, brightness) in SHADE_BRIGHTNESS.iter().enumerate().skip(1) {
+            let rule = format!(
+                "svg path[data-thickness=\"{step}\"] {{\n  filter: brightness({brightness})"
+            );
+            assert!(css.contains(&rule), "{rule}");
+        }
+        // And what is veiled is faded by the same rules that the view puts on it.
+        assert!(css.contains("svg [data-veiled=\"1\"]"));
+        assert!(css.contains(".sheet-veil"));
     }
 
     #[test]

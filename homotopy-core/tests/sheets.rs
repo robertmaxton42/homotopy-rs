@@ -543,7 +543,7 @@ fn a_surface_is_shaded_for_the_sheets_that_the_hover_lists_at_its_region() {
 // ---------------------------------------------------------------------------------------------
 // Where sheets are, where they meet, and the echoes of the wires behind.
 
-use homotopy_core::projection::{SheetId, MAX_ECHOES};
+use homotopy_core::projection::{Page, SheetId};
 
 #[test]
 fn the_places_of_a_sheet_are_the_positions_that_have_it() {
@@ -594,18 +594,21 @@ fn the_places_of_a_sheet_are_the_positions_that_have_it() {
     assert!(checked > 100, "{checked} heights");
 }
 
-/// The layer of a wire, worked out from `sheets`, the way a person hovering over it sees it: the
-/// height that is marked as drawn at the position beside the point.
-fn drawn_height<const N: usize>(depths: &Depths<N>, position: [SliceIndex; N]) -> Option<usize> {
+/// The sheet that is drawn at a position, worked out from `sheets`, the way a person hovering over
+/// it sees it: the one marked as drawn.
+fn drawn_sheet_of<const N: usize>(
+    depths: &Depths<N>,
+    position: [SliceIndex; N],
+) -> Option<SheetId> {
     depths
         .sheets(position, &[])
         .iter()
         .find(|s| s.front)
-        .map(|s| s.z)
+        .and_then(|s| s.id)
 }
 
-/// Echoes are only on the wires at a point where sheets meet, and by how many layers behind the
-/// front-most of the wires there they are; the wires of the front layer have none.
+/// Echoes are only on the wires at a point where sheets meet, one for each wire that is on a sheet
+/// that is a page there with other pages in front of it, and it is of that sheet.
 fn check_echoes(name: &str, diagram: &DiagramN) -> (usize, usize) {
     let diagram: Diagram = diagram.clone().into();
     let depths = Depths::<2>::new(&diagram).unwrap();
@@ -618,54 +621,31 @@ fn check_echoes(name: &str, diagram: &DiagramN) -> (usize, usize) {
         .collect();
     let (mut with_echoes, mut meeting_points) = (0, 0);
     for wire in &wires {
-        let echoes = depths.echoes(*wire);
-        assert!(echoes <= MAX_ECHOES, "{name}");
+        let echo = depths.echo_sheet(*wire);
         let (vertex, beside) = if depths.sheets_meeting_at(wire[1]) > 0 {
             (wire[1], wire[0])
         } else {
             (wire[0], wire[1])
         };
         if depths.sheets_meeting_at(vertex) == 0 {
-            assert_eq!(echoes, 0, "{name}: {wire:?} is not at a meeting");
+            assert_eq!(echo, None, "{name}: {wire:?} is not at a meeting");
             continue;
         }
-        // The layers that the wires at the point are drawn at, as the hover marks them.
-        let mut layers: Vec<usize> = wires
-            .iter()
-            .filter(|other| other.contains(&vertex))
-            .filter_map(|other| {
-                let beside = if other[0] == vertex {
-                    other[1]
-                } else {
-                    other[0]
-                };
-                drawn_height(&depths, beside)
-            })
-            .collect();
-        layers.sort_unstable();
-        layers.dedup();
-        let expected = drawn_height(&depths, beside).map_or(0, |layer| {
-            layers
-                .iter()
-                .filter(|&&other| other < layer)
-                .count()
-                .min(MAX_ECHOES)
+        let pages = depths.meeting_pages(vertex);
+        let drawn = drawn_sheet_of(&depths, beside);
+        let expected = drawn.filter(|sheet| {
+            pages.iter().any(|page| page.sheet == *sheet)
+                && pages.last().map(|page| page.sheet) != Some(*sheet)
         });
-        assert_eq!(echoes, expected, "{name}: {wire:?}");
-        if layers
-            .first()
-            .is_some_and(|&front| drawn_height(&depths, beside) == Some(front))
-        {
-            assert_eq!(echoes, 0, "{name}: a wire of the front layer has none");
-        }
-        with_echoes += usize::from(echoes > 0);
+        assert_eq!(echo, expected, "{name}: {wire:?}");
+        with_echoes += usize::from(echo.is_some());
         meeting_points += 1;
     }
     (with_echoes, meeting_points)
 }
 
 #[test]
-fn only_wires_behind_the_front_wires_at_a_meeting_have_echoes() {
+fn only_wires_on_sheets_behind_the_front_page_at_a_meeting_have_echoes() {
     let (mut with_echoes, mut at_meetings) = (0, 0);
     for (name, diagram) in examples_in_2d() {
         let (echoes, wires) = check_echoes(name, &diagram);
@@ -677,8 +657,89 @@ fn only_wires_behind_the_front_wires_at_a_meeting_have_echoes() {
     assert!(with_echoes < at_meetings, "and some are not");
 }
 
+/// The pages of a meeting are the distinct sheets merged into it, one page each, from the farthest
+/// back to the nearest: the deepest first, ties by sheet. Each is a sheet that is at its depth
+/// somewhere other than the meeting.
 #[test]
-fn the_associator_has_one_vertex_where_five_sheets_meet_and_one_wire_behind() {
+fn the_pages_of_a_meeting_are_its_sheets_from_the_back_to_the_front() {
+    let mut checked = 0;
+    for (name, diagram) in examples_in_2d() {
+        let diagram: Diagram = diagram.into();
+        let depths = Depths::<2>::new(&diagram).unwrap();
+        for b in depths.sheet_boundaries() {
+            assert_eq!(b.pages.len(), b.branches, "{name}");
+            let mut sheets: Vec<_> = b.pages.iter().map(|p| p.sheet).collect();
+            sheets.sort_unstable();
+            sheets.dedup();
+            assert_eq!(
+                sheets.len(),
+                b.pages.len(),
+                "one page for each sheet: {name}"
+            );
+            for pair in b.pages.windows(2) {
+                let key = |p: &Page| (std::cmp::Reverse(p.depth), p.sheet);
+                assert!(key(&pair[0]) < key(&pair[1]), "{name}: {:?}", b.pages);
+            }
+            for page in &b.pages {
+                assert!(
+                    depths
+                        .sheet_places(page.sheet)
+                        .iter()
+                        .any(|&(place, z)| place != b.to && z == page.depth),
+                    "{name}: {page:?}"
+                );
+            }
+            // Through the position, which has the pages of all of its meetings once each.
+            let all = depths.meeting_pages(b.to);
+            for page in &b.pages {
+                assert!(all.iter().any(|p| p.sheet == page.sheet), "{name}");
+            }
+            checked += 1;
+        }
+        assert!(depths
+            .meeting_pages([Boundary::Source.into(); 2])
+            .is_empty());
+    }
+    assert!(checked >= 3, "{checked} meetings");
+}
+
+/// A position is on a back sheet if the sheet drawn there (the one marked so, or, where none is
+/// drawn, the nearest) is not foremost; it is the same notion as `Sheet::foremost`.
+#[test]
+fn a_position_is_on_a_back_sheet_if_the_sheet_drawn_there_is_not_foremost() {
+    let (mut back, mut front) = (0, 0);
+    for (name, diagram) in examples_in_2d() {
+        let diagram: Diagram = diagram.into();
+        let depths = Depths::<2>::new(&diagram).unwrap();
+        for (simplex, _) in make_complex::<2>(&diagram) {
+            let position = simplex[0];
+            let sheets = depths.sheets(position, &[]);
+            let drawn = sheets.iter().find(|s| s.front).or_else(|| sheets.first());
+            assert_eq!(
+                depths.drawn_sheet(position),
+                drawn.and_then(|s| s.id),
+                "{name}: {position:?}"
+            );
+            assert_eq!(
+                depths.on_back_sheet(position),
+                drawn.is_some_and(|s| !s.foremost),
+                "{name}: {position:?}"
+            );
+            if depths.on_back_sheet(position) {
+                back += 1;
+            } else {
+                front += 1;
+            }
+        }
+    }
+    assert!(
+        back > 0 && front > back,
+        "{back} on a back sheet, {front} not"
+    );
+}
+
+#[test]
+fn the_associator_has_one_vertex_where_five_pages_meet_and_one_wire_has_an_echo() {
     let diagram: Diagram = examples::associator().1.into();
     let depths = Depths::<2>::new(&diagram).unwrap();
     let vertex = [
@@ -689,13 +750,17 @@ fn the_associator_has_one_vertex_where_five_sheets_meet_and_one_wire_behind() {
     let behind: Vec<_> = make_complex::<2>(&diagram)
         .into_iter()
         .filter_map(|(simplex, _)| match simplex {
-            Simplex::Wire(wire) if depths.echoes(wire) > 0 => Some((wire, depths.echoes(wire))),
+            Simplex::Wire(wire) => depths.echo_sheet(wire).map(|sheet| (wire, sheet)),
             _ => None,
         })
         .collect();
     assert_eq!(behind.len(), 1, "{behind:?}");
-    assert_eq!(behind[0].1, 1);
     assert_eq!(behind[0].0[1], vertex);
+    // The echo is of a sheet that is a page, with a page in front of it.
+    let pages = depths.meeting_pages(vertex);
+    assert_eq!(pages.len(), 5);
+    let at = pages.iter().position(|p| p.sheet == behind[0].1).unwrap();
+    assert!(at + 1 < pages.len());
     // Nowhere else do sheets meet.
     assert_eq!(depths.sheets_meeting_at([Boundary::Source.into(); 2]), 0);
 }

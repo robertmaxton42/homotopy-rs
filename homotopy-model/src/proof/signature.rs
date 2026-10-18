@@ -56,6 +56,30 @@ fn mentioned_by(diagram: &Diagram) -> (std::rc::Rc<[Generator]>, bool) {
     })
 }
 
+/// Why a node goes when another is removed (see [`Signature::removal_reasons`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemovalReason {
+    /// It is the node being removed.
+    Itself,
+    /// It is under a node that goes: in a folder, or an instance of a generator.
+    Within(Node),
+    /// Its diagram mentions a generator that goes.
+    Mentions(Generator),
+    /// It is an instance whose substitution mentions a generator that goes, as the placeholder
+    /// replaced or in a replacement.
+    Substitutes(Generator),
+    /// It lists a placeholder that goes as an explicit dependency.
+    DependsOn(Generator),
+}
+
+/// How a node comes to depend on a generator (a [`RemovalReason`] without the generator).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Link {
+    Diagram,
+    Substitution,
+    Depends,
+}
+
 /// The largest direction of a [`Symmetry`], which is stored as a 64-bit mask.
 pub const MAX_SYMMETRY_DIRECTION: usize = 64;
 
@@ -373,6 +397,17 @@ impl Signature {
     /// generators of each diagram are remembered, see [`removal_preview`](Self::removal_preview)).
     #[must_use]
     pub fn removal_nodes(&self, node: Node) -> Vec<Node> {
+        self.removal_reasons(node)
+            .into_iter()
+            .map(|(node, _)| node)
+            .collect()
+    }
+
+    /// [`removal_nodes`](Self::removal_nodes) with the reason each node goes (the first found:
+    /// the cascade is a breadth first search), `node` itself first. This is the definition, and
+    /// the others are made from it.
+    #[must_use]
+    pub fn removal_reasons(&self, node: Node) -> Vec<(Node, RemovalReason)> {
         let dependents = self.dependents_index(None).unwrap_or_default();
         self.cascade(&dependents, node)
     }
@@ -385,23 +420,55 @@ impl Signature {
     /// left off, and ends. The nodes are exactly those of `removal_nodes`.
     #[must_use]
     pub fn removal_preview(&self, node: Node, budget: usize) -> Option<Vec<Node>> {
+        self.removal_preview_reasons(node, budget)
+            .map(|reasons| reasons.into_iter().map(|(node, _)| node).collect())
+    }
+
+    /// [`removal_preview`](Self::removal_preview) with the reasons of
+    /// [`removal_reasons`](Self::removal_reasons).
+    #[must_use]
+    pub fn removal_preview_reasons(
+        &self,
+        node: Node,
+        budget: usize,
+    ) -> Option<Vec<(Node, RemovalReason)>> {
         let dependents = self.dependents_index(Some(budget))?;
         Some(self.cascade(&dependents, node))
     }
 
-    fn cascade(&self, dependents: &FastHashMap<Generator, Vec<Node>>, node: Node) -> Vec<Node> {
+    fn cascade(
+        &self,
+        dependents: &FastHashMap<Generator, Vec<(Node, Link)>>,
+        node: Node,
+    ) -> Vec<(Node, RemovalReason)> {
         let mut removed = FastHashSet::default();
         let mut order = vec![];
-        let mut queue = VecDeque::from([node]);
-        while let Some(root) = queue.pop_front() {
+        let mut queue = VecDeque::from([(node, RemovalReason::Itself)]);
+        while let Some((root, why)) = queue.pop_front() {
             for removing in self.tree.descendents_of(root) {
                 if !removed.insert(removing) {
                     continue;
                 }
-                order.push(removing);
+                order.push((
+                    removing,
+                    if removing == root {
+                        why
+                    } else {
+                        RemovalReason::Within(root)
+                    },
+                ));
                 if let Some(generator) = self.find_generator(removing) {
                     if let Some(implied) = dependents.get(&generator) {
-                        queue.extend(implied.iter().copied());
+                        queue.extend(implied.iter().map(|&(n, link)| {
+                            (
+                                n,
+                                match link {
+                                    Link::Diagram => RemovalReason::Mentions(generator),
+                                    Link::Substitution => RemovalReason::Substitutes(generator),
+                                    Link::Depends => RemovalReason::DependsOn(generator),
+                                },
+                            )
+                        }));
                     }
                 }
             }
@@ -426,6 +493,20 @@ impl Signature {
             .collect()
     }
 
+    /// [`removal_cascade`](Self::removal_cascade) with the reasons (of the nodes, see
+    /// [`removal_reasons`](Self::removal_reasons)).
+    #[must_use]
+    pub fn removal_cascade_reasons(&self, generator: Generator) -> Vec<(Generator, RemovalReason)> {
+        let Some(node) = self.find_node(generator) else {
+            return vec![];
+        };
+        self.removal_reasons(node)
+            .into_iter()
+            .filter_map(|(n, why)| Some((self.find_generator(n)?, why)))
+            .filter(|&(g, _)| g != generator)
+            .collect()
+    }
+
     /// The generators that removing `node` removes, itself included, as a set.
     #[must_use]
     pub fn removal_generators(&self, node: Node) -> FastHashSet<Generator> {
@@ -441,43 +522,47 @@ impl Signature {
     ///
     /// With a `budget`, `None` if more than that many diagrams have to be looked at that were not
     /// before.
-    fn dependents_index(&self, budget: Option<usize>) -> Option<FastHashMap<Generator, Vec<Node>>> {
+    fn dependents_index(
+        &self,
+        budget: Option<usize>,
+    ) -> Option<FastHashMap<Generator, Vec<(Node, Link)>>> {
         let mut looked_at = 0;
         let placeholders: FastHashSet<Generator> = self
             .iter()
             .filter(|info| info.placeholder && info.instance.is_none())
             .map(|info| info.generator)
             .collect();
-        let mut index: FastHashMap<Generator, Vec<Node>> = FastHashMap::default();
+        let mut index: FastHashMap<Generator, Vec<(Node, Link)>> = FastHashMap::default();
         for (node, data) in self.tree.iter() {
             let SignatureItem::Item(info) = data.inner() else {
                 continue;
             };
-            let mut mentions: FastHashSet<Generator> = FastHashSet::default();
-            let mut mention = |diagram: &Diagram, mentions: &mut FastHashSet<Generator>| {
-                let (found, fresh) = mentioned_by(diagram);
-                looked_at += usize::from(fresh);
-                mentions.extend(found.iter().copied());
-            };
-            mention(&info.diagram, &mut mentions);
-            mentions.extend(
-                info.depends_on
-                    .iter()
-                    .filter(|g| placeholders.contains(g))
-                    .copied(),
-            );
+            // (The first link found is kept, in this order of how plain it is.)
+            let mut mentions: FastHashMap<Generator, Link> = FastHashMap::default();
+            let mut mention =
+                |diagram: &Diagram, link: Link, mentions: &mut FastHashMap<Generator, Link>| {
+                    let (found, fresh) = mentioned_by(diagram);
+                    looked_at += usize::from(fresh);
+                    for &g in found.iter() {
+                        mentions.entry(g).or_insert(link);
+                    }
+                };
+            mention(&info.diagram, Link::Diagram, &mut mentions);
+            for g in info.depends_on.iter().filter(|g| placeholders.contains(g)) {
+                mentions.entry(*g).or_insert(Link::Depends);
+            }
             if let Some(made) = &info.instance {
                 for (placeholder, replacement) in &made.substitution {
-                    mentions.insert(*placeholder);
-                    mention(replacement, &mut mentions);
+                    mentions.entry(*placeholder).or_insert(Link::Substitution);
+                    mention(replacement, Link::Substitution, &mut mentions);
                 }
             }
             if budget.is_some_and(|budget| looked_at > budget) {
                 return None;
             }
             mentions.remove(&info.generator);
-            for g in mentions {
-                index.entry(g).or_default().push(node);
+            for (g, link) in mentions {
+                index.entry(g).or_default().push((node, link));
             }
         }
         Some(index)

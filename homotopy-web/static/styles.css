@@ -471,6 +471,21 @@ button, .button {
   opacity: 0.3;
 }
 
+/* The page of the sheet that is chosen, which is the top of the stack: the pages in front of it
+   have vanished. Stronger than the others. */
+.sheet-mark--chosen {
+  stroke: rgba(0, 0, 0, 0.75);
+  stroke-width: 2px;
+}
+
+/* In the mask of an echo: what dims it, the pages of the sheets in front of it, which it runs
+   under (they have no backing of their own, so it is not hidden, only dimmed). */
+.sheet-echo-veil {
+  fill: black;
+  fill-opacity: 0.62;
+  stroke: none;
+}
+
 .sheet-echo {
   fill: none;
   stroke-width: 2px;
@@ -522,15 +537,28 @@ button, .button {
    hatching of a placeholder is a path of its own over the surface, so it is not shaded. */
 
 svg path[data-thickness="1"] {
-  filter: brightness(0.92) saturate(1.1);
+  filter: brightness(0.84) saturate(1.25);
 }
 
 svg path[data-thickness="2"] {
-  filter: brightness(0.84) saturate(1.2);
+  filter: brightness(0.7) saturate(1.5);
 }
 
 svg path[data-thickness="3"] {
-  filter: brightness(0.75) saturate(1.3);
+  filter: brightness(0.56) saturate(1.75);
+}
+
+/* What is drawn on a sheet that is not foremost, as if seen through a frosted layer in front of
+   it: a pale veil over the surfaces (one path, between the surfaces and the wires), and the wires
+   and vertices on such a sheet faded. */
+
+.sheet-veil {
+  fill: rgba(255, 255, 255, 0.3);
+  stroke: none;
+}
+
+svg [data-veiled="1"] {
+  opacity: 0.55;
 }
 
 /* Wires that are not on the sheet that is chosen. */
@@ -886,16 +914,122 @@ svg [data-dim="1"] {
 }
 
 .signature__removal-note {
-  padding: 0 var(--space-1) var(--space-0);
+  margin: 0 var(--space-0) var(--space-0);
+  padding: 2px var(--space-0);
   font-size: 12px;
   line-height: 1.3;
   color: var(--slot-error);
   cursor: default;
+  border-radius: var(--space-0);
+  background: color-mix(in srgb, var(--slot-error) 8%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--slot-error) 35%, transparent);
 }
 
-.signature__removal-note:empty {
-  display: none;
+/* The summary is a button when there is a list to open. */
+.removal-box__toggle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-0);
+  width: 100%;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
+
+.removal-box__toggle:hover > span:last-child {
+  text-decoration: underline;
+}
+
+.removal-box__toggle:focus-visible,
+.removal-box__name:focus-visible {
+  outline: 2px solid var(--slot-error);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+.removal-box__arrow {
+  flex: 0 0 auto;
+  width: 1ch;
+}
+
+
+.removal-box__list {
+  max-height: min(50vh, 520px);
+  overflow-y: auto;
+  margin-top: 2px;
+  padding-top: var(--space-0);
+  border-top: 1px solid color-mix(in srgb, var(--slot-error) 35%, transparent);
+  color: var(--drawer-foreground);
+  user-select: text;
+}
+
+/* (TexSpan's wrapper is a block: here names run on with the reason.) */
+.removal-box__list .tex__wrapper {
+  display: inline-block;
+  vertical-align: baseline;
+}
+
+.removal-box__title {
+  margin: var(--space-0) 0 2px;
+  font-weight: 600;
+  color: var(--slot-error);
+}
+
+.removal-box__list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.removal-box__entry {
+  padding: 2px 0;
+  line-height: 1.5;
+}
+
+.removal-box__name {
+  display: inline;
+  padding: 0 var(--space-0);
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.removal-box__name:hover {
+  background: color-mix(in srgb, var(--slot-error) 18%, transparent);
+}
+
+.removal-box__why {
+  font-size: 11px;
+  color: var(--drawer-foreground-dimmed-text);
+}
+
+.removal-box__more {
+  padding: var(--space-0) 0;
+  font-style: italic;
+}
+
+.signature__item[data-removal-flash] {
+  animation: removal-flash 1.4s ease-out;
+}
+
+@keyframes removal-flash {
+  0%, 30% {
+    outline: 3px solid var(--slot-error);
+    outline-offset: -3px;
+  }
+  100% {
+    outline: 3px solid transparent;
+    outline-offset: -3px;
+  }
+}
+
 
 .signature__item.signature__folder-editing:has(.signature__removal-note:not(:empty)) {
   height: auto;

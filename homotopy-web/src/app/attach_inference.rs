@@ -117,6 +117,7 @@ pub fn limits() -> InferenceLimits {
             max_dimension
         },
         narrow_to_sheet: AppSettings::get_infer_narrow_to_sheet(),
+        seeding: true,
     }
 }
 

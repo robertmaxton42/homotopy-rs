@@ -33,7 +33,7 @@ fn meetings(diagram: &Diagram) -> (Vec<[SliceIndex; 2]>, usize) {
     let echoes = make_complex::<2>(diagram)
         .into_iter()
         .filter(|(simplex, _)| match simplex {
-            Simplex::Wire(wire) => depths.echoes(*wire) > 0,
+            Simplex::Wire(wire) => depths.echo_sheet(*wire).is_some(),
             _ => false,
         })
         .count();

@@ -358,6 +358,58 @@ indicator: see "Laying out diagrams" below.
     diagram first, then by `layout::weight` of their diagram, which costs the same whatever the size), for the plain
     pass and for the reflections. The options are put back in the order of the generators by `outcome`, so the list is
     as before (tested: no limit and a far one give the same options, and the whole-vs-`only` equivalence tests).
+  - **Instance synthesis: the inverse of an invertible schema, and replacements read off the diagram**
+    (`InferSearch` plans, `completion::seeds`, `Pool::reaching`; user reports in the tangent categories project,
+    tests `homotopy-model/tests/instance_synth.rs`, `instance_sweep.rs` and `inference::tests`).
+    - **Root cause of "the instance for T is not found, only `Ẋ := 1_𝒞`"** (δ-on-objects `Ẋ◁δ = δ▷(Ẋ,Ẋ)`, at the top row
+      of the workspace: `[Boundary(Target), x]`, `x` from the left; the 2D view of a 5-diagram shows `[h5, h4]` of the
+      whole diagram, so a click on the picture is at a 5-dimensional haystack, where 6-cells are the ones that attach, and
+      the target row is the 4-dimensional boundary where a 5-cell schema does). The instance made by hand for `T` attaches
+      *as its inverse*: the schema is invertible, the diagram has `δ▷(T,T)`, which is the cell's target. The plain pass offers
+      `g` and `g⁻¹` of every invertible generator, but `InferSearch` only looked for the schema's source (on a target boundary),
+      so of all the instances only the trivial one, whose source `1◁δ = δ` is there, was found. Not the pool (`T` is a 1-cell
+      of the haystack), not the 3-cell limit, not `MAX_SUBSTITUTIONS` (21 ms, 1 option), not invertibility checks.
+      Now an invertible schema is also looked for by its target (`inverse` on `InferredInstance` and `AttachOption`,
+      `serde(default)`, also on the wire; `Proof::attach` attaches the instance's `inverse()`; label `A [σ]⁻¹`,
+      `Structure::InverseInstance`). Both directions are checked for each substitution in one walk (so a schema that has no
+      end spends its time on both, and the notice is the same). 1 option → 3 at the top-left: `id`, `id⁻¹`, `T⁻¹`; attaching
+      `T⁻¹` gives the same workspace as the instance made by hand.
+    - **Reading replacements off the diagram** (the "giveaway" nodes; `completion::seeds`, `Seeds`). For the side of the schema
+      that is attached along, a cell `g` that depends on placeholders (`η̇₍₂₎[Ḟ, Ġ, η̇]`, `ζ[η̇]`…) is replaced by its instance
+      `g[σ]`, which has to exist (strict `Pool::substitute`), so *the diagram has a generator that is that instance*, and the
+      instance records what it was made with (`Instance::substitution`). `seeds` matches `g` against every such instance in the
+      diagram with the Instantiate panel's matcher (`Matcher::unify`, `match_instance`: the same structural matching, down the types,
+      binding placeholders, forced bindings only) and keeps what is forced of `σ` as a "way". Ways are necessary conditions, one
+      for each instance a cell can become and (up to `MAX_SEEDS` = 64) for all the cells at once, in `(dimension, id)` order,
+      so a `σ` is in at most one (they are disjoint; a `seen` set also keeps overlaps from finding it twice). No instance for a cell
+      is `Seeds::Impossible`: **nothing is searched** (a schema whose cell has no instance in the diagram is done in 0 steps).
+      Placeholders a way binds have that one replacement (checked to fit the type: `Pool::fits`, which `Machine::well_typed` now
+      uses too), the others are searched as before, with the types known. A replacement need not be made of cells of the diagram
+      or of at most three cells: `p` of `η̇₍₂₎[T/Ḟ, 1/Ġ, p/η̇]` is a 5-cell in a 4-dimensional diagram.
+    - **Plans.** `InferSearch` is a list of `Plan`s run one after another: a plan per way (with its direction), then one plan
+      for the directions that have no cell to read (the old search; `Seeds::Free`). A direction that has ways is *not*
+      also searched blind: ways cover every `σ` the blind search can find (it is a necessary condition), which is what
+      the comparison test checks. `MAX_SUBSTITUTIONS` is per plan. `InferenceLimits::seeding` (default on, `serde(default)`) switches
+      it off, for the comparison tests and for anyone who suspects it of a miss (no UI setting yet).
+    - **Order keys** (`Slot.key`): unchanged for the old search (the candidate numbers, forward); a way's instances are
+      `[SEEDED_KEY, way, candidate numbers…]` and the inverse's have `INVERSE_KEY` in front (`u32::MAX`, `SEEDED_KEY` is one less),
+      so the final order is: found by searching, found by reading, then the same for the inverse. An instance found both ways (a
+      direction with ways is not searched blind, so only if two ways overlap) is where the first way put it. Deterministic:
+      ways are in the order of the haystack's generators `(dimension, id)`. Streaming is as before (`take_results`).
+    - **Placeholders above the diagram** (`Pool::reaching(…, haystack.dimension())`, `Cells::beyond`): a placeholder of a higher
+      dimension than the haystack's has no cell of the diagram to be made of; its candidates are the cells (not placeholders) that
+      the records of the instances in the diagram are made of, transitively (`p` is "in play" if `(Tp)₍₂₎` is there). Before, none.
+    - **Measured** (release, native, the fixture; the limit is 3 s a generator, "(cut)" is a search that ran out of it;
+      `reading_replacements_off_the_diagram_finds_what_searching_finds`, 612 searches at the boundaries and every 5th point of
+      the workspace: 606 the same, 6 instances more, 0 lost; all of it 261 s → 113 s, searches cut 84 → 33): `π_η̇ def` (37) at
+      `[R5,S3]` ≥ 3 s (cut) → 92 ms, `σ[η̇→η̇′]` (50) ≥ 3 s (cut) → 6 ms, `π_η̇,1η̇ = π_η̇,2η̇` (72) ≥ 3 s (cut) → 3 ms, the
+      `ς` spec (119) → 6 ms, 115 → 5 ms, 68 → 53 ms. Still cut: `∀η̇, ζ[η̇]η̇ = 1_G` (31) in the direction whose side (`1_G`) has no cell
+      to read, 48, 77, 78, 82 (no instance of a cell they depend on is needed or there are many unbound placeholders).
+    - **Known gaps**: instances made by hand for `ζ[η̇]`, `σ[η̇]` (`ζ[p]`, `ζ[Tp]`, `σ[T/Ḟ, 1/Ġ, p/η̇]`) are not inferred
+      (`KNOWN_GAPS` in `instance_sweep.rs`): they depend on a transformation `η̇` that the cells they attach along do not mention,
+      so nothing in the diagram says which one is meant (offering every 5-cell of the signature of the right type gave 272 options
+      and never finished in 20 s), and `−₍₂₎ congr` (97), which has `ι₁, ι₂, ḣ` that only the hand-made instance says anything
+      about. The direction of a schema whose side has no cell that depends on placeholders is searched blind, as before.
   - Debug hooks: `__homotopy.dispatch` takes `{"SelectPoint": [point, weak_units]}` (limits from the
     settings) and `{"SelectPointWith": [point, weak_units, {"enabled":..,"generator_ms":..,"max_dimension":..}]}`;
     a point is a list of `{"Singular": n}`, `{"Regular": n}` or `{"Boundary": "Source"}`.
@@ -634,15 +686,16 @@ indicator: see "Laying out diagrams" below.
       is kept. Tested against the scaffold with every edge (`leaving_out_regular_slices_loses_no_unit_cone`).
       Identity is checked on kept edges only: across the diagonals it differs where the way round passes a
       junction, which cuts the sheet.
-  - **Where sheets meet: stacks of pages and echoes** (`Depths::sheet_boundaries`, `sheets_meeting_at`, `echoes`;
+  - **Where sheets meet: stacks of pages and echoes** (`Depths::sheet_boundaries`, `sheets_meeting_at`, `meeting_pages`,
+    `echo_sheet`;
     `homotopy-graphics/src/svg/marks.rs` for the geometry; `diagram_svg/marks.rs`; setting *Show where sheets meet
     (fans and echoes)*, still `sheet_outlines`, on by default; workspace diagram only). Only at *points* of the
     picture (every coordinate singular: where the cells are). **A meeting is where several distinct sheets of
     a neighbouring position become one**: a height `z` at a point that an edge into it takes two or more
     heights of one neighbour's fibre to (a cone with `source_len() >= 2`), whose source heights are at least two
     distinct `SheetId`s, **and** whose own sheet is at this position alone (`places(id)`: no other position has
-    the cell). `SheetBoundary { from, to, z, sheet, branches }`, `branches` the distinct sheets merged (the 3-cell
-    of the associator: 5, the vertex of `start`: 9); `Sheet::merges` is the same per height; there is no
+    the cell). `SheetBoundary { from, to, z, sheet, branches, pages }`, `branches` the distinct sheets merged (the 3-cell
+    of the associator: 5, the vertex of `start`: 9) and `pages` which, see below; `Sheet::merges` is the same per height; there is no
     `SheetBoundaryKind` any more.
     - **Why it was wrong before** (user, on the workspace and on `p`/`ε`: "every vertex on overlapping sheets is
       marked", "that screenshot is of p, which has only one sheet"). The rule was "three or more edges carry a
@@ -681,21 +734,49 @@ indicator: see "Laying out diagrams" below.
       vertices** (`view_sheet_marks` is called after the surfaces and the highlight under them), so that wires
       pass over it, and the vertex dot over its middle; in a `g.sheet-marks`
       (`data-fans`/`data-echoes`), made once for the prepared diagram (`OnceCell`).
-    - **Echoes** (`Depths::echoes(wire)`, at most `MAX_ECHOES` = 3), only on the wires that leave a meeting (so,
-      now, only those of the dots that are meetings): a wire (a segment between a meeting and the
-      position beside it) gets one echo for each *step* it is behind the front-most of the wires at that point.
-      A wire's layer is the height `z` that the hover marks as drawn at the position beside the point
-      (`node_depth`), and a step is a different `z` among the wires there, so the wires of the first layer have
-      none and the echoes say which wires go into which layer. (Tried first: the edge depth at the vertex, which is
-      0 for every wire at `start`'s vertex and so said nothing.) Wires with no drawn sheet have none. On the
-      associator one wire has one; at `start`'s vertex the three from the top, which are on the second layer. Each
-      echo is the wire's own path (the layout's curve) again, translated by a few pixels to the up and right side
-      of the wire (`echo_side`), in the wire's colour, stroked with a gradient (`reach_from`: 36px from the
-      vertex) that fades out, over a paler wider one for contrast. The gradient element is made with `VTag`
-      because `html!` lowercases `linearGradient`. **They are under the wires too** (user: the echo "is
-      visible over the top wire" where a wire braids in front): the layer is under every wire and vertex, so a
-      wire that crosses an echo hides it, whichever of the two is in front (wires hide each other by masks, not by
-      the order they are drawn in, so no echo can be put "just under its wire").
+    - **A page is a sheet** (user after PR #15: "since the ellipses of the fan are supposed to each represent a
+      sheet, some of them should vanish when scrolling through sheets"). `SheetBoundary::pages` is a
+      `Vec<Page { sheet, depth }>`, one for each distinct sheet merged into the height, **from the farthest back
+      to the nearest**: `depth` is the sheet's height `z` in the fibre of the neighbour that carries it in (the
+      nearest, if several neighbours or heights do: a fold), ordered deepest first, ties (different sheets at the
+      same height of different neighbours, which have no order between them) by `SheetId`. So page 0, the smallest
+      ellipse, is the one at the back, and the last, the highest, is the one in front: plates, the one on top the
+      nearest. `Depths::meeting_pages(coord)` is the pages of all of a position's meetings, once each. **Choosing a
+      sheet** (Shift+wheel, `[`, `]`, Tab: an *explicit* choice only, `chosen_sheet`, not the default) over the
+      diagram takes away the pages of the sheets *in front of* the chosen one when it is one of the pages of the
+      fan (`SheetMarks::fan_look`): what is drawn is the pages from the back up to and including its page, which is
+      then the top of the stack (its rim is stronger, `sheet-mark--chosen`). A choice that is not a page of the fan
+      changes nothing there, and with none all pages show. With more than `MAX_PAGES` the pages drawn are the last
+      four of those left, so that the geometry of a page is by its *rank among the pages drawn* (and `start`'s
+      nine, with nothing chosen, show the four nearest: S5, S11, S13, S15; choosing S5 shows S16, S18, S20, S5;
+      choosing S10 shows S6, S10). **Like the dimming and the highlight, it is done to the elements that are
+      there** (`DiagramSvg::apply_marks`, from `rendered`, `refresh` and `leave`: `d` and attributes written
+      directly, only when they changed; the diagram does not render again). `SheetMarks::{fan_look, echo_look}` are
+      pure (unit-tested natively); the fans have `data-fan`/`data-sheets` ("S5 S11 S13 S15", for tests) and the
+      echoes `data-echo`/`data-sheet`.
+    - **Echoes** (`Depths::echo_sheet(wire)`), only on the wires that leave a meeting: the wire (a segment between a
+      meeting and the position beside it) is on the sheet that is drawn at the position beside the point
+      (`node_depth`, as the hover marks it), and gets an echo **of that sheet** if it is one of the pages there and not
+      the last (nothing is in front of the front page, so there is nothing to show; wires with no drawn sheet, or on
+      a sheet that is not a page, have none). The echo (user after PR #15: "the echo for a wire should be 'at' a
+      particular sheet, start at the ellipse at that sheet and go 'under' all ellipses above that sheet") *begins at
+      the rim of its sheet's page* (`marks::leave_page`: the stretch of the wire's polyline from where it leaves that
+      page's ellipse, 36px on, the wire followed from the end by the vertex, which is inside every page) and runs
+      **under the pages of the sheets in front of it**: each echo has a mask (`mask` with a white rect and a black
+      path, `sheet-echo-veil`, at 0.62) of the closed outlines of those pages, so that where it passes under them it
+      is dimmed (not hidden: the pages have no backing of their own) and outside the stack it is as it was. It is the
+      wire's own path (the polyline, now, not the layout's curve: it starts mid-wire) translated a few pixels to the up
+      and right side of the wire (`echo_side`), in the wire's colour, stroked with a gradient (36px, fading out) over
+      a paler wider one for contrast; the gradient is made with `VTag` because `html!` lowercases `linearGradient`.
+      One echo for each wire (it used to be one copy for each step behind: `MAX_ECHOES` and `Depths::echoes` are
+      gone, the depth is now the page). With a choice (above) the echoes of the sheets whose pages vanished are hidden
+      (`display="none"`), the others begin at the page they have *now* and run under the pages left in front. On the
+      associator one wire has one; at `start`'s vertex five (S11, S13 on the pages drawn, S16, S18, S20 behind them:
+      the page of S15, the front, has none), of which with nothing chosen the last three are hidden for want of a
+      page. **They are under the wires too** (user: the echo "is visible over the top wire" where a wire braids in
+      front): the layer is under every wire and vertex, so a wire that crosses an echo hides it, whichever of the two
+      is in front (wires hide each other by masks, not by the order they are drawn in, so no echo can be put "just
+      under its wire").
     The tooltip says "sheets merge or split here" at a meeting. Gaps: where several wires leave in nearly one
     direction (the three at `start`) their echoes overlap; an echo of a front wire is also hidden by a wire behind
     it that crosses it (rare: within 36px of the vertex); the 3D view has none; a meeting where an `N`-fold
@@ -739,13 +820,57 @@ indicator: see "Laying out diagrams" below.
     of the same generator and step are merged as before, so the elements are those of `build` split by
     step (`build_shaded` returns each with its step; `build` is the same with step 0): no extra DOM. The
     step is `data-thickness` on the colour path, and `styles.css` has `filter: brightness() saturate()` for
-    steps 1 to 3 (0.92, 0.84, 0.75): darker and a little more saturated. **Placeholders**: the hatching is a
-    separate path over the surface, so the filter does not touch it, and both stripe colours stay visible
-    (the light stripes on black are over a path that is already as dark as it goes). Changing the setting
-    prepares the diagram again (the grouping is made then); a diagram whose surfaces all have as many sheets
-    has no steps. On by default because the steps are subtle (about 8% each); the exports (`GraphicElement::build`)
-    do not shade. Gaps: a CSS filter per shaded path (one per generator and step, not per surface); the 3D
+    steps 1 to 3 (**0.84, 0.70, 0.56** and 1.25, 1.5, 1.75: darker and more saturated; they were 0.92, 0.84, 0.75
+    and 1.1 to 1.3, which the user found "a bit too subtle; exacerbated by the fact that there must always be a wire
+    at which a sheet begins and ends, so you're never directly comparing two adjacent shades, you're only ever
+    comparing them across a wire": a step is now about 15% of the brightness;
+    a CSS filter, not an overlay, so as to keep one element per generator and step and the hatching untouched).
+    **Placeholders**: the hatching is a separate path over the surface, so the filter does not touch it, but the
+    colour under it gets darker, so `stripes_of` chooses the stripes for the colour *as shaded*
+    (`Color::dimmed(SHADE_BRIGHTNESS[step])`, then `stripes()`: light stripes below luminance 0.05 as before);
+    `SHADE_BRIGHTNESS` (`homotopy-graphics/src/style.rs`) and the stylesheet say the same, which a test in
+    `diagram_svg.rs` checks. Changing the setting prepares the diagram again (the grouping is made then); a diagram
+    whose surfaces all have as many sheets has no steps. On by default; the exports (`GraphicElement::build`) do
+    not shade. Gaps: a CSS filter per shaded path (one per generator and step, not per surface); the 3D
     view is not shaded; a surface whose sheets are all hidden by a wire is still counted.
+  - **The veil: what is on a back sheet** (`Depths::drawn_sheet`, `on_back_sheet`, `GraphicElement::merged_surfaces`,
+    `build_placed`, `DiagramSvg::view_sheet_veil`, `data-veiled`; its own setting *Veil what is on a back sheet*,
+    `sheet_veil`, on by default, workspace diagram only; user after PR #15: "in `start`, the entire right side of
+    the diagram is actually on a back sheet. It'd be good to indicate that somehow; a translucent overlay,
+    perhaps"). A position is *on a back sheet* when the sheet drawn there is not foremost (`Sheet::foremost`, see
+    above). **The sheet drawn at a position** is `node_depth`'s height of its fibre for wires and vertices, and for
+    the positions that have no depth, the regions (their surface is one colour for the whole fibre, the max
+    generator, so nothing is drawn at a height), the *nearest* sheet, `z = 0`: the one the hover lists first and
+    calls current. (That is why the right of `start` is veiled: its regions have the large passive layer S5 at
+    `z₃=0`, which something else is in front of at the wires beside it, so it is never foremost; on the left the
+    first is the foremost patch S14. The wires drawn on the right are on the foremost sheets S16, S18, S20, so
+    they are not veiled: the picture is a veiled background with crisp wires in front of it.) **One overlay path for
+    the surfaces**: the visible triangles on a back sheet, merged as the surfaces of the drawing are (outlines, so no
+    seams: `merged_surfaces`, with `orient_surface`), made once when the diagram is prepared (`PreparedDiagram::veil`,
+    with the shading: `Overlays { shade, veil }`, a change of either prepares again), a white fill at 0.3
+    (`.sheet-veil`, frosted) drawn **between the surfaces and the wires** so that what is in front of a back region
+    (a wire of another sheet, any vertex) is not veiled. Wires and vertices that are on a back sheet are not covered
+    by an overlay but faded (`data-veiled="1"`, `opacity: 0.55`): an overlay over them would also cover the front
+    wire that crosses them (wires hide each other by masks, and an overlay has none). Braids show it: the strand that
+    is behind along its whole length (`triple_braid`: 8 wires, `double_braid`: 12) is faded. Cost: one pass over the
+    visible simplices, with the sheet data (made once). Nothing is veiled in a diagram with one sheet everywhere
+    (`on_back_sheet` is false for a sheet that is alone wherever it is). Gaps: the 3D view has none; a region's
+    "drawn sheet" is a convention (the nearest), not something the projection draws; the surfaces of a placeholder
+    are veiled over their hatching.
+  - **Why hovering at the right of `start` highlights a whole sheet** (user: "hovering over a 2-cell on the top
+    sheet/on the left gets me exactly that 2-cell, but on the bottom sheet/on the right gets me the entire bottom
+    sheet"; the project's `start`, `@ T,R3` lists `z₃=0 S14 FRONT` and `z₃=1 S10`, `@ T,R5` lists `z₃=0 S5` and
+    `z₃=1 S17 FRONT`). Not a bug in the identity or the highlight. A sheet is a connected surface of one cell in 3D,
+    and in each of those regions there are two, a small patch of the cell (S14 on the left, S17 on the right: two
+    regions each) and a large layer that the patch lies against (S10 on the left,
+    14 positions, S5 on the right, 22 positions, the whole right side). The tooltip's current row, and so the
+    highlight, is the one that is *drawn* (`front`) where there is a drawn depth, and where there is none (every
+    region) the first, `z = 0`. In the left region the first is the patch; in the right region the first is the large
+    layer, because there the patch is at `z₃=1`. So the highlight is right in both and the asymmetry is which of the
+    two is nearest, which is what the veil now shows (the right side is veiled: the nearest layer there is a back sheet).
+    The foremost (FRONT) patch is one step of Shift+wheel away. Making the default the foremost one is a one line change
+    in `Stack::new` if the hover should show the small patch on both sides; it was not done, so that the current row and
+    the veil agree.
   - **The heuristic** (off by default; `InferenceLimits::narrow_to_sheet`, setting *Heuristic: infer instances
     only from cells near the chosen sheet*, kept with the inference settings): with a sheet chosen, the pool of
     cells for the replacements of placeholders (`Pool::new` in `AttachOptionsJob::new`) is the generators in
@@ -795,7 +920,8 @@ indicator: see "Laying out diagrams" below.
     different sheets (two separate wires of one generator), and one that is cut by a different cell on it is two
     (a line with a bead on it is `S1`, the bead, `S2`); "front" is a count (hidden at more positions than drawn),
     so two strands that cross over each other in turn are one front and one behind, or neither, by their
-    majority; `Stack`'s default sheet is still the one drawn (`front`), not the foremost one; the fans and echoes mark
+    majority; `Stack`'s default sheet is still the one drawn (`front`, else the nearest: see "Why hovering at the right of
+    `start`"), not the foremost one; the fans and echoes mark
     points only, and shading counts heights (a sheet that comes back to the position counts twice).
 
 New expensive work: write it as a job (or give an existing job another kind of step), label it,
@@ -979,17 +1105,47 @@ and check it with the debug hooks below.
   generators: 8ms per cold preview in the release build, 44ms in the debug build, then microseconds).
   Tests: `homotopy-model/tests/removal.rs` (the cascade, transitivity, no cascade from an instance, undo,
   workspace, preview = deletion on the examples and, with `HOMOTOPY_TANGENT_FIXTURE=<.hom>`, the fixture).
+  **Reasons** (`RemovalReason`, `removal_reasons`, `removal_preview_reasons`, `removal_cascade_reasons`; the node
+  versions are these with the reasons dropped, so there is still one definition of the cascade): each node
+  that goes says why, the first reason the breadth first search finds: `Itself`, `Within(root)` (under a
+  node that goes: folder contents, instances), `Mentions(g)` (diagram), `Substitutes(g)` (an instance whose
+  substitution mentions `g`, as the placeholder or in a replacement) or `DependsOn(g)` (lists a removed
+  placeholder). `dependents_index` keeps a `Link` for each (node, generator). `check_reasons` in
+  `removal.rs` checks that every reason is true (the generator it names goes earlier) for every generator of
+  the examples and the fixture.
   **Preview in the signature** (`app/signature/removal_preview.rs`): while the pointer is on the delete button
-  of a row being edited, or the button has the focus (it is a focusable `role=button` with `aria-describedby`
-  the note), `show` computes `removal_preview(node, 16)`, a few diagrams per step and yielding between
-  (`TimeoutFuture(0)`), saying "Checking..." until it is done, then writes to the DOM directly like the
-  tooltip: rows have `data-node`; those that go get `data-removal` (tint and strike-through in
-  `styles.css`), the nearest row on show that holds some out of sight (a closed folder, a schema with its
-  instances closed) gets `data-removal-inside="N"` (a "-N inside" badge), and `.signature__removal-note`
-  under the row says "Deletes N more (M out of sight)" (for a folder: "N generators inside and M more
-  outside it"), with the names in its `title`. `hide` clears it all (mouse leave, blur, click, and the
-  row's `destroy`: a row that goes never sees the pointer leave). `plan` is the pure part (tested natively).
-  There is no confirm step, so nothing else lists the names. Nothing re-renders the signature.
+  of a row being edited, or the button has the focus (a focusable `role=button`), `show` computes
+  `removal_preview_reasons(node, 16)`, a few diagrams per step and yielding between (`TimeoutFuture(0)`),
+  saying "Checking..." until it is done. Rows are written to directly like the tooltip: they have
+  `data-node`; those that go get `data-removal` (tint and strike-through in `styles.css`), the nearest row on
+  show that holds some out of sight (a closed folder, a schema with its instances closed) gets
+  `data-removal-inside="N"` (a "-N inside" badge). The note under the row is **`RemovalBox`**, a small
+  component of its own (registered by node in a thread-local, told what to show by `tell`, so only it
+  renders): "Deletes N more (M out of sight)" (for a folder: "N generators inside and M more outside it"),
+  which, when there is something to list, is a button with a triangle (`aria-expanded`). Expanded, it lists
+  the generators that go in groups (`Group`: *In this folder*; *Mentioning or depending on it*, for a folder
+  *Outside it ...*; *Instances*), each name with KaTeX (`TexSpan`, as `inference_notice`), the reason ("mentions X",
+  "depends on placeholder X", "instance of X", "in the folder") and nothing rendered until it is expanded, at most
+  `MOST_LISTED` = 50, then "and N more". `plan` is the pure part (tested natively, with the reasons).
+  Clicking a name (`go_to`) opens the closed folders and instances above it (`closed_above`: the view-only
+  `ToggleFolder`/`ToggleInstances`, no history), waits for the row to be drawn (up to 1s), refreshes the
+  marks, scrolls it into view (`nearest`) and flashes it (`data-removal-flash`, 1.4s). Expanding scrolls the
+  box into view.
+  **Staying open.** The box has to be reachable: it is *held* (`Hold`) while the pointer is within `GRACE_PX` = 40
+  of the rectangle that holds the button and the box (so the way between them counts: window `pointermove`, the
+  only listener work while it is on show; `Session` keeps the listeners, dropped a tick after `hide`) or the
+  keyboard focus is in either (`focusin`/`focusout`, only `:focus-visible` counts: a box clicked with the mouse is
+  held by the pointer), and closes `CLOSE_AFTER_MS` = 300 after neither holds (an epoch on `Hold` changes
+  makes a timer that is out of date do nothing), at once on `Esc` (focus inside goes back to the button without
+  showing it again: `QUIET_FOCUS`) or a `pointerdown` outside both. Going to a name *pins* it until the pointer
+  next moves (the signature may have moved the box from under it; a `pointermove` at the position of the last
+  press is the browser saying where the pointer is again and is ignored). Keyboard: Tab from the button goes
+  into the box (it is not next in the tab order), Shift+Tab from its first control goes back. `hide` clears the
+  marks (mouse leave is no longer a hide), and the box's `destroy` (a row that goes never sees the pointer
+  leave) calls `forget`. Nothing re-renders the signature (tested: no DOM change outside the box and the row
+  marks while hovering). There is no confirm step, so the list is the only place the names are. Gaps: the 40px
+  is of the union rectangle, so a tall expanded box makes a large area; touch has no hover (the button
+  deletes at once, as before); the list is not virtualised (50 names).
 
 - **Settings drawer** (`app/settings.rs`, `components/help_tip.rs`). The drawer shows titles, controls and a
   line of *status* only (`settings__note`: when the last backup was, why backups do not work, inference

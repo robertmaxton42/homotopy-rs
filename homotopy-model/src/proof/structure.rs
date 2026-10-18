@@ -31,6 +31,9 @@ pub enum Structure {
     Symmetry(String),
     /// An instance of a schema, with a description of the substitution: `A [Q/P]`.
     Instance(String),
+    /// The inverse of an instance of an invertible schema, found by matching the schema's
+    /// target: `A [Q/P]` with its inverse.
+    InverseInstance(String),
 }
 
 impl Structure {
@@ -39,6 +42,9 @@ impl Structure {
     pub fn label(&self, name: &str) -> String {
         match self {
             Self::Instance(description) => format!("{} [{}]", seal(name), seal(description)),
+            Self::InverseInstance(description) => {
+                format!("{} [{}]\u{207b}\u{b9}", seal(name), seal(description))
+            }
             _ => format!("${}$", self.math(name).unwrap_or_default()),
         }
     }
@@ -64,7 +70,7 @@ impl Structure {
             Self::Reflection(directions) if directions.as_slice() == [1] => notation.dual(&f),
             Self::Reflection(directions) => notation.reflection(directions, &f),
             Self::Symmetry(symmetry) => notation.symmetry(&to_math(symmetry), &f),
-            Self::Instance(_) => return None,
+            Self::Instance(_) | Self::InverseInstance(_) => return None,
         })
     }
 }
@@ -106,6 +112,10 @@ mod tests {
             r"${\text{f}}^{\text{op}}$"
         );
         assert_eq!(Instance("Q/P".to_owned()).label("A"), "A [Q/P]");
+        assert_eq!(
+            Structure::InverseInstance("Q/P".to_owned()).label("A"),
+            "A [Q/P]\u{207b}\u{b9}"
+        );
     }
 
     #[test]

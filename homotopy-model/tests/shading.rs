@@ -84,6 +84,35 @@ fn check(name: &str, diagram: &Diagram, layout: &Layout<2>) -> usize {
          (sheets, step) {steps:?}",
         surfaces.len()
     );
+
+    // The veil: the surfaces that are on a back sheet are one path, if there are any; the wires and
+    // points of the elements say which position they are for, and the surfaces none.
+    let on_back = surfaces
+        .iter()
+        .filter(|corners| depths.on_back_sheet(Depths::<2>::surface_position(corners)))
+        .count();
+    let veil = GraphicElement::merged_surfaces(&complex, layout, &projection, |corners| {
+        depths.on_back_sheet(Depths::<2>::surface_position(corners))
+    });
+    assert_eq!(veil.is_some(), on_back > 0, "{name}");
+    assert!(
+        GraphicElement::merged_surfaces(&complex, layout, &projection, |_| false).is_none(),
+        "{name}"
+    );
+    let everything = GraphicElement::merged_surfaces(&complex, layout, &projection, |_| true);
+    assert_eq!(everything.is_some(), !surfaces.is_empty(), "{name}");
+    let placed = GraphicElement::build_placed(&complex, layout, &projection, &depths, |corners| {
+        shading.step(&depths, corners)
+    });
+    assert_eq!(placed.len(), elements.len(), "{name}");
+    for (placed, (element, step)) in placed.iter().zip(&elements) {
+        assert_eq!(placed.step, *step);
+        assert_eq!(
+            placed.position.is_some(),
+            !matches!(element, GraphicElement::Surface(..)),
+            "{name}"
+        );
+    }
     surfaces.len()
 }
 
@@ -134,10 +163,12 @@ fn start_of_the_tangent_categories_project_is_shaded_for_the_sheets_the_hover_li
     assert!(surfaces > 20);
 }
 
-/// The same project: nine sheets meet at one vertex of `start`, with eighteen wires leaving it, and the
-/// three that come from the top are on the second layer where the others are on the first.
+/// The same project: nine sheets meet at one vertex of `start`, one page each, from the back
+/// (depth 1: the three sheets of the wires that come from the top, with the two big ones beside)
+/// to the front (depth 0), and the wires that are on a sheet with others in front of it have an
+/// echo of that sheet: the five that come from the top, and not the one on the front page.
 #[test]
-fn start_has_echoes_on_the_wires_of_the_second_layer_at_its_one_meeting() {
+fn start_has_echoes_on_the_wires_of_the_sheets_behind_the_front_page_at_its_one_meeting() {
     let Ok(path) = std::env::var("HOMOTOPY_TANGENT_FIXTURE") else {
         return;
     };
@@ -165,27 +196,90 @@ fn start_has_echoes_on_the_wires_of_the_second_layer_at_its_one_meeting() {
     assert_eq!(meetings, vec![(vertex, 9)]);
     assert_eq!(depths.sheets_meeting_at(vertex), 9);
 
-    let mut behind = vec![];
-    let mut at_the_vertex = 0;
-    for (simplex, _) in make_complex::<2>(&diagram) {
-        let Simplex::Wire(wire) = simplex else {
-            continue;
-        };
-        at_the_vertex += usize::from(wire.contains(&vertex));
-        match depths.echoes(wire) {
-            0 => {}
-            echoes => behind.push((wire[0], echoes)),
-        }
-    }
-    assert_eq!(at_the_vertex, 18);
+    // The pages, from the back: by depth, the deepest first.
+    let pages = depths.meeting_pages(vertex);
+    let depths_of_pages: Vec<usize> = pages.iter().map(|p| p.depth).collect();
+    assert_eq!(depths_of_pages, vec![1, 1, 1, 1, 1, 0, 0, 0, 0]);
+
     let wire = |i, j| {
         [
             SliceIndex::Interior(Height::Regular(i)),
             SliceIndex::Interior(Height::Singular(j)),
         ]
     };
+    let mut echoes = vec![];
+    let mut at_the_vertex = 0;
+    for (simplex, visible) in make_complex::<2>(&diagram) {
+        let Simplex::Wire(wire) = simplex else {
+            continue;
+        };
+        if !visible || !wire.contains(&vertex) {
+            continue;
+        }
+        at_the_vertex += 1;
+        if let Some(sheet) = depths.echo_sheet(wire) {
+            // It is a page, and not the front-most.
+            let at = pages.iter().position(|p| p.sheet == sheet).unwrap();
+            assert!(at + 1 < pages.len());
+            echoes.push(wire[0]);
+        }
+    }
+    assert_eq!(at_the_vertex, 9);
     assert_eq!(
-        behind,
-        vec![(wire(1, 4), 1), (wire(1, 5), 1), (wire(1, 6), 1)]
+        echoes,
+        vec![wire(1, 1), wire(1, 2), wire(1, 4), wire(1, 5), wire(1, 6)]
+    );
+}
+
+/// The right side of `start` is on a back sheet, and the left is not: where the hover lists
+/// `z₃=0 S5` (which something else is in front of at the wires beside it) and `z₃=1 S17`, the
+/// region is on S5, the sheet that is nearest, which is not foremost; where it lists `S14` first
+/// that is foremost.
+#[test]
+fn the_right_side_of_start_is_on_a_back_sheet_and_the_left_is_not() {
+    let Ok(path) = std::env::var("HOMOTOPY_TANGENT_FIXTURE") else {
+        return;
+    };
+    let bytes = std::fs::read(path).unwrap();
+    let mut state = Proof::default();
+    state.update(&Action::ImportProof(bytes.into())).unwrap();
+    let start = state
+        .signature
+        .iter()
+        .find(|info| info.name == "start")
+        .map(|info| info.generator)
+        .unwrap();
+    state.update(&Action::SelectGenerator(start)).unwrap();
+    let diagram = state.workspace.as_ref().unwrap().diagram.clone();
+    let depths = Depths::<2>::new(&diagram).unwrap();
+    let region = |row: SliceIndex, column| [row, SliceIndex::Interior(Height::Regular(column))];
+    let top = SliceIndex::Boundary(homotopy_core::Boundary::Target);
+    for column in [4, 5, 6, 7] {
+        assert!(depths.on_back_sheet(region(top, column)), "R{column}");
+    }
+    for column in [0, 1, 2, 3] {
+        assert!(!depths.on_back_sheet(region(top, column)), "R{column}");
+    }
+    // The wires leaving the vertex, which are drawn on the sheets in front, are not.
+    let wire = [
+        [
+            SliceIndex::Interior(Height::Regular(1)),
+            SliceIndex::Interior(Height::Singular(5)),
+        ],
+        [
+            SliceIndex::Interior(Height::Singular(0)),
+            SliceIndex::Interior(Height::Singular(0)),
+        ],
+    ];
+    assert!(!depths.on_back_sheet(wire[0]));
+    // The veil is made of the surfaces on the right, and fewer than all of them.
+    let complex = make_complex::<2>(&diagram);
+    let layout = Layout::<2>::new(&diagram).unwrap();
+    let projection = Projection::new(&diagram, &layout, &depths).unwrap();
+    assert!(
+        GraphicElement::merged_surfaces(&complex, &layout, &projection, |corners| {
+            depths.on_back_sheet(Depths::<2>::surface_position(corners))
+        })
+        .is_some()
     );
 }
